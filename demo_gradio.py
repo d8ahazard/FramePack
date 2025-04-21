@@ -126,15 +126,16 @@ def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, 
         
         # For shorter videos or if high VRAM available, keep more models in memory
         if high_vram or (adaptive_memory_management and (total_second_length <= 30 or free_mem_gb > 20)):
-            # Keep critical models in memory for entire generation
-            transformer.to(gpu)
-            models_to_keep_in_memory.append(transformer)                
-            
+                       
+            text_encoder.to(gpu)
+            text_encoder_2.to(gpu)
+            models_to_keep_in_memory.extend([text_encoder, text_encoder_2])
+        
             # If sufficient memory, also keep transformer in memory
             if free_mem_gb > 30 or total_second_length <= 15:
-                text_encoder.to(gpu)
-                text_encoder_2.to(gpu)
-                models_to_keep_in_memory.extend([text_encoder, text_encoder_2])
+                # Keep critical models in memory for entire generation
+                transformer.to(gpu)
+                models_to_keep_in_memory.append(transformer)     
                 
             # If very high memory, keep all models in memory
             if free_mem_gb > 50 or total_second_length <= 5:
@@ -244,7 +245,7 @@ def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, 
             move_model_to_device_with_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=gpu_memory_preservation)
             
         # Initialize TeaCache once outside the loop if possible
-        if use_teacache and adaptive_memory_management:
+        if use_teacache:
             transformer.initialize_teacache(enable_teacache=True, num_steps=steps)
 
         for latent_padding in latent_paddings:
