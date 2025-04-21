@@ -12,6 +12,7 @@ import safetensors.torch as sf
 import numpy as np
 import argparse
 import math
+import shutil
 
 from PIL import Image
 from diffusers import AutoencoderKLHunyuanVideo
@@ -113,6 +114,9 @@ def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, 
     job_id = generate_timestamp()
     # Create a single master output filename
     master_output_filename = os.path.join(outputs_folder, f'{job_id}_master.mp4')
+    # Create a temp directory for update files
+    temp_dir = os.path.join(outputs_folder, f'{job_id}_temp')
+    os.makedirs(temp_dir, exist_ok=True)
 
     stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Starting ...'))))
 
@@ -123,14 +127,14 @@ def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, 
         # For shorter videos or if high VRAM available, keep more models in memory
         if high_vram or (adaptive_memory_management and (total_second_length <= 30 or free_mem_gb > 20)):
             # Keep critical models in memory for entire generation
-            text_encoder.to(gpu)
-            text_encoder_2.to(gpu)
-            models_to_keep_in_memory.extend([text_encoder, text_encoder_2])
+            transformer.to(gpu)
+            models_to_keep_in_memory.append(transformer)                
             
             # If sufficient memory, also keep transformer in memory
             if free_mem_gb > 30 or total_second_length <= 15:
-                transformer.to(gpu)
-                models_to_keep_in_memory.append(transformer)
+                text_encoder.to(gpu)
+                text_encoder_2.to(gpu)
+                models_to_keep_in_memory.extend([text_encoder, text_encoder_2])
                 
             # If very high memory, keep all models in memory
             if free_mem_gb > 50 or total_second_length <= 5:
@@ -350,11 +354,15 @@ def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, 
 
             # Always save to the master output file
             save_bcthw_as_mp4(history_pixels, master_output_filename, fps=30, crf=mp4_crf)
+            
+            # Create a unique copy for this update to force UI refresh
+            update_filename = os.path.join(temp_dir, f'update_{len(latent_paddings) - latent_padding}.mp4')
+            save_bcthw_as_mp4(history_pixels, update_filename, fps=30, crf=mp4_crf)
 
             print(f'Decoded. Current latent shape {real_history_latents.shape}; pixel shape {history_pixels.shape}')
 
-            # Always push the master file to the UI
-            stream.output_queue.push(('file', master_output_filename))
+            # Always push the update file to the UI
+            stream.output_queue.push(('file', update_filename))
 
             if is_last_section:
                 break
@@ -367,6 +375,19 @@ def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, 
             unload_complete_models(
                 text_encoder, text_encoder_2, image_encoder, vae, transformer
             )
+        
+        # Create a final copy for the completed video
+        final_output_filename = os.path.join(outputs_folder, f'{job_id}_final.mp4')
+        if os.path.exists(master_output_filename):
+            shutil.copy2(master_output_filename, final_output_filename)
+            stream.output_queue.push(('file', final_output_filename))
+            
+        # Clean up temporary files
+        try:
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+        except Exception as e:
+            print(f"Error cleaning up temporary files: {e}")
 
     stream.output_queue.push(('end', None))
     return
@@ -382,22 +403,23 @@ def process(input_image, end_image, prompt, n_prompt, seed, total_second_length,
 
     async_run(worker, input_image, end_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory)
 
-    master_output_filename = None
+    current_video_file = None
 
     while True:
         flag, data = stream.output_queue.next()
 
         if flag == 'file':
-            master_output_filename = data
-            # Always update the UI to show the latest version of the master file
-            yield master_output_filename, gr.update(), gr.update(), gr.update(), gr.update(interactive=False), gr.update(interactive=True)
+            current_video_file = data
+            # Update the UI with the new video file
+            yield current_video_file, gr.update(), gr.update(), gr.update(), gr.update(interactive=False), gr.update(interactive=True)
 
         if flag == 'progress':
             preview, desc, html = data
             yield gr.update(), gr.update(visible=True, value=preview), desc, html, gr.update(interactive=False), gr.update(interactive=True)
 
         if flag == 'end':
-            yield master_output_filename, gr.update(visible=False), gr.update(), '', gr.update(interactive=True), gr.update(interactive=False)
+            # Return the last video file
+            yield current_video_file, gr.update(visible=False), gr.update(), '', gr.update(interactive=True), gr.update(interactive=False)
             break
 
 
