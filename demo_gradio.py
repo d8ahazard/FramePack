@@ -42,9 +42,11 @@ print(args)
 
 free_mem_gb = get_cuda_free_memory_gb(gpu)
 high_vram = free_mem_gb > 60
+adaptive_memory_management = False  # Default to False, will be overridden by UI
 
 print(f'Free VRAM {free_mem_gb} GB')
 print(f'High-VRAM Mode: {high_vram}')
+print(f'Adaptive Memory Management: {adaptive_memory_management}')
 
 text_encoder = LlamaModel.from_pretrained("hunyuanvideo-community/HunyuanVideo", subfolder='text_encoder', torch_dtype=torch.float16).cpu()
 text_encoder_2 = CLIPTextModel.from_pretrained("hunyuanvideo-community/HunyuanVideo", subfolder='text_encoder_2', torch_dtype=torch.float16).cpu()
@@ -100,27 +102,53 @@ os.makedirs(outputs_folder, exist_ok=True)
 
 
 @torch.no_grad()
-def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf):
+def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory):
+    # Set the adaptive memory flag based on user selection
+    global adaptive_memory_management
+    adaptive_memory_management = enable_adaptive_memory
+    
     total_latent_sections = (total_second_length * 30) / (latent_window_size * 4)
     total_latent_sections = int(max(round(total_latent_sections), 1))
 
     job_id = generate_timestamp()
+    # Create a single master output filename
+    master_output_filename = os.path.join(outputs_folder, f'{job_id}_master.mp4')
 
     stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Starting ...'))))
 
     try:
-        # Clean GPU
-        if not high_vram:
+        # Initial model loading strategy based on video length and available memory
+        models_to_keep_in_memory = []
+        
+        # For shorter videos or if high VRAM available, keep more models in memory
+        if high_vram or (adaptive_memory_management and (total_second_length <= 30 or free_mem_gb > 20)):
+            # Keep critical models in memory for entire generation
+            text_encoder.to(gpu)
+            text_encoder_2.to(gpu)
+            models_to_keep_in_memory.extend([text_encoder, text_encoder_2])
+            
+            # If sufficient memory, also keep transformer in memory
+            if free_mem_gb > 30 or total_second_length <= 15:
+                transformer.to(gpu)
+                models_to_keep_in_memory.append(transformer)
+                
+            # If very high memory, keep all models in memory
+            if free_mem_gb > 50 or total_second_length <= 5:
+                image_encoder.to(gpu)
+                vae.to(gpu)
+                models_to_keep_in_memory.extend([image_encoder, vae])
+                print("Keeping all models in memory for the entire generation process")
+        else:
+            # Clean GPU for low memory mode
             unload_complete_models(
                 text_encoder, text_encoder_2, image_encoder, vae, transformer
             )
 
         # Text encoding
-
         stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Text encoding ...'))))
 
-        if not high_vram:
-            fake_diffusers_current_device(text_encoder, gpu)  # since we only encode one text - that is one model move and one encode, offload is same time consumption since it is also one load and one encode.
+        if text_encoder not in models_to_keep_in_memory:
+            fake_diffusers_current_device(text_encoder, gpu)
             load_model_as_complete(text_encoder_2, target_device=gpu)
 
         llama_vec, clip_l_pooler = encode_prompt_conds(prompt, text_encoder, text_encoder_2, tokenizer, tokenizer_2)
@@ -133,8 +161,11 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
         llama_vec, llama_attention_mask = crop_or_pad_yield_mask(llama_vec, length=512)
         llama_vec_n, llama_attention_mask_n = crop_or_pad_yield_mask(llama_vec_n, length=512)
 
-        # Processing input image
+        # Clean up text encoders if they're not in our keep list and we need memory
+        if text_encoder not in models_to_keep_in_memory and text_encoder_2 not in models_to_keep_in_memory:
+            unload_complete_models(text_encoder, text_encoder_2)
 
+        # Processing input image
         stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Image processing ...'))))
 
         H, W, C = input_image.shape
@@ -146,27 +177,38 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
         input_image_pt = torch.from_numpy(input_image_np).float() / 127.5 - 1
         input_image_pt = input_image_pt.permute(2, 0, 1)[None, :, None]
 
-        # VAE encoding
+        # Process end image if provided
+        if end_image is not None:
+            end_image_np = resize_and_center_crop(end_image, target_width=width, target_height=height)
+            Image.fromarray(end_image_np).save(os.path.join(outputs_folder, f'{job_id}_end.png'))
+            end_image_pt = torch.from_numpy(end_image_np).float() / 127.5 - 1
+            end_image_pt = end_image_pt.permute(2, 0, 1)[None, :, None]
+        else:
+            end_image_pt = input_image_pt.clone()
 
+        # VAE encoding
         stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'VAE encoding ...'))))
 
-        if not high_vram:
+        if vae not in models_to_keep_in_memory:
             load_model_as_complete(vae, target_device=gpu)
 
         start_latent = vae_encode(input_image_pt, vae)
+        end_latent = vae_encode(end_image_pt, vae) if end_image is not None else start_latent.clone()
 
         # CLIP Vision
-
         stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'CLIP Vision encoding ...'))))
 
-        if not high_vram:
+        if image_encoder not in models_to_keep_in_memory:
             load_model_as_complete(image_encoder, target_device=gpu)
 
         image_encoder_output = hf_clip_vision_encode(input_image_np, feature_extractor, image_encoder)
         image_encoder_last_hidden_state = image_encoder_output.last_hidden_state
 
-        # Dtype
+        # Clean up encoders if they're not in our keep list
+        if image_encoder not in models_to_keep_in_memory:
+            unload_complete_models(image_encoder)
 
+        # Dtype
         llama_vec = llama_vec.to(transformer.dtype)
         llama_vec_n = llama_vec_n.to(transformer.dtype)
         clip_l_pooler = clip_l_pooler.to(transformer.dtype)
@@ -174,7 +216,6 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
         image_encoder_last_hidden_state = image_encoder_last_hidden_state.to(transformer.dtype)
 
         # Sampling
-
         stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Start sampling ...'))))
 
         rnd = torch.Generator("cpu").manual_seed(seed)
@@ -184,14 +225,18 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
         history_pixels = None
         total_generated_latent_frames = 0
 
-        latent_paddings = reversed(range(total_latent_sections))
+        latent_paddings = list(reversed(range(total_latent_sections)))
 
         if total_latent_sections > 4:
-            # In theory the latent_paddings should follow the above sequence, but it seems that duplicating some
-            # items looks better than expanding it when total_latent_sections > 4
-            # One can try to remove below trick and just
-            # use `latent_paddings = list(reversed(range(total_latent_sections)))` to compare
             latent_paddings = [3] + [2] * (total_latent_sections - 3) + [1, 0]
+
+        # Ensure transformer is loaded if not already in memory
+        if transformer not in models_to_keep_in_memory:
+            move_model_to_device_with_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=gpu_memory_preservation)
+            
+        # Initialize TeaCache once outside the loop if possible
+        if use_teacache and adaptive_memory_management:
+            transformer.initialize_teacache(enable_teacache=True, num_steps=steps)
 
         for latent_padding in latent_paddings:
             is_last_section = latent_padding == 0
@@ -211,14 +256,16 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
             clean_latents_post, clean_latents_2x, clean_latents_4x = history_latents[:, :, :1 + 2 + 16, :, :].split([1, 2, 16], dim=2)
             clean_latents = torch.cat([clean_latents_pre, clean_latents_post], dim=2)
 
-            if not high_vram:
-                unload_complete_models()
+            # Only load transformer if not in keep list and not currently loaded
+            if transformer not in models_to_keep_in_memory and not transformer.device == gpu:
                 move_model_to_device_with_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=gpu_memory_preservation)
 
-            if use_teacache:
-                transformer.initialize_teacache(enable_teacache=True, num_steps=steps)
-            else:
-                transformer.initialize_teacache(enable_teacache=False)
+            # Only initialize TeaCache if not using adaptive memory management
+            if not adaptive_memory_management:
+                if use_teacache:
+                    transformer.initialize_teacache(enable_teacache=True, num_steps=steps)
+                else:
+                    transformer.initialize_teacache(enable_teacache=False)
 
             def callback(d):
                 preview = d['denoised']
@@ -271,13 +318,20 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
 
             if is_last_section:
                 generated_latents = torch.cat([start_latent.to(generated_latents), generated_latents], dim=2)
+                # Replace the last frame latent with end_latent
+                if generated_latents.shape[2] > 1:
+                    generated_latents[:, :, -1:] = end_latent.to(generated_latents)
 
             total_generated_latent_frames += int(generated_latents.shape[2])
             history_latents = torch.cat([generated_latents.to(history_latents), history_latents], dim=2)
 
-            if not high_vram:
+            # Only offload transformer if not in keep list and we need to load VAE
+            if transformer not in models_to_keep_in_memory and vae not in models_to_keep_in_memory:
                 offload_model_from_device_for_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=8)
                 load_model_as_complete(vae, target_device=gpu)
+            elif vae not in models_to_keep_in_memory:
+                # If transformer stays in memory but VAE needs to be loaded
+                load_model_as_complete(vae, target_device=gpu, unload=False)
 
             real_history_latents = history_latents[:, :, :total_generated_latent_frames, :, :]
 
@@ -290,22 +344,25 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
                 current_pixels = vae_decode(real_history_latents[:, :, :section_latent_frames], vae).cpu()
                 history_pixels = soft_append_bcthw(current_pixels, history_pixels, overlapped_frames)
 
-            if not high_vram:
-                unload_complete_models()
+            # Only unload VAE if not in keep list
+            if vae not in models_to_keep_in_memory:
+                unload_complete_models(vae)
 
-            output_filename = os.path.join(outputs_folder, f'{job_id}_{total_generated_latent_frames}.mp4')
-
-            save_bcthw_as_mp4(history_pixels, output_filename, fps=30, crf=mp4_crf)
+            # Always save to the master output file
+            save_bcthw_as_mp4(history_pixels, master_output_filename, fps=30, crf=mp4_crf)
 
             print(f'Decoded. Current latent shape {real_history_latents.shape}; pixel shape {history_pixels.shape}')
 
-            stream.output_queue.push(('file', output_filename))
+            # Always push the master file to the UI
+            stream.output_queue.push(('file', master_output_filename))
 
             if is_last_section:
                 break
     except:
         traceback.print_exc()
 
+    finally:
+        # Clean up at the end
         if not high_vram:
             unload_complete_models(
                 text_encoder, text_encoder_2, image_encoder, vae, transformer
@@ -315,7 +372,7 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
     return
 
 
-def process(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf):
+def process(input_image, end_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory):
     global stream
     assert input_image is not None, 'No input image!'
 
@@ -323,23 +380,24 @@ def process(input_image, prompt, n_prompt, seed, total_second_length, latent_win
 
     stream = AsyncStream()
 
-    async_run(worker, input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf)
+    async_run(worker, input_image, end_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory)
 
-    output_filename = None
+    master_output_filename = None
 
     while True:
         flag, data = stream.output_queue.next()
 
         if flag == 'file':
-            output_filename = data
-            yield output_filename, gr.update(), gr.update(), gr.update(), gr.update(interactive=False), gr.update(interactive=True)
+            master_output_filename = data
+            # Always update the UI to show the latest version of the master file
+            yield master_output_filename, gr.update(), gr.update(), gr.update(), gr.update(interactive=False), gr.update(interactive=True)
 
         if flag == 'progress':
             preview, desc, html = data
             yield gr.update(), gr.update(visible=True, value=preview), desc, html, gr.update(interactive=False), gr.update(interactive=True)
 
         if flag == 'end':
-            yield output_filename, gr.update(visible=False), gr.update(), '', gr.update(interactive=True), gr.update(interactive=False)
+            yield master_output_filename, gr.update(visible=False), gr.update(), '', gr.update(interactive=True), gr.update(interactive=False)
             break
 
 
@@ -360,7 +418,9 @@ with block:
     gr.Markdown('# FramePack')
     with gr.Row():
         with gr.Column():
-            input_image = gr.Image(sources='upload', type="numpy", label="Image", height=320)
+            with gr.Row():
+                input_image = gr.Image(sources='upload', type="numpy", label="Start Image", height=320)
+                end_image = gr.Image(sources='upload', type="numpy", label="End Image (Optional)", height=320)
             prompt = gr.Textbox(label="Prompt", value='')
             example_quick_prompts = gr.Dataset(samples=quick_prompts, label='Quick List', samples_per_page=1000, components=[prompt])
             example_quick_prompts.click(lambda x: x[0], inputs=[example_quick_prompts], outputs=prompt, show_progress=False, queue=False)
@@ -370,12 +430,14 @@ with block:
                 end_button = gr.Button(value="End Generation", interactive=False)
 
             with gr.Group():
-                use_teacache = gr.Checkbox(label='Use TeaCache', value=True, info='Faster speed, but often makes hands and fingers slightly worse.')
+                with gr.Row():
+                    use_teacache = gr.Checkbox(label='Use TeaCache', value=True, info='Faster speed, but often makes hands and fingers slightly worse.')
+                    enable_adaptive_memory = gr.Checkbox(label='Enable Adaptive Memory Management', value=True, info='Reduces loading/offloading of models for faster long video generation.')
 
                 n_prompt = gr.Textbox(label="Negative Prompt", value="", visible=False)  # Not used
                 seed = gr.Number(label="Seed", value=31337, precision=0)
 
-                total_second_length = gr.Slider(label="Total Video Length (Seconds)", minimum=1, maximum=120, value=5, step=0.1)
+                total_second_length = gr.Slider(label="Total Video Length (Seconds)", minimum=1, maximum=600, value=5, step=0.1)
                 latent_window_size = gr.Slider(label="Latent Window Size", minimum=1, maximum=33, value=9, step=1, visible=False)  # Should not change
                 steps = gr.Slider(label="Steps", minimum=1, maximum=100, value=25, step=1, info='Changing this value is not recommended.')
 
@@ -383,9 +445,9 @@ with block:
                 gs = gr.Slider(label="Distilled CFG Scale", minimum=1.0, maximum=32.0, value=10.0, step=0.01, info='Changing this value is not recommended.')
                 rs = gr.Slider(label="CFG Re-Scale", minimum=0.0, maximum=1.0, value=0.0, step=0.01, visible=False)  # Should not change
 
-                gpu_memory_preservation = gr.Slider(label="GPU Inference Preserved Memory (GB) (larger means slower)", minimum=6, maximum=128, value=6, step=0.1, info="Set this number to a larger value if you encounter OOM. Larger value causes slower speed.")
+                gpu_memory_preservation = gr.Slider(label="GPU Inference Preserved Memory (GB)", minimum=6, maximum=128, value=6, step=0.1, info="Set this number to a larger value if you encounter OOM. Larger value causes slower speed.")
 
-                mp4_crf = gr.Slider(label="MP4 Compression", minimum=0, maximum=100, value=16, step=1, info="Lower means better quality. 0 is uncompressed. Change to 16 if you get black outputs. ")
+                mp4_crf = gr.Slider(label="MP4 Compression", minimum=0, maximum=100, value=16, step=1, info="Lower means better quality. 0 is uncompressed. Change to 16 if you get black outputs.")
 
         with gr.Column():
             preview_image = gr.Image(label="Next Latents", height=200, visible=False)
@@ -396,7 +458,7 @@ with block:
 
     gr.HTML('<div style="text-align:center; margin-top:20px;">Share your results and find ideas at the <a href="https://x.com/search?q=framepack&f=live" target="_blank">FramePack Twitter (X) thread</a></div>')
 
-    ips = [input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf]
+    ips = [input_image, end_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory]
     start_button.click(fn=process, inputs=ips, outputs=[result_video, preview_image, progress_desc, progress_bar, start_button, end_button])
     end_button.click(fn=end_process)
 
