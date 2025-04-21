@@ -92,6 +92,7 @@ def vae_decode_fake(latents):
 
 @torch.no_grad()
 def vae_decode(latents, vae, image_mode=False):
+    print(f"Decoding latents with shape: {latents.shape}")
     latents = latents / vae.config.scaling_factor
 
     if not image_mode:

@@ -1,6 +1,8 @@
 from diffusers_helper.hf_login import login
 
 import os
+import re
+import PIL
 
 os.environ['HF_HOME'] = os.path.abspath(os.path.realpath(os.path.join(os.path.dirname(__file__), './hf_download')))
 
@@ -42,10 +44,10 @@ args = parser.parse_args()
 print(args)
 
 free_mem_gb = get_cuda_free_memory_gb(gpu)
-high_vram = free_mem_gb > 60
-adaptive_memory_management = True  # Default to False, will be overridden by UI
+high_vram = free_mem_gb > 32  # Raised from 60GB to 24GB as a more realistic threshold for high-end consumer cards
+adaptive_memory_management = True  # Default to True for better experience on most systems
 
-print(f'Free VRAM {free_mem_gb} GB')
+print(f'Free VRAM {free_mem_gb:.2f} GB')
 print(f'High-VRAM Mode: {high_vram}')
 print(f'Adaptive Memory Management: {adaptive_memory_management}')
 
@@ -66,9 +68,9 @@ text_encoder_2.eval()
 image_encoder.eval()
 transformer.eval()
 
-if not high_vram:
-    vae.enable_slicing()
-    vae.enable_tiling()
+# Always enable slicing and tiling for VAE regardless of VRAM to improve reliability
+vae.enable_slicing()
+vae.enable_tiling()
 
 transformer.high_quality_fp32_output_for_inference = True
 print('transformer.high_quality_fp32_output_for_inference = True')
@@ -85,7 +87,21 @@ text_encoder_2.requires_grad_(False)
 image_encoder.requires_grad_(False)
 transformer.requires_grad_(False)
 
+def log_vram(model):
+    current_free_mem_gb = get_cuda_free_memory_gb(gpu)
+    try:
+        model.to(gpu)
+        used_mem_gb = current_free_mem_gb - get_cuda_free_memory_gb(gpu)
+        print(f'{model.__class__.__name__} used {used_mem_gb:.2f} GB VRAM')
+        model.to('cpu')
+    except Exception as e:
+        print(f'Error logging VRAM for {model.__class__.__name__}: {e}')
+        model.to('cpu')
+
 if not high_vram:
+    # models_to_test = [transformer, text_encoder, text_encoder_2, image_encoder, vae]
+    # for model in models_to_test:
+    #     log_vram(model)
     # DynamicSwapInstaller is same as huggingface's enable_sequential_offload but 3x faster
     DynamicSwapInstaller.install_model(transformer, device=gpu)
     DynamicSwapInstaller.install_model(text_encoder, device=gpu)
@@ -103,7 +119,7 @@ os.makedirs(outputs_folder, exist_ok=True)
 
 
 @torch.no_grad()
-def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory):
+def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory, resolution):
     # Set the adaptive memory flag based on user selection
     global adaptive_memory_management
     adaptive_memory_management = enable_adaptive_memory
@@ -123,28 +139,49 @@ def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, 
     try:
         # Initial model loading strategy based on video length and available memory
         models_to_keep_in_memory = []
+        # HunyuanVideoTransformer3DModelPacked used 22.75 GB VRAM - transformer
+        # LlamaModel used 2.50 GB VRAM - text_encoder
+        # CLIPTextModel used 0.23 GB VRAM - text_encoder_2
+        # SiglipVisionModel used 0.83 GB VRAM - image_encoder
+        # AutoencoderKLHunyuanVideo used 0.45 GB VRAM
         
-        # For shorter videos or if high VRAM available, keep more models in memory
-        if high_vram or (adaptive_memory_management and (total_second_length <= 30 or free_mem_gb > 20)):
-                       
-            text_encoder.to(gpu)
-            text_encoder_2.to(gpu)
-            models_to_keep_in_memory.extend([text_encoder, text_encoder_2])
-        
-            # If sufficient memory, also keep transformer in memory
-            if free_mem_gb > 30 or total_second_length <= 15:
-                # Keep critical models in memory for entire generation
-                transformer.to(gpu)
-                models_to_keep_in_memory.append(transformer)     
-                
-            # If very high memory, keep all models in memory
-            if free_mem_gb > 50 or total_second_length <= 5:
+        # Intelligent memory management based on available VRAM
+        if high_vram or adaptive_memory_management:
+            # Define memory tiers based on actual model sizes with safety margins
+            if free_mem_gb >= 26:  # Ultra high memory - keep everything (RTX 3090/4090)
+                text_encoder.to(gpu)
+                text_encoder_2.to(gpu)
                 image_encoder.to(gpu)
                 vae.to(gpu)
-                models_to_keep_in_memory.extend([image_encoder, vae])
-                print("Keeping all models in memory for the entire generation process")
+                transformer.to(gpu)
+                models_to_keep_in_memory = [text_encoder, text_encoder_2, image_encoder, vae, transformer]
+                print("Ultra high memory mode: Keeping all models in memory")
+                
+            elif free_mem_gb >= 23:  # High memory - keep transformer and small models
+                text_encoder.to(gpu)
+                text_encoder_2.to(gpu)
+                transformer.to(gpu)
+                models_to_keep_in_memory = [text_encoder, text_encoder_2, transformer]
+                print("High memory mode: Keeping transformer and text encoders in memory")
+                
+            elif free_mem_gb >= 4:  # Medium memory - keep only smaller models
+                text_encoder.to(gpu)
+                text_encoder_2.to(gpu)
+                models_to_keep_in_memory = [text_encoder, text_encoder_2]
+                
+                # Optionally keep image_encoder and VAE if we have enough space
+                if free_mem_gb >= 6:
+                    image_encoder.to(gpu)
+                    vae.to(gpu)
+                    models_to_keep_in_memory.extend([image_encoder, vae])
+                    print("Medium memory mode: Keeping text encoders, image encoder and VAE in memory")
+                else:
+                    print("Medium memory mode: Keeping only text encoders in memory")
+            else:
+                print("Low memory mode: No models preloaded")
         else:
-            # Clean GPU for low memory mode
+            # Clean GPU for maximum compatibility mode
+            print("Compatibility mode: Adaptive memory management disabled")
             unload_complete_models(
                 text_encoder, text_encoder_2, image_encoder, vae, transformer
             )
@@ -174,7 +211,7 @@ def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, 
         stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Image processing ...'))))
 
         H, W, C = input_image.shape
-        height, width = find_nearest_bucket(H, W, resolution=640)
+        height, width = find_nearest_bucket(H, W, resolution=resolution)
         input_image_np = resize_and_center_crop(input_image, target_width=width, target_height=height)
 
         Image.fromarray(input_image_np).save(os.path.join(outputs_folder, f'{job_id}.png'))
@@ -242,11 +279,25 @@ def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, 
 
         # Ensure transformer is loaded if not already in memory
         if transformer not in models_to_keep_in_memory:
-            move_model_to_device_with_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=gpu_memory_preservation)
+            # Calculate appropriate preserved memory based on other models and TeaCache usage
+            preserved_memory = gpu_memory_preservation
+            if use_teacache:
+                # TeaCache needs more memory, so preserve more
+                preserved_memory = max(gpu_memory_preservation, 8)
+            
+            move_model_to_device_with_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=preserved_memory)
             
         # Initialize TeaCache once outside the loop if possible
         if use_teacache:
-            transformer.initialize_teacache(enable_teacache=True, num_steps=steps)
+            # If memory is tight, we need to be more careful with TeaCache
+            current_free_mem = get_cuda_free_memory_gb(gpu)
+            if current_free_mem < 5.0:
+                print(f"Low memory for TeaCache ({current_free_mem:.2f} GB free), using reduced memory settings")
+                transformer.initialize_teacache(enable_teacache=True, num_steps=min(steps, 20))
+            else:
+                transformer.initialize_teacache(enable_teacache=True, num_steps=steps)
+        else:
+            transformer.initialize_teacache(enable_teacache=False)
 
         for latent_padding in latent_paddings:
             is_last_section = latent_padding == 0
@@ -338,14 +389,23 @@ def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, 
             total_generated_latent_frames += int(generated_latents.shape[2])
             history_latents = torch.cat([generated_latents.to(history_latents), history_latents], dim=2)
 
-            # Only offload transformer if not in keep list and we need to load VAE
-            if transformer not in models_to_keep_in_memory and vae not in models_to_keep_in_memory:
-                offload_model_from_device_for_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=8)
-                load_model_as_complete(vae, target_device=gpu)
-            elif vae not in models_to_keep_in_memory:
-                # If transformer stays in memory but VAE needs to be loaded
-                load_model_as_complete(vae, target_device=gpu, unload=False)
-
+            # Smart model management for VAE decoding
+            need_vae = True
+            
+            # Check if we need to offload transformer to make room for VAE
+            if need_vae and vae not in models_to_keep_in_memory:
+                # Only offload transformer if not in keep list and there's not enough memory for both
+                if transformer not in models_to_keep_in_memory:
+                    # Check available memory before deciding to offload
+                    current_free_mem = get_cuda_free_memory_gb(gpu)
+                    if current_free_mem < 1.0:  # If memory is tight, offload transformer
+                        print(f"Offloading transformer to CPU due to memory pressure. Current free memory: {current_free_mem:.2f} GB")
+                        offload_model_from_device_for_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=1)
+                    load_model_as_complete(vae, target_device=gpu)
+                else:
+                    # If transformer stays in memory, just load VAE alongside it
+                    load_model_as_complete(vae, target_device=gpu, unload=False)
+            
             real_history_latents = history_latents[:, :, :total_generated_latent_frames, :, :]
 
             if history_pixels is None:
@@ -357,9 +417,12 @@ def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, 
                 current_pixels = vae_decode(real_history_latents[:, :, :section_latent_frames], vae).cpu()
                 history_pixels = soft_append_bcthw(current_pixels, history_pixels, overlapped_frames)
 
-            # Only unload VAE if not in keep list
+            # Only unload VAE if not in keep list and we need memory
             if vae not in models_to_keep_in_memory:
-                unload_complete_models(vae)
+                current_free_mem = get_cuda_free_memory_gb(gpu)
+                # Only unload if memory is tight (under 2GB) and not the last section
+                if current_free_mem < 2.0 and not is_last_section:
+                    unload_complete_models(vae)
 
             # Always save to the master output file
             save_bcthw_as_mp4(history_pixels, master_output_filename, fps=30, crf=mp4_crf)
@@ -402,7 +465,134 @@ def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, 
     return
 
 
-def process(input_image, end_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory):
+@torch.no_grad()
+def worker_keyframe(input_image, end_image, keyframes, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory, resolution):
+    """
+    Process video generation with multiple keyframes.
+    Each keyframe becomes a target for a segment of the video.
+    Video segments are generated in reverse order, with frames being appended to the master video.
+    """
+    global stream, adaptive_memory_management
+
+    # Sort keyframes by their numerical suffix
+    sorted_keyframes = []
+    if keyframes and len(keyframes) > 0:
+        # Parse keyframe order from filenames
+        keyframe_data = []
+        for kf_path in keyframes:
+            # Extract number from filename (e.g., image_3.jpg -> 3)
+            filename = os.path.basename(kf_path)
+            match = re.search(r'_(\d+)\.[^.]+$', filename)
+            if match:
+                frame_num = int(match.group(1))
+                keyframe_data.append((frame_num, kf_path))
+            else:
+                print(f"Warning: Keyframe {filename} doesn't follow the naming convention (should have _n suffix). Skipping.")
+        
+        # Sort by frame number
+        keyframe_data.sort(key=lambda x: x[0])
+        sorted_keyframes = [kf_path for _, kf_path in keyframe_data]
+    
+    # If no valid keyframes found, fall back to regular worker
+    if not sorted_keyframes:
+        print("No valid keyframes found, using regular worker")
+        return worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, 
+                     latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, 
+                     use_teacache, mp4_crf, enable_adaptive_memory, resolution)
+    
+    print(f"Processing with {len(sorted_keyframes)} keyframes")
+    
+    # Load all keyframe images
+    keyframe_images = []
+    for kf_path in sorted_keyframes:
+        try:
+            with PIL.Image.open(kf_path) as img:
+                # Convert to RGB and numpy array
+                img = img.convert('RGB')
+                keyframe_images.append(np.array(img))
+        except Exception as e:
+            print(f"Error loading keyframe {kf_path}: {e}")
+            continue
+    
+    # If we couldn't load any keyframes, fall back to regular worker
+    if not keyframe_images:
+        print("Failed to load keyframe images, using regular worker")
+        return worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, 
+                     latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, 
+                     use_teacache, mp4_crf, enable_adaptive_memory, resolution)
+    
+    # All frames in sequence: start frame, keyframes, end frame (if provided)
+    all_frames = [input_image] + keyframe_images
+    if end_image is not None:
+        all_frames.append(end_image)
+    
+    print(f"Total frames for keyframe processing: {len(all_frames)}")
+    
+    # Calculate time per segment
+    num_segments = len(all_frames) - 1
+    # Need some kind of rounding as we are doing 30 FPS
+    # 10 seconds is 300 frames, so we can round to 0.1 seconds  
+    seconds_per_segment = round(total_second_length / num_segments, 2)
+    
+    # Create a job ID for the entire sequence
+    master_job_id = generate_timestamp()
+    master_temp_dir = os.path.join(outputs_folder, f'{master_job_id}_temp')
+    os.makedirs(master_temp_dir, exist_ok=True)
+    
+    # Process segments in REVERSE order (from last to first)
+    # Iterate from num_segments-1 down to 0
+    for i in range(num_segments-1, -1, -1):
+        # Get the frames for this segment
+        start_frame = all_frames[i]
+        end_frame = all_frames[i+1]
+        segment_length = seconds_per_segment
+        
+        stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, f'Processing segment {num_segments-i}/{num_segments} (working backwards)...'))))
+        
+        # Check if user wants to stop
+        if stream.input_queue.top() == 'end':
+            stream.output_queue.push(('end', None))
+            return
+        
+        # Only clear GPU memory if we're low on VRAM
+        current_free_mem = get_cuda_free_memory_gb(gpu)
+        if not high_vram and current_free_mem < 2.0:
+            print(f"Low memory detected ({current_free_mem:.2f} GB free), clearing GPU cache")
+            torch.cuda.empty_cache()
+            # Only unload models if memory is critically low
+            if current_free_mem < 1.0:
+                print("Critical memory situation, unloading all models")
+                unload_complete_models(text_encoder, text_encoder_2, image_encoder, vae, transformer)
+        else:
+            print(f"Sufficient memory available ({current_free_mem:.2f} GB free), keeping loaded models")
+        
+        # Process this segment
+        print(f"Starting segment {num_segments-i}/{num_segments}, working backwards: {i} to {i+1}, length: {segment_length:.2f} seconds")
+        worker(start_frame, end_frame, prompt, n_prompt, seed, segment_length, 
+              latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, 
+              use_teacache, mp4_crf, enable_adaptive_memory, resolution)
+        
+        # Wait for the worker to finish and update the UI
+        import time
+        time.sleep(0.5)
+    
+    # Final cleanup if needed
+    if not high_vram:
+        unload_complete_models(text_encoder, text_encoder_2, image_encoder, vae, transformer)
+    
+    # Clean up temporary directory
+    try:
+        if os.path.exists(master_temp_dir):
+            shutil.rmtree(master_temp_dir)
+    except Exception as e:
+        print(f"Error cleaning up temporary files: {e}")
+    
+    # Send the final end signal to the stream to complete the process
+    stream.output_queue.push(('end', None))
+    return
+
+
+def process(input_image, end_image, keyframes, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory, resolution):
     global stream
     assert input_image is not None, 'No input image!'
 
@@ -410,7 +600,12 @@ def process(input_image, end_image, prompt, n_prompt, seed, total_second_length,
 
     stream = AsyncStream()
 
-    async_run(worker, input_image, end_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory)
+    # Determine whether to use keyframe worker or regular worker
+    if keyframes and len(keyframes) > 0:
+        # For keyframes, we need to run synchronously to avoid memory issues
+        async_run(worker_keyframe, input_image, end_image, keyframes, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory, resolution)
+    else:
+        async_run(worker, input_image, end_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory, resolution)
 
     current_video_file = None
 
@@ -452,6 +647,9 @@ with block:
             with gr.Row():
                 input_image = gr.Image(sources='upload', type="numpy", label="Start Image", height=320)
                 end_image = gr.Image(sources='upload', type="numpy", label="End Image (Optional)", height=320)
+            keyframes = gr.File(label="Keyframes (Optional)", file_count="multiple", file_types=["image"], height=50)
+            gr.Markdown("*Keyframe images should be named with _n suffix where n is the frame order (0, 1, 2...). Files will be sorted by this number.*", elem_id="keyframe-info")
+            resolution = gr.Slider(label="Resolution", minimum=240, maximum=720, value=640, step=16)
             prompt = gr.Textbox(label="Prompt", value='')
             example_quick_prompts = gr.Dataset(samples=quick_prompts, label='Quick List', samples_per_page=1000, components=[prompt])
             example_quick_prompts.click(lambda x: x[0], inputs=[example_quick_prompts], outputs=prompt, show_progress=False, queue=False)
@@ -489,7 +687,7 @@ with block:
 
     gr.HTML('<div style="text-align:center; margin-top:20px;">Share your results and find ideas at the <a href="https://x.com/search?q=framepack&f=live" target="_blank">FramePack Twitter (X) thread</a></div>')
 
-    ips = [input_image, end_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory]
+    ips = [input_image, end_image, keyframes, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory, resolution]
     start_button.click(fn=process, inputs=ips, outputs=[result_video, preview_image, progress_desc, progress_bar, start_button, end_button])
     end_button.click(fn=end_process)
 
