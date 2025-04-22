@@ -2,6 +2,7 @@ import torch
 
 from diffusers.pipelines.hunyuan_video.pipeline_hunyuan_video import DEFAULT_PROMPT_TEMPLATE
 from diffusers_helper.utils import crop_or_pad_yield_mask
+from diffusers import AutoencoderKLHunyuanVideo
 
 
 @torch.no_grad()
@@ -91,8 +92,8 @@ def vae_decode_fake(latents):
 
 
 @torch.no_grad()
-def vae_decode(latents, vae, image_mode=False):
-    print(f"Decoding latents with shape: {latents.shape}")
+def vae_decode(latents, vae: AutoencoderKLHunyuanVideo, image_mode=False):
+    #print(f"Decoding latents with shape: {latents.shape}")
     latents = latents / vae.config.scaling_factor
 
     if not image_mode:
