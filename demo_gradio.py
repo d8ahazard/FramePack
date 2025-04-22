@@ -87,6 +87,7 @@ def check_download_model(repo_id, subfolder=None, retries=3, use_auth_token=None
                     repo_id=repo_id,
                     local_dir=model_dir,
                     local_dir_use_symlinks=False,  # Get actual files, not symlinks
+                    local_files_only=True,
                     token=use_auth_token,
                     max_workers=4  # Limit concurrent downloads
                 )
