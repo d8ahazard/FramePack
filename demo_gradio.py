@@ -484,7 +484,7 @@ def worker_keyframe(input_image, end_image, keyframes, prompt, n_prompt, seed, t
     """
     Process video generation with multiple keyframes.
     Each keyframe becomes a target for a segment of the video.
-    Video segments are generated in reverse order, with frames being appended to the master video.
+    Video segments are generated in reverse order, then concatenated at the end.
     """
     global stream, adaptive_memory_management
 
@@ -550,11 +550,11 @@ def worker_keyframe(input_image, end_image, keyframes, prompt, n_prompt, seed, t
     
     # Create a job ID for the entire sequence
     master_job_id = generate_timestamp()
-    master_output_filename = os.path.join(outputs_folder, f'{master_job_id}_master.mp4')
     master_temp_dir = os.path.join(outputs_folder, f'{master_job_id}_temp')
     os.makedirs(master_temp_dir, exist_ok=True)
     
-    final_output_filename = None
+    # Track segment files for concatenation
+    segment_files = []
     
     # Process segments in REVERSE order (from last to first)
     # Iterate from num_segments-1 down to 0
@@ -571,11 +571,13 @@ def worker_keyframe(input_image, end_image, keyframes, prompt, n_prompt, seed, t
             stream.output_queue.push(('end', None))
             return
         
-        # Only clear GPU memory if we're low on VRAM
+        # Clear GPU memory before each segment
+        torch.cuda.empty_cache()
+        
+        # Only clear model memory if we're low on VRAM
         current_free_mem = get_cuda_free_memory_gb(gpu)
         if not high_vram and current_free_mem < 2.0:
             print(f"Low memory detected ({current_free_mem:.2f} GB free), clearing GPU cache")
-            torch.cuda.empty_cache()
             # Only unload models if memory is critically low
             if current_free_mem < 1.0:
                 print("Critical memory situation, unloading all models")
@@ -583,41 +585,63 @@ def worker_keyframe(input_image, end_image, keyframes, prompt, n_prompt, seed, t
         else:
             print(f"Sufficient memory available ({current_free_mem:.2f} GB free), keeping loaded models")
         
-        # Process this segment, using the master output filename
+        # Generate a unique file for this segment
+        segment_file = os.path.join(master_temp_dir, f'segment_{i}.mp4')
+        
+        # Process this segment
         print(f"Starting segment {num_segments-i}/{num_segments}, working backwards: {i} to {i+1}, length: {segment_length:.2f} seconds")
         output_file = worker(start_frame, end_frame, prompt, n_prompt, seed, segment_length, 
-              latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, 
-              use_teacache, mp4_crf, enable_adaptive_memory, resolution,
-              out_file=master_output_filename)
+                      latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, 
+                      use_teacache, mp4_crf, enable_adaptive_memory, resolution)
         
-        # For UI updates, use the file from the last segment
-        if i == 0:
-            final_output_filename = output_file
-            # Force UI update with the final video
-            stream.output_queue.push(('file', final_output_filename))
+        # Track the segment file (they're generated in reverse order)
+        if output_file and os.path.exists(output_file):
+            # Copy to our segment file
+            shutil.copy2(output_file, segment_file)
+            segment_files.insert(0, segment_file)  # Insert at beginning since we're processing backwards
+            
+            # Show current segment preview in the UI
+            stream.output_queue.push(('file', output_file))
         
-        # Wait for the worker to finish and update the UI
+        # Wait a moment to allow cleanup
         import time
         time.sleep(0.5)
     
-    # Final cleanup if needed
+    # Final cleanup of models
     if not high_vram:
         unload_complete_models(text_encoder, text_encoder_2, image_encoder, vae, transformer)
     
-    # Create the final output video 
-    if final_output_filename is None:
-        final_output_filename = os.path.join(outputs_folder, f'{master_job_id}_final.mp4')
-        if os.path.exists(master_output_filename):
-            shutil.copy2(master_output_filename, final_output_filename)
+    # Create the final concatenated video if we have segments
+    final_output_filename = os.path.join(outputs_folder, f'{master_job_id}_final.mp4')
+    
+    if segment_files:
+        try:
+            # Create a file listing segments
+            list_file = os.path.join(master_temp_dir, "segments.txt")
+            with open(list_file, "w") as f:
+                for segment in segment_files:
+                    f.write(f"file '{os.path.abspath(segment)}'\n")
+            
+            # Use ffmpeg to concatenate segments without reencoding
+            import subprocess
+            cmd = [
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0", 
+                "-i", list_file, "-c", "copy", final_output_filename
+            ]
+            subprocess.run(cmd, check=True)
+            
+            print(f"Successfully concatenated {len(segment_files)} segments into final video")
+            
             # Update the UI with the final video
             stream.output_queue.push(('file', final_output_filename))
-            
-    # Delete the master file since we have a final copy
-    if os.path.exists(master_output_filename):
-        try:
-            os.remove(master_output_filename)
         except Exception as e:
-            print(f"Error removing master file: {e}")
+            print(f"Error concatenating video segments: {e}")
+            traceback.print_exc()
+            
+            # If concatenation fails, use the last segment as output
+            if segment_files:
+                shutil.copy2(segment_files[-1], final_output_filename)
+                stream.output_queue.push(('file', final_output_filename))
     
     # Clean up temporary directory
     try:
