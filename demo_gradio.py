@@ -317,37 +317,26 @@ def worker(
         models_to_keep_in_memory = []
         if high_vram or adaptive_memory_management:
             if free_mem_gb >= 26:
-                text_encoder.to(gpu)
-                text_encoder_2.to(gpu)
                 image_encoder.to(gpu)
                 vae.to(gpu)
                 transformer.to(gpu)
                 models_to_keep_in_memory = [
-                    text_encoder,
-                    text_encoder_2,
                     image_encoder,
                     vae,
                     transformer
                 ]
                 print("Ultra high memory mode: Keeping all models")
             elif free_mem_gb >= 23:
-                text_encoder.to(gpu)
-                text_encoder_2.to(gpu)
                 transformer.to(gpu)
                 models_to_keep_in_memory = [
-                    text_encoder,
-                    text_encoder_2,
-                    transformer
+                    transformer,
+                    vae
                 ]
                 print("High memory mode: Keeping transform & text encoders")
             elif free_mem_gb >= 4:
-                text_encoder.to(gpu)
-                text_encoder_2.to(gpu)
-                models_to_keep_in_memory = [text_encoder, text_encoder_2]
                 if free_mem_gb >= 6:
                     image_encoder.to(gpu)
                     vae.to(gpu)
-                    models_to_keep_in_memory += [image_encoder, vae]
                     print("Medium memory mode: + image encoder & VAE")
                 else:
                     print("Medium memory mode: text encoders only")
@@ -370,9 +359,9 @@ def worker(
             ('progress', (None, '', make_progress_bar_html(0, 'Text encoding ...')))
         )
 
-        if text_encoder not in models_to_keep_in_memory:
-            fake_diffusers_current_device(text_encoder, gpu)
-            load_model_as_complete(text_encoder_2, target_device=gpu)
+        # We literally only need the TENC once, so just load and unload when done
+        fake_diffusers_current_device(text_encoder, gpu)
+        load_model_as_complete(text_encoder_2, target_device=gpu)
 
         llama_vec, clip_l_pooler = encode_prompt_conds(
             prompt,
@@ -396,11 +385,8 @@ def worker(
         llama_vec, llama_attention_mask = crop_or_pad_yield_mask(llama_vec, length=512)
         llama_vec_n, llama_attention_mask_n = crop_or_pad_yield_mask(llama_vec_n, length=512)
 
-        if (
-            text_encoder not in models_to_keep_in_memory
-            and text_encoder_2 not in models_to_keep_in_memory
-        ):
-            unload_complete_models(text_encoder, text_encoder_2)
+        # Hot nasty speed
+        unload_complete_models(text_encoder, text_encoder_2)
 
         # -------------------------
         # Image processing
@@ -449,14 +435,18 @@ def worker(
             ('progress', (None, '', make_progress_bar_html(0, 'CLIP Vision encoding ...')))
         )
 
-        if image_encoder not in models_to_keep_in_memory:
-            load_model_as_complete(image_encoder, target_device=gpu)
+        
+        load_model_as_complete(image_encoder, target_device=gpu)
 
         vis_out = hf_clip_vision_encode(input_np, feature_extractor, image_encoder)
         image_emb = vis_out.last_hidden_state
         if has_end_image:
             end_vis = hf_clip_vision_encode(end_np, feature_extractor, image_encoder)
             image_emb = (image_emb + end_vis.last_hidden_state) / 2
+
+        # Unload image_encoder if not high VRAM
+        if not high_vram:
+            unload_complete_models(image_encoder)
 
         # cast dtypes
         llama_vec = llama_vec.to(transformer.dtype)
@@ -533,10 +523,10 @@ def worker(
                 clean_post_latents = end_latent.to(history_latents)
                 clean_latents = torch.cat([clean_pre_latents, clean_post_latents], dim=2)
 
-            # ensure transformer on GPU
-            if not high_vram:
-                unload_complete_models()
-                move_model_to_device_with_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=gpu_memory_preservation)
+            # ALWAYS KEEP TRANSFORMER ON GPU
+            # if not high_vram:
+            #     unload_complete_models()
+            #     move_model_to_device_with_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=gpu_memory_preservation)
 
             # re-init teaCache each loop
             if use_teacache:
@@ -595,9 +585,10 @@ def worker(
             total_generated += generated.shape[2]
             history_latents = torch.cat([generated.to(history_latents), history_latents], dim=2)
 
-            if not high_vram:
-                offload_model_from_device_for_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=8)
-                load_model_as_complete(vae, target_device=gpu)
+            # if not high_vram:
+            #     offload_model_from_device_for_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=8)
+
+            load_model_as_complete(vae, target_device=gpu)
 
             # decode frames
             real = history_latents[:, :, :total_generated]
@@ -611,6 +602,9 @@ def worker(
 
             # overwrite segment file
             save_bcthw_as_mp4(history_pixels, output_path, fps=30, crf=mp4_crf)
+            # Unload VAE if not high VRAM
+            if not high_vram:
+                unload_complete_models(vae)
             stream.output_queue.push(('file', output_path))
 
             if is_last:
@@ -619,7 +613,7 @@ def worker(
     except Exception:
         traceback.print_exc()
     finally:
-        if not high_vram:
+        if not high_vram and segment_index is None:
             unload_complete_models(
                 text_encoder,
                 text_encoder_2,
