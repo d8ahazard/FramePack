@@ -119,7 +119,7 @@ os.makedirs(outputs_folder, exist_ok=True)
 
 
 @torch.no_grad()
-def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory, resolution):
+def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory, resolution, out_file=None):
     # Set the adaptive memory flag based on user selection
     global adaptive_memory_management
     adaptive_memory_management = enable_adaptive_memory
@@ -129,7 +129,7 @@ def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, 
 
     job_id = generate_timestamp()
     # Create a single master output filename
-    master_output_filename = os.path.join(outputs_folder, f'{job_id}_master.mp4')
+    master_output_filename = out_file if out_file else os.path.join(outputs_folder, f'{job_id}_master.mp4')
     # Create a temp directory for update files
     temp_dir = os.path.join(outputs_folder, f'{job_id}_temp')
     os.makedirs(temp_dir, exist_ok=True)
@@ -454,6 +454,20 @@ def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, 
             shutil.copy2(master_output_filename, final_output_filename)
             stream.output_queue.push(('file', final_output_filename))
             
+            # Delete initialization images if requested by caller
+            img_path = os.path.join(outputs_folder, f'{job_id}.png')
+            end_img_path = os.path.join(outputs_folder, f'{job_id}_end.png')
+            if os.path.exists(img_path) and out_file:
+                try:
+                    os.remove(img_path)
+                except Exception as e:
+                    print(f"Error removing initialization image: {e}")
+            if os.path.exists(end_img_path) and out_file:
+                try:
+                    os.remove(end_img_path)
+                except Exception as e:
+                    print(f"Error removing end image: {e}")
+            
         # Clean up temporary files
         try:
             if os.path.exists(temp_dir):
@@ -462,7 +476,7 @@ def worker(input_image, end_image, prompt, n_prompt, seed, total_second_length, 
             print(f"Error cleaning up temporary files: {e}")
 
     stream.output_queue.push(('end', None))
-    return
+    return final_output_filename
 
 
 @torch.no_grad()
@@ -536,8 +550,11 @@ def worker_keyframe(input_image, end_image, keyframes, prompt, n_prompt, seed, t
     
     # Create a job ID for the entire sequence
     master_job_id = generate_timestamp()
+    master_output_filename = os.path.join(outputs_folder, f'{master_job_id}_master.mp4')
     master_temp_dir = os.path.join(outputs_folder, f'{master_job_id}_temp')
     os.makedirs(master_temp_dir, exist_ok=True)
+    
+    final_output_filename = None
     
     # Process segments in REVERSE order (from last to first)
     # Iterate from num_segments-1 down to 0
@@ -566,11 +583,18 @@ def worker_keyframe(input_image, end_image, keyframes, prompt, n_prompt, seed, t
         else:
             print(f"Sufficient memory available ({current_free_mem:.2f} GB free), keeping loaded models")
         
-        # Process this segment
+        # Process this segment, using the master output filename
         print(f"Starting segment {num_segments-i}/{num_segments}, working backwards: {i} to {i+1}, length: {segment_length:.2f} seconds")
-        worker(start_frame, end_frame, prompt, n_prompt, seed, segment_length, 
+        output_file = worker(start_frame, end_frame, prompt, n_prompt, seed, segment_length, 
               latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, 
-              use_teacache, mp4_crf, enable_adaptive_memory, resolution)
+              use_teacache, mp4_crf, enable_adaptive_memory, resolution,
+              out_file=master_output_filename)
+        
+        # For UI updates, use the file from the last segment
+        if i == 0:
+            final_output_filename = output_file
+            # Force UI update with the final video
+            stream.output_queue.push(('file', final_output_filename))
         
         # Wait for the worker to finish and update the UI
         import time
@@ -579,6 +603,21 @@ def worker_keyframe(input_image, end_image, keyframes, prompt, n_prompt, seed, t
     # Final cleanup if needed
     if not high_vram:
         unload_complete_models(text_encoder, text_encoder_2, image_encoder, vae, transformer)
+    
+    # Create the final output video 
+    if final_output_filename is None:
+        final_output_filename = os.path.join(outputs_folder, f'{master_job_id}_final.mp4')
+        if os.path.exists(master_output_filename):
+            shutil.copy2(master_output_filename, final_output_filename)
+            # Update the UI with the final video
+            stream.output_queue.push(('file', final_output_filename))
+            
+    # Delete the master file since we have a final copy
+    if os.path.exists(master_output_filename):
+        try:
+            os.remove(master_output_filename)
+        except Exception as e:
+            print(f"Error removing master file: {e}")
     
     # Clean up temporary directory
     try:
