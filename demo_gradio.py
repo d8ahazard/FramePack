@@ -659,8 +659,10 @@ def process(input_image, end_image, keyframes, prompt, n_prompt, seed, total_sec
     global stream
     assert input_image is not None, 'No input image!'
 
+    # Initialize with empty values
     yield None, None, '', '', gr.update(interactive=False), gr.update(interactive=True)
 
+    # Create a fresh stream instance
     stream = AsyncStream()
 
     # Determine whether to use keyframe worker or regular worker
@@ -671,27 +673,39 @@ def process(input_image, end_image, keyframes, prompt, n_prompt, seed, total_sec
         async_run(worker, input_image, end_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory, resolution)
 
     current_video_file = None
+    
+    try:
+        while True:
+            # Get the next event from the queue with a timeout
+            flag, data = stream.output_queue.next()
 
-    while True:
-        flag, data = stream.output_queue.next()
+            if flag == 'file':
+                current_video_file = data
+                # Update the UI with the new video file
+                yield current_video_file, gr.update(), gr.update(), gr.update(), gr.update(interactive=False), gr.update(interactive=True)
 
-        if flag == 'file':
-            current_video_file = data
-            # Update the UI with the new video file
-            yield current_video_file, gr.update(), gr.update(), gr.update(), gr.update(interactive=False), gr.update(interactive=True)
+            elif flag == 'progress':
+                preview, desc, html = data
+                yield gr.update(), gr.update(visible=True, value=preview), desc, html, gr.update(interactive=False), gr.update(interactive=True)
 
-        if flag == 'progress':
-            preview, desc, html = data
-            yield gr.update(), gr.update(visible=True, value=preview), desc, html, gr.update(interactive=False), gr.update(interactive=True)
-
-        if flag == 'end':
-            # Return the last video file
-            yield current_video_file, gr.update(visible=False), gr.update(), '', gr.update(interactive=True), gr.update(interactive=False)
-            break
+            elif flag == 'end':
+                # Return the last video file
+                yield current_video_file, gr.update(visible=False), gr.update(), '', gr.update(interactive=True), gr.update(interactive=False)
+                break
+    except Exception as e:
+        print(f"Error in process function: {e}")
+        traceback.print_exc()
+        # Ensure we return a valid yield even in case of error
+        yield gr.update(), gr.update(visible=False), f"Error: {str(e)}", '', gr.update(interactive=True), gr.update(interactive=False)
 
 
 def end_process():
-    stream.input_queue.push('end')
+    global stream
+    try:
+        stream.input_queue.push('end')
+    except Exception as e:
+        print(f"Error in end_process: {e}")
+        traceback.print_exc()
 
 
 quick_prompts = [
