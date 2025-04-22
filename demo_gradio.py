@@ -1,4 +1,3 @@
-from diffusers_helper.hf_login import login
 
 import os
 import re
@@ -7,14 +6,13 @@ import subprocess
 import shutil
 import traceback
 import argparse
-import math
 import time
 
 import gradio as gr
 import torch
 import einops
 import numpy as np
-import safetensors.torch as sf
+from huggingface_hub import snapshot_download
 
 from PIL import Image
 from diffusers import AutoencoderKLHunyuanVideo
@@ -37,17 +35,14 @@ from diffusers_helper.utils import (
     crop_or_pad_yield_mask,
     soft_append_bcthw,
     resize_and_center_crop,
-    state_dict_weighted_merge,
-    state_dict_offset_merge,
     generate_timestamp
 )
 from diffusers_helper.models.hunyuan_video_packed import HunyuanVideoTransformer3DModelPacked
 from diffusers_helper.pipelines.k_diffusion_hunyuan import sample_hunyuan
 from diffusers_helper.memory import (
-    cpu, gpu,
+    gpu,
     get_cuda_free_memory_gb,
     move_model_to_device_with_memory_preservation,
-    offload_model_from_device_for_memory_preservation,
     fake_diffusers_current_device,
     DynamicSwapInstaller,
     unload_complete_models,
@@ -58,6 +53,99 @@ from diffusers_helper.gradio.progress_bar import make_progress_bar_css, make_pro
 from diffusers_helper.clip_vision import hf_clip_vision_encode
 from diffusers_helper.bucket_tools import find_nearest_bucket
 
+
+def check_download_model(repo_id, subfolder=None, retries=3, use_auth_token=None):
+    """
+    Downloads a model from Hugging Face Hub to a local models directory.
+    
+    Args:
+        repo_id: The Hugging Face model repository ID
+        subfolder: Optional subfolder within the model repository
+        retries: Number of download retries on failure
+        use_auth_token: Optional auth token for private models
+        
+    Returns:
+        str: Path to the downloaded model for use with from_pretrained
+    """
+    # Define the models directory
+    models_dir = os.path.join(os.path.dirname(__file__), "models")
+    os.makedirs(models_dir, exist_ok=True)
+    
+    # Create a sanitized directory name for this specific model
+    model_name = repo_id.replace('/', '_')
+    model_dir = os.path.join(models_dir, model_name)
+    
+    # Check if the model is already downloaded
+    if os.path.exists(model_dir) and os.listdir(model_dir):
+        print(f"Using cached model {repo_id} from {model_dir}")
+    else:
+        print(f"Downloading {repo_id} to {model_dir}...")
+        
+        for attempt in range(retries):
+            try:
+                snapshot_download(
+                    repo_id=repo_id,
+                    local_dir=model_dir,
+                    local_dir_use_symlinks=False,  # Get actual files, not symlinks
+                    token=use_auth_token,
+                    max_workers=4  # Limit concurrent downloads
+                )
+                break
+            except Exception as e:
+                if attempt < retries - 1:
+                    print(f"Download attempt {attempt+1} failed: {e}. Retrying...")
+                    time.sleep(1)  # Wait before retry
+                else:
+                    print(f"All {retries} download attempts failed for {repo_id}")
+                    raise RuntimeError(f"Failed to download model {repo_id}: {e}")
+    
+    # Verify the model directory has content
+    if not os.path.exists(model_dir) or not os.listdir(model_dir):
+        raise RuntimeError(f"Model directory {model_dir} is empty after download")
+    
+    # Return the appropriate path
+    if subfolder:
+        subfolder_path = os.path.join(model_dir, subfolder)
+        if not os.path.exists(subfolder_path):
+            raise ValueError(f"Subfolder '{subfolder}' doesn't exist in {model_dir}")
+        return subfolder_path
+    
+    return model_dir
+
+
+def preload_all_models(use_auth_token=None):
+    """
+    Preloads all required models to the local cache.
+    
+    Args:
+        use_auth_token: Optional auth token for private models
+        
+    Returns:
+        dict: Paths to all downloaded models
+    """
+    print("Preloading all required models...")
+    
+    model_repos = {
+        "hunyuan": "hunyuanvideo-community/HunyuanVideo",
+        "flux": "lllyasviel/flux_redux_bfl",
+        "framepack": "lllyasviel/FramePackI2V_HY"
+    }
+    
+    model_paths = {}
+    
+    for name, repo_id in model_repos.items():
+        try:
+            path = check_download_model(repo_id, use_auth_token=use_auth_token)
+            model_paths[name] = path
+            print(f"Successfully preloaded {name} model from {repo_id}")
+        except Exception as e:
+            print(f"Error preloading {name} model: {e}")
+            raise
+    
+    print("All models preloaded successfully!")
+    return model_paths
+
+
 # ----------------------------------------
 # Argument parsing / HF cache location
 # ----------------------------------------
@@ -66,13 +154,29 @@ parser.add_argument('--share', action='store_true')
 parser.add_argument("--server", type=str, default='0.0.0.0')
 parser.add_argument("--port", type=int, required=False)
 parser.add_argument("--inbrowser", action='store_true')
+parser.add_argument("--preload", action='store_true', help="Preload all models at startup")
+parser.add_argument("--hf_token", type=str, help="Hugging Face authentication token for private models")
 args = parser.parse_args()
 
-os.environ['HF_HOME'] = os.path.abspath(
-    os.path.realpath(os.path.join(os.path.dirname(__file__), './hf_download'))
-)
+# Don't override HF_HOME if already set
+if 'HF_HOME' not in os.environ:
+    os.environ['HF_HOME'] = os.path.abspath(
+        os.path.realpath(os.path.join(os.path.dirname(__file__), './hf_download'))
+    )
 
 print(args)
+
+# Optional: preload all models at startup
+if args.preload:
+    model_paths = preload_all_models(use_auth_token=args.hf_token)
+    hunyuan_path = model_paths["hunyuan"]
+    flux_path = model_paths["flux"]
+    framepack_path = model_paths["framepack"]
+else:
+    # Download and get paths for model repositories
+    hunyuan_path = check_download_model("hunyuanvideo-community/HunyuanVideo", use_auth_token=args.hf_token)
+    flux_path = check_download_model("lllyasviel/flux_redux_bfl", use_auth_token=args.hf_token)
+    framepack_path = check_download_model("lllyasviel/FramePackI2V_HY", use_auth_token=args.hf_token)
 
 # ----------------------------------------
 # VRAM & model-loading setup
@@ -85,42 +189,36 @@ print(f'Free VRAM {free_mem_gb:.2f} GB')
 print(f'High-VRAM Mode: {high_vram}')
 print(f'Adaptive Memory Management: {adaptive_memory_management}')
 
+# Load models from local paths with appropriate subfolders
 text_encoder = LlamaModel.from_pretrained(
-    "hunyuanvideo-community/HunyuanVideo",
-    subfolder='text_encoder',
+    os.path.join(hunyuan_path, 'text_encoder'),
     torch_dtype=torch.float16
 ).cpu()
 text_encoder_2 = CLIPTextModel.from_pretrained(
-    "hunyuanvideo-community/HunyuanVideo",
-    subfolder='text_encoder_2',
+    os.path.join(hunyuan_path, 'text_encoder_2'),
     torch_dtype=torch.float16
 ).cpu()
 tokenizer = LlamaTokenizerFast.from_pretrained(
-    "hunyuanvideo-community/HunyuanVideo",
-    subfolder='tokenizer'
+    os.path.join(hunyuan_path, 'tokenizer')
 )
 tokenizer_2 = CLIPTokenizer.from_pretrained(
-    "hunyuanvideo-community/HunyuanVideo",
-    subfolder='tokenizer_2'
+    os.path.join(hunyuan_path, 'tokenizer_2')
 )
 vae = AutoencoderKLHunyuanVideo.from_pretrained(
-    "hunyuanvideo-community/HunyuanVideo",
-    subfolder='vae',
+    os.path.join(hunyuan_path, 'vae'),
     torch_dtype=torch.float16
 ).cpu()
 
 feature_extractor = SiglipImageProcessor.from_pretrained(
-    "lllyasviel/flux_redux_bfl",
-    subfolder='feature_extractor'
+    os.path.join(flux_path, 'feature_extractor')
 )
 image_encoder = SiglipVisionModel.from_pretrained(
-    "lllyasviel/flux_redux_bfl",
-    subfolder='image_encoder',
+    os.path.join(flux_path, 'image_encoder'),
     torch_dtype=torch.float16
 ).cpu()
 
 transformer = HunyuanVideoTransformer3DModelPacked.from_pretrained(
-    'lllyasviel/FramePackI2V_HY',
+    framepack_path,
     torch_dtype=torch.bfloat16
 ).cpu()
 
