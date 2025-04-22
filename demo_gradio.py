@@ -45,6 +45,7 @@ from diffusers_helper.memory import (
     move_model_to_device_with_memory_preservation,
     fake_diffusers_current_device,
     DynamicSwapInstaller,
+    offload_model_from_device_for_memory_preservation,
     unload_complete_models,
     load_model_as_complete
 )
@@ -86,7 +87,6 @@ def check_download_model(repo_id, subfolder=None, retries=3, use_auth_token=None
                 snapshot_download(
                     repo_id=repo_id,
                     local_dir=model_dir,
-                    local_dir_use_symlinks=False,  # Get actual files, not symlinks
                     local_files_only=True,
                     token=use_auth_token,
                     max_workers=4  # Limit concurrent downloads
@@ -534,12 +534,9 @@ def worker(
                 clean_latents = torch.cat([clean_pre_latents, clean_post_latents], dim=2)
 
             # ensure transformer on GPU
-            if transformer not in models_to_keep_in_memory and transformer.device != gpu:
-                move_model_to_device_with_memory_preservation(
-                    transformer,
-                    target_device=gpu,
-                    preserved_memory_gb=gpu_memory_preservation
-                )
+            if not high_vram:
+                unload_complete_models()
+                move_model_to_device_with_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=gpu_memory_preservation)
 
             # re-init teaCache each loop
             if use_teacache:
@@ -598,11 +595,9 @@ def worker(
             total_generated += generated.shape[2]
             history_latents = torch.cat([generated.to(history_latents), history_latents], dim=2)
 
-            # manage VAE memory
-            if vae not in models_to_keep_in_memory:
-                curr_free = get_cuda_free_memory_gb(gpu)
-                if curr_free < 2.0 and not is_last:
-                    unload_complete_models(vae)
+            if not high_vram:
+                offload_model_from_device_for_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=8)
+                load_model_as_complete(vae, target_device=gpu)
 
             # decode frames
             real = history_latents[:, :, :total_generated]
@@ -1050,7 +1045,9 @@ with block:
                     info="Lower = higher quality; use 16 if you see black frames."
                 )
 
-        with gr.Column():
+        with gr.Column():            
+            progress_bar = gr.HTML('', elem_classes='no-generating-animation')
+            progress_desc = gr.Markdown('', elem_classes='no-generating-animation')
             preview_image = gr.Image(
                 label="Next Latents",
                 height=200,
@@ -1066,8 +1063,7 @@ with block:
             gr.Markdown(
                 'Note: ending actions are generated before start ones due to reverse sampling.'
             )
-            progress_desc = gr.Markdown('', elem_classes='no-generating-animation')
-            progress_bar = gr.HTML('', elem_classes='no-generating-animation')
+            
 
     gr.HTML(
         '<div style="text-align:center;margin-top:20px;">'
