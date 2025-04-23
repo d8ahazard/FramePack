@@ -260,17 +260,17 @@ def load_models():
 
     models_loaded = True
 
-# no grads
-for m in (vae, text_encoder, text_encoder_2, image_encoder, transformer):
-    m.requires_grad_(False)
+    # no grads
+    for m in (vae, text_encoder, text_encoder_2, image_encoder, transformer):
+        m.requires_grad_(False)
 
-# model offloading or full-load
-if not high_vram:
-    DynamicSwapInstaller.install_model(transformer, device=gpu)
-    DynamicSwapInstaller.install_model(text_encoder, device=gpu)
-else:
-    for m in (text_encoder, text_encoder_2, image_encoder, vae, transformer):
-        m.to(gpu)
+    # model offloading or full-load
+    if not high_vram:
+        DynamicSwapInstaller.install_model(transformer, device=gpu)
+        DynamicSwapInstaller.install_model(text_encoder, device=gpu)
+    else:
+        for m in (text_encoder, text_encoder_2, image_encoder, vae, transformer):
+            m.to(gpu)
 
 stream = AsyncStream()
 outputs_folder = './outputs/'
