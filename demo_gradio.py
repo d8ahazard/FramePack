@@ -902,7 +902,7 @@ quick_prompts = [
 quick_prompts = [[x] for x in quick_prompts]
 
 css = make_progress_bar_css()
-block = gr.Blocks(css=css).queue()
+block = gr.Blocks(css=css).queue(api_name=False)
 
 with block:
     gr.Markdown('# FramePack')
@@ -1102,4 +1102,5 @@ block.launch(
     share=args.share,
     inbrowser=args.inbrowser,
     root_path="",
+    _queue_strategy="auto",
 )
