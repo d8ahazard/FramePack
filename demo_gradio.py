@@ -1,4 +1,3 @@
-
 import os
 import re
 import PIL
@@ -1102,4 +1101,5 @@ block.launch(
     server_port=args.port,
     share=args.share,
     inbrowser=args.inbrowser,
+    root_path="",
 )
