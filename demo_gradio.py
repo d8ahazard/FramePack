@@ -12,6 +12,8 @@ import torch
 import einops
 import numpy as np
 from huggingface_hub import snapshot_download
+import uvicorn
+from fastapi import FastAPI
 
 from PIL import Image
 from diffusers import AutoencoderKLHunyuanVideo
@@ -1115,9 +1117,14 @@ with block:
     end_button.click(fn=end_process)
 
 block.queue()
-block.launch(
-    server_name=args.server,
-    server_port=args.port,
-    share=args.share,
-    inbrowser=args.inbrowser,
-)
+
+# Create FastAPI app and mount Gradio
+main_app = FastAPI()
+gr.mount_gradio_app(main_app, block, path="")
+
+if __name__ == "__main__":
+    print(f"Server running on http://{args.server}:{args.port}")
+    # Run with uvicorn server
+    config = uvicorn.Config(main_app, host=args.server, port=args.port)
+    server = uvicorn.Server(config)
+    server.run()
