@@ -189,59 +189,65 @@ print(f'Free VRAM {free_mem_gb:.2f} GB')
 print(f'High-VRAM Mode: {high_vram}')
 print(f'Adaptive Memory Management: {adaptive_memory_management}')
 
-# Load models from local paths with appropriate subfolders
-text_encoder = LlamaModel.from_pretrained(
-    os.path.join(hunyuan_path, 'text_encoder'),
-    torch_dtype=torch.float16
-).cpu()
-text_encoder_2 = CLIPTextModel.from_pretrained(
-    os.path.join(hunyuan_path, 'text_encoder_2'),
-    torch_dtype=torch.float16
-).cpu()
-tokenizer = LlamaTokenizerFast.from_pretrained(
-    os.path.join(hunyuan_path, 'tokenizer')
-)
-tokenizer_2 = CLIPTokenizer.from_pretrained(
-    os.path.join(hunyuan_path, 'tokenizer_2')
-)
-vae = AutoencoderKLHunyuanVideo.from_pretrained(
-    os.path.join(hunyuan_path, 'vae'),
-    torch_dtype=torch.float16
-).cpu()
+def load_models():
+    global text_encoder, text_encoder_2, image_encoder, vae, transformer, tokenizer, tokenizer_2, feature_extractor, models_loaded
+    if models_loaded:
+        return
+    # Load models from local paths with appropriate subfolders
+    text_encoder = LlamaModel.from_pretrained(
+        os.path.join(hunyuan_path, 'text_encoder'),
+        torch_dtype=torch.float16
+    ).cpu()
+    text_encoder_2 = CLIPTextModel.from_pretrained(
+        os.path.join(hunyuan_path, 'text_encoder_2'),
+        torch_dtype=torch.float16
+    ).cpu()
+    tokenizer = LlamaTokenizerFast.from_pretrained(
+        os.path.join(hunyuan_path, 'tokenizer')
+    )
+    tokenizer_2 = CLIPTokenizer.from_pretrained(
+        os.path.join(hunyuan_path, 'tokenizer_2')
+    )
+    vae = AutoencoderKLHunyuanVideo.from_pretrained(
+        os.path.join(hunyuan_path, 'vae'),
+        torch_dtype=torch.float16
+    ).cpu()
 
-feature_extractor = SiglipImageProcessor.from_pretrained(
-    os.path.join(flux_path, 'feature_extractor')
-)
-image_encoder = SiglipVisionModel.from_pretrained(
-    os.path.join(flux_path, 'image_encoder'),
-    torch_dtype=torch.float16
-).cpu()
+    feature_extractor = SiglipImageProcessor.from_pretrained(
+        os.path.join(flux_path, 'feature_extractor')
+    )
+    image_encoder = SiglipVisionModel.from_pretrained(
+        os.path.join(flux_path, 'image_encoder'),
+        torch_dtype=torch.float16
+    ).cpu()
 
-transformer = HunyuanVideoTransformer3DModelPacked.from_pretrained(
-    framepack_path,
-    torch_dtype=torch.bfloat16
-).cpu()
+    transformer = HunyuanVideoTransformer3DModelPacked.from_pretrained(
+        framepack_path,
+        torch_dtype=torch.bfloat16
+    ).cpu()
 
-# eval mode
-vae.eval()
-text_encoder.eval()
-text_encoder_2.eval()
-image_encoder.eval()
-transformer.eval()
+    # eval mode
+    vae.eval()
+    text_encoder.eval()
+    text_encoder_2.eval()
+    image_encoder.eval()
+    transformer.eval()
 
-# VAE slicing/tiling
-vae.enable_slicing()
-vae.enable_tiling()
+    # VAE slicing/tiling
+    vae.enable_slicing()
+    vae.enable_tiling()
 
-transformer.high_quality_fp32_output_for_inference = True
-print('transformer.high_quality_fp32_output_for_inference = True')
+    transformer.high_quality_fp32_output_for_inference = True
+    print('transformer.high_quality_fp32_output_for_inference = True')
 
-# dtype cast
-transformer.to(dtype=torch.bfloat16)
-vae.to(dtype=torch.float16)
-image_encoder.to(dtype=torch.float16)
-text_encoder.to(dtype=torch.float16)
-text_encoder_2.to(dtype=torch.float16)
+    # dtype cast
+    transformer.to(dtype=torch.bfloat16)
+    vae.to(dtype=torch.float16)
+    image_encoder.to(dtype=torch.float16)
+    text_encoder.to(dtype=torch.float16)
+    text_encoder_2.to(dtype=torch.float16)
+
+    models_loaded = True
 
 # no grads
 for m in (vae, text_encoder, text_encoder_2, image_encoder, transformer):
@@ -834,6 +840,7 @@ def process(
     assert input_image is not None, 'No input image!'
 
     yield None, None, '', '', gr.update(interactive=False), gr.update(interactive=True)
+    load_models()
     stream = AsyncStream()
 
     if keyframes and len(keyframes) > 0:
@@ -902,7 +909,7 @@ quick_prompts = [
 quick_prompts = [[x] for x in quick_prompts]
 
 css = make_progress_bar_css()
-block = gr.Blocks(css=css).queue(concurrency_limit=1, max_size=20)
+block = gr.Blocks(css=css)
 
 with block:
     gr.Markdown('# FramePack')
@@ -1096,6 +1103,7 @@ with block:
     )
     end_button.click(fn=end_process)
 
+block.queue()
 block.launch(
     server_name=args.server,
     server_port=args.port,
