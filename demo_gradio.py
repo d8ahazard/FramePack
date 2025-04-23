@@ -189,6 +189,17 @@ print(f'Free VRAM {free_mem_gb:.2f} GB')
 print(f'High-VRAM Mode: {high_vram}')
 print(f'Adaptive Memory Management: {adaptive_memory_management}')
 
+text_encoder = None
+text_encoder_2 = None
+image_encoder = None
+vae = None
+transformer = None
+tokenizer = None
+tokenizer_2 = None
+feature_extractor = None
+
+models_loaded = False
+
 def load_models():
     global text_encoder, text_encoder_2, image_encoder, vae, transformer, tokenizer, tokenizer_2, feature_extractor, models_loaded
     if models_loaded:
