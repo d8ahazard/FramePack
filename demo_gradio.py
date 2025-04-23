@@ -902,7 +902,7 @@ quick_prompts = [
 quick_prompts = [[x] for x in quick_prompts]
 
 css = make_progress_bar_css()
-block = gr.Blocks(css=css)
+block = gr.Blocks(css=css).queue(concurrency_limit=1, max_size=20)
 
 with block:
     gr.Markdown('# FramePack')
@@ -1092,15 +1092,13 @@ with block:
             progress_bar,
             start_button,
             end_button
-        ],
-        queue=False
+        ]
     )
-    end_button.click(fn=end_process, queue=False)
+    end_button.click(fn=end_process)
 
 block.launch(
     server_name=args.server,
     server_port=args.port,
     share=args.share,
     inbrowser=args.inbrowser,
-    max_threads=20
 )
