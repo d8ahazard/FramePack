@@ -262,18 +262,38 @@ function initEventListeners() {
     
     // Tab change events
     const queueTab = document.getElementById('queue-tab');
+    const outputTab = document.getElementById('output-tab');
+    const editorTab = document.getElementById('editor-tab');
+    
     if (queueTab) {
         queueTab.addEventListener('shown.bs.tab', () => {
             loadJobQueue();
         });
     }
     
-    const outputTab = document.getElementById('output-tab');
     if (outputTab) {
         outputTab.addEventListener('shown.bs.tab', () => {
             loadOutputs();
         });
     }
+    
+    if (editorTab) {
+        editorTab.addEventListener('shown.bs.tab', () => {
+            enforceHorizontalLayout();
+        });
+    }
+    
+    // Ensure horizontal layout is applied when tabs change
+    const tabs = document.querySelectorAll('button[data-bs-toggle="tab"]');
+    tabs.forEach(tab => {
+        tab.addEventListener('shown.bs.tab', () => {
+            // Small delay to ensure DOM is updated
+            setTimeout(enforceHorizontalLayout, 50);
+        });
+    });
+    
+    // Apply horizontal layout on window resize
+    window.addEventListener('resize', enforceHorizontalLayout);
 }
 
 // Load the job queue UI
@@ -982,7 +1002,7 @@ function addItemToTimeline(fileObj) {
     }
     
     const timelineItem = document.createElement('div');
-    timelineItem.className = 'timeline-item card mb-3';
+    timelineItem.className = 'timeline-item card';
     timelineItem.draggable = true;
     
     // Get the display source and server path
@@ -1025,30 +1045,33 @@ function addItemToTimeline(fileObj) {
     // Default duration for new frames is 3.0 seconds
     const frameDuration = fileObj.duration || 3.0;
     
+    // Create a frame number for visual reference
+    const frameNumber = elements.timelineContainer.querySelectorAll('.timeline-item').length + 1;
+    
     timelineItem.innerHTML = `
-        <div class="card-body">
-            <div class="row">
-                <div class="col-md-4 mb-3 mb-md-0">
-                    <div class="drag-handle"><i class="bi bi-grip-vertical"></i></div>
-                    <img src="${displaySrc}" class="img-fluid rounded" alt="${fileObj.name}" title="${serverPath}">
-                    <div class="input-group input-group-sm mt-2">
-                        <span class="input-group-text">Duration</span>
-                        <input type="number" class="form-control duration-input" value="${frameDuration}" min="0.1" max="10" step="0.1">
-                        <span class="input-group-text">s</span>
-                    </div>
-                </div>
-                <div class="col-md-8">
-                    <textarea class="form-control prompt-text mb-2" placeholder="Frame prompt (optional)"></textarea>
-                    <div class="d-flex justify-content-between">
-                        <button class="btn btn-sm btn-outline-primary edit-frame-btn">
-                            <i class="bi bi-pencil"></i> Edit
-                        </button>
-                        <button class="btn btn-sm btn-outline-danger delete-frame-btn">
-                            <i class="bi bi-trash"></i> Remove
-                        </button>
-                    </div>
-                </div>
+        <div class="frame-number">${frameNumber}</div>
+        <img src="${displaySrc}" class="img-fluid rounded" alt="${fileObj.name}" title="${serverPath}">
+        
+        <div class="timeline-item-duration">
+            <label class="form-label small mb-1">Duration</label>
+            <div class="input-group input-group-sm">
+                <input type="number" class="form-control duration-input" value="${frameDuration}" min="0.1" max="10" step="0.1">
+                <span class="input-group-text">sec</span>
             </div>
+        </div>
+        
+        <div class="timeline-item-prompt">
+            <label class="form-label small mb-1">Prompt</label>
+            <textarea class="form-control prompt-text" rows="2" placeholder="Frame prompt (optional)"></textarea>
+        </div>
+        
+        <div class="timeline-item-actions">
+            <button class="btn btn-sm btn-outline-primary edit-frame-btn">
+                <i class="bi bi-pencil"></i> Edit
+            </button>
+            <button class="btn btn-sm btn-outline-danger delete-frame-btn">
+                <i class="bi bi-trash"></i> Remove
+            </button>
         </div>
     `;
     
@@ -1123,6 +1146,8 @@ function handleTimelineDragOver(e) {
     }
     
     e.dataTransfer.dropEffect = 'move';
+    
+    // Add visual indicator that this is a valid drop target
     this.classList.add('drag-over');
     
     return false;
@@ -1148,10 +1173,10 @@ function handleTimelineDrop(e) {
         
         // Swap elements in the DOM
         if (targetIndex < srcIndex) {
-            // Moving up
+            // Moving left (up in horizontal layout)
             elements.timelineContainer.insertBefore(dragSrcEl, this);
         } else {
-            // Moving down
+            // Moving right (down in horizontal layout)
             if (this.nextSibling) {
                 elements.timelineContainer.insertBefore(dragSrcEl, this.nextSibling);
             } else {
@@ -1161,15 +1186,21 @@ function handleTimelineDrop(e) {
         
         // Update the timeline array to match the new order
         updateTimelineArray();
+        
+        // Update frame numbers and the last frame info
+        updateTimelineStatus();
     }
     
     return false;
 }
 
 function handleDragEnd(e) {
-    // Remove all drag classes
-    document.querySelectorAll('.timeline-item').forEach(item => {
-        item.classList.remove('dragging', 'drag-over');
+    // Remove visual styles when drag ends
+    this.classList.remove('dragging');
+    
+    const items = elements.timelineContainer.querySelectorAll('.timeline-item');
+    items.forEach(item => {
+        item.classList.remove('drag-over');
     });
 }
 
@@ -1217,6 +1248,9 @@ function initTimelineDropZone() {
     
     // Initialize empty timeline UI
     updateTimelineStatus();
+    
+    // Ensure horizontal layout
+    enforceHorizontalLayout();
     
     elements.timelineContainer.addEventListener('dragover', (e) => {
         e.preventDefault();
@@ -1353,10 +1387,10 @@ function updateTimelineStatus() {
             <div class="timeline-dropzone">
                 <div class="text-center py-5">
                     <i class="bi bi-images fs-1 mb-3"></i>
-                    <h5>Add Images to Timeline</h5>
-                    <p class="text-muted">Upload at least two images to create transitions between frames</p>
-                    <button class="btn btn-primary mt-3" id="dropzoneUploadBtn">
-                        <i class="bi bi-upload me-1"></i> Browse for Images
+                    <h5 class="fw-bold mb-3">Add Images to Timeline</h5>
+                    <p class="text-muted mb-4">Upload at least two images to create transitions between frames</p>
+                    <button class="btn btn-primary mt-2 px-4 py-2" id="dropzoneUploadBtn">
+                        <i class="bi bi-upload me-2"></i> Browse for Images
                     </button>
                 </div>
             </div>
@@ -1388,8 +1422,8 @@ function updateTimelineStatus() {
             secondaryDropZone.innerHTML = `
                 <div class="text-center py-3">
                     <i class="bi bi-plus-circle fs-2 mb-2"></i>
-                    <h6>Add More Images</h6>
-                    <p class="text-muted small">Drag and drop more images here</p>
+                    <h6 class="fw-bold mb-2">Add More Images</h6>
+                    <p class="text-muted small mb-0">Drag and drop more images here</p>
                 </div>
             `;
             
@@ -1438,7 +1472,7 @@ function updateTimelineStatus() {
         
         // First remove any previous notes from all items
         timelineItems.forEach((item, idx) => {
-            const existingNote = item.querySelector('.duration-note');
+            const existingNote = item.querySelector('.last-frame-info');
             if (existingNote) {
                 existingNote.remove();
             }
@@ -1453,22 +1487,33 @@ function updateTimelineStatus() {
         // Add note to the last item
         if (lastIndex >= 0) {
             const lastItem = timelineItems[lastIndex];
-            const durationGroup = lastItem.querySelector('.input-group');
+            const durationSection = lastItem.querySelector('.timeline-item-duration');
             
-            if (durationGroup) {
+            if (durationSection) {
                 const note = document.createElement('div');
-                note.className = 'duration-note small text-muted mt-1';
+                note.className = 'last-frame-info';
                 note.innerHTML = '<i class="bi bi-info-circle"></i> Duration not used for last frame';
-                durationGroup.after(note);
+                durationSection.appendChild(note);
                 
-                // Optional: Disable the duration input for the last item
+                // Disable the duration input for the last item
                 const durationInput = lastItem.querySelector('.duration-input');
                 if (durationInput) {
                     durationInput.disabled = true;
                 }
             }
         }
+        
+        // Update frame numbers for each card
+        timelineItems.forEach((item, idx) => {
+            const frameNumber = item.querySelector('.frame-number');
+            if (frameNumber) {
+                frameNumber.textContent = idx + 1;
+            }
+        });
     }
+    
+    // Ensure horizontal layout
+    enforceHorizontalLayout();
 }
 
 // Function to start video generation
@@ -1705,6 +1750,22 @@ function updateThemeIcon(isDark) {
             icon.className = 'bi bi-moon-stars-fill';
         } else {
             icon.className = 'bi bi-brightness-high';
+        }
+    }
+}
+
+// Add this function to ensure horizontal layout is maintained
+function enforceHorizontalLayout() {
+    if (elements.timelineContainer) {
+        // Force horizontal layout with inline styles as a fallback
+        elements.timelineContainer.style.display = 'flex';
+        elements.timelineContainer.style.flexDirection = 'row';
+        elements.timelineContainer.style.flexWrap = 'wrap';
+        elements.timelineContainer.style.alignItems = 'flex-start';
+        
+        // Ensure the class is present
+        if (!elements.timelineContainer.classList.contains('timeline-container')) {
+            elements.timelineContainer.classList.add('timeline-container');
         }
     }
 } 
