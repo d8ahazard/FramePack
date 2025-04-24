@@ -509,6 +509,12 @@ class UploadResponse(BaseModel):
 class GenerateResponse(BaseModel):
     job_id: str
 
+class DeleteJobRequest(BaseModel):
+    delete_images: bool = False
+
+class DeleteVideoRequest(BaseModel):
+    video_path: str
+
 # ----------------------------------------
 # Utility functions
 # ----------------------------------------
@@ -555,7 +561,8 @@ def worker(
     enable_adaptive_memory,
     resolution,
     segment_index=None,
-    master_job_id=None
+    master_job_id=None,
+    progress_callback=None
 ):
     global adaptive_memory_management, job_statuses
     adaptive_memory_management = enable_adaptive_memory
@@ -637,6 +644,8 @@ def worker(
         job_status.message = "Text encoding..."
         job_status.progress = 5
         save_job_data(job_id, job_status.to_dict())
+        if progress_callback:
+            progress_callback(5)
 
         # We literally only need the TENC once, so just load and unload when done
         fake_diffusers_current_device(text_encoder, gpu)
@@ -673,6 +682,8 @@ def worker(
         job_status.message = "Image processing..."
         job_status.progress = 10
         save_job_data(job_id, job_status.to_dict())
+        if progress_callback:
+            progress_callback(10)
 
         H, W, C = input_image.shape
         height, width = find_nearest_bucket(H, W, resolution=resolution)
@@ -687,6 +698,8 @@ def worker(
             job_status.message = "Processing end frame..."
             job_status.progress = 15
             save_job_data(job_id, job_status.to_dict())
+            if progress_callback:
+                progress_callback(15)
             
             end_np = resize_and_center_crop(end_image, width, height)
             Image.fromarray(end_np).save(os.path.join(outputs_folder, f"{job_id}_end.png"))
@@ -700,6 +713,8 @@ def worker(
         job_status.message = "VAE encoding..."
         job_status.progress = 20
         save_job_data(job_id, job_status.to_dict())
+        if progress_callback:
+            progress_callback(20)
 
         if vae not in models_to_keep_in_memory:
             load_model_as_complete(vae, target_device=gpu)
@@ -714,6 +729,8 @@ def worker(
         job_status.message = "CLIP Vision encoding..."
         job_status.progress = 25
         save_job_data(job_id, job_status.to_dict())
+        if progress_callback:
+            progress_callback(25)
         
         load_model_as_complete(image_encoder, target_device=gpu)
 
@@ -740,6 +757,8 @@ def worker(
         job_status.message = "Start sampling..."
         job_status.progress = 30
         save_job_data(job_id, job_status.to_dict())
+        if progress_callback:
+            progress_callback(30)
 
         rnd = torch.Generator("cpu").manual_seed(seed)
         num_frames = latent_window_size * 4 - 3
@@ -771,7 +790,15 @@ def worker(
         else:
             transformer.initialize_teacache(enable_teacache=False)
 
-        for pad in latent_paddings:
+        # Calculate sampling progress contribution
+        sampling_progress_start = 30
+        sampling_progress_end = 95
+        sampling_progress_range = sampling_progress_end - sampling_progress_start
+        
+        # Total progress steps from all latent sections
+        total_sample_steps = len(latent_paddings) * steps
+
+        for pad_idx, pad in enumerate(latent_paddings):
             is_last = (pad == 0)
             is_first = (pad == latent_paddings[0])
             pad_size = pad * latent_window_size
@@ -818,13 +845,17 @@ def worker(
                 Image.fromarray(preview).save(preview_path)
                 
                 step = d['i'] + 1
-                pct = int(100.0 * step / steps)
-                base_progress = 30
-                step_progress = int(70 * (pad / len(latent_paddings)) + (70 / len(latent_paddings)) * (step / steps))
-                total_progress = base_progress + step_progress
+                # Calculate overall progress considering current latent section and step
+                current_step = pad_idx * steps + step
+                pct_of_sampling = current_step / total_sample_steps
+                sampling_progress = int(sampling_progress_start + (pct_of_sampling * sampling_progress_range))
                 
-                job_status.progress = total_progress
+                job_status.progress = sampling_progress
                 job_status.message = f"Generated {max(0, (total_generated * 4 - 3))} frames, {(max(0, (total_generated * 4 - 3)) / 30):.2f}s so far"
+                save_job_data(job_id, job_status.to_dict())
+                
+                if progress_callback:
+                    progress_callback(sampling_progress)
                 
                 # Save latent visualization (only for certain steps to avoid too many files)
                 if step % 5 == 0:  # Save every 5th step for efficiency
@@ -918,6 +949,8 @@ def worker(
         
         # Save final status to disk
         save_job_data(job_id, job_status.to_dict())
+        if progress_callback:
+            progress_callback(100)
         
         return output_path
 
@@ -981,6 +1014,26 @@ def worker_multi_segment(
         save_job_data(job_id, job_status.to_dict())
         return None
     
+    # Calculate total generation effort
+    total_segments = len(segments)
+    total_duration = sum(segment.get('duration', 1.0) for segment in segments)
+    total_frames = int(total_duration * 30)  # 30 FPS
+    
+    # Each segment takes steps * frames_per_segment amount of work
+    total_steps = 0
+    segment_workloads = []
+    
+    for segment in segments:
+        segment_duration = segment.get('duration', 1.0)
+        segment_frames = int(segment_duration * 30)
+        segment_steps = steps
+        segment_workload = segment_steps * segment_frames
+        segment_workloads.append(segment_workload)
+        total_steps += segment_workload
+        
+    # Set up progress tracking variables
+    completed_steps = 0
+    
     master_job_id = job_id
     master_temp = os.path.join(outputs_folder, f"{master_job_id}_temp")
     os.makedirs(master_temp, exist_ok=True)
@@ -1016,6 +1069,12 @@ def worker_multi_segment(
             # Get segment duration (longer for single image)
             segment_duration = current_segment.get('duration', 3.0)
             
+            # Custom callback to update master progress
+            def progress_callback(segment_progress):
+                overall_progress = int((segment_progress / 100) * 100)
+                job_status.progress = overall_progress
+                save_job_data(job_id, job_status.to_dict())
+            
             # Generate the video with the single image
             segment_output = worker(
                 job_id=master_job_id,
@@ -1036,7 +1095,8 @@ def worker_multi_segment(
                 enable_adaptive_memory=enable_adaptive_memory,
                 resolution=resolution,
                 segment_index=0,
-                master_job_id=master_job_id
+                master_job_id=master_job_id,
+                progress_callback=progress_callback
             )
             
             if segment_output:
@@ -1065,7 +1125,14 @@ def worker_multi_segment(
     num_segments = len(segments)
     for i in range(num_segments - 1, -1, -1):
         seg_no = num_segments - i
+        segment_idx = num_segments - 1 - i  # Index in the workloads array
         current_segment = segments[i]
+        
+        # Calculate progress up to this segment
+        previous_segments_progress = 0
+        for j in range(i+1, num_segments):
+            previous_idx = num_segments - 1 - j
+            previous_segments_progress += segment_workloads[previous_idx]
         
         # Use individual segment prompts if provided, concatenate with global prompt
         segment_prompt = current_segment.get('prompt', '').strip()
@@ -1109,8 +1176,15 @@ def worker_multi_segment(
             return None
         
         job_status.message = f"Processing segment {seg_no}/{num_segments}..."
-        job_status.progress = int(((num_segments - i) / num_segments) * 100)
-        save_job_data(job_id, job_status.to_dict())
+        
+        # Custom callback to update master progress based on segment's contribution to overall workload
+        def progress_callback(segment_progress):
+            segment_contribution = segment_workloads[segment_idx]
+            segment_completed = (segment_progress / 100) * segment_contribution
+            overall_completed = previous_segments_progress + segment_completed
+            overall_progress = int((overall_completed / total_steps) * 100)
+            job_status.progress = overall_progress
+            save_job_data(job_id, job_status.to_dict())
         
         # Clear cache if needed
         curr_free = get_cuda_free_memory_gb(gpu)
@@ -1141,11 +1215,13 @@ def worker_multi_segment(
             enable_adaptive_memory=enable_adaptive_memory,
             resolution=resolution,
             segment_index=i,
-            master_job_id=master_job_id
+            master_job_id=master_job_id,
+            progress_callback=progress_callback
         )
         
         if segment_output:
             segment_paths.append((seg_no, segment_output))
+            completed_steps += segment_workloads[segment_idx]
         else:
             job_status.status = "failed" 
             job_status.message = f"Failed to generate segment {seg_no}"
@@ -1449,7 +1525,7 @@ def generate_thumbnail(video_path, max_age_days=7):
     """
     # Create a hash of the video path to use as thumbnail filename
     video_name = os.path.basename(video_path)
-    video_hash = hash(video_name + str(os.path.getmtime(video_path)))
+    video_hash = hash(video_name + str(os.path.getmtime(video_path)) if os.path.exists(video_path) else "")
     thumbnail_name = f"{video_hash}.jpg"
     thumbnail_path = os.path.join(thumbnails_folder, thumbnail_name)
     
@@ -1460,7 +1536,11 @@ def generate_thumbnail(video_path, max_age_days=7):
             return thumbnail_path
     
     try:
+        # Make sure the target directory exists
+        os.makedirs(os.path.dirname(thumbnail_path), exist_ok=True)
+        
         # Extract a frame from the middle of the video (at 1 second or 50% of duration)
+        # Use single quotes for paths to avoid issues with escaping
         cmd = [
             'ffmpeg', '-y', '-i', video_path,
             '-ss', '00:00:01', '-vframes', '1',
@@ -1468,7 +1548,23 @@ def generate_thumbnail(video_path, max_age_days=7):
             thumbnail_path
         ]
         
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # Use subprocess.run with check=False to handle errors more gracefully
+        process = subprocess.run(
+            cmd, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE,
+            check=False,
+            text=True
+        )
+        
+        if process.returncode != 0:
+            print(f"Warning: FFmpeg error: {process.stderr}")
+            # If thumbnail generation fails, use a default image if possible
+            default_thumbnail = os.path.join(os.path.dirname(__file__), "static/images/video_thumbnail.jpg")
+            if os.path.exists(default_thumbnail):
+                shutil.copy(default_thumbnail, thumbnail_path)
+                return thumbnail_path
+            return None
         
         if os.path.exists(thumbnail_path):
             return thumbnail_path
@@ -1660,12 +1756,13 @@ async def rerun_job(
         return ErrorResponse(error=f"Error rerunning job: {str(e)}")
 
 @app.delete("/api/job/{job_id}", response_model=Union[dict, ErrorResponse])
-async def delete_job(job_id: str):
+async def delete_job(job_id: str, request: DeleteJobRequest = None):
     """
     Delete a job and its associated files
     
     Args:
         job_id: The unique job identifier
+        request: Optional request with delete_images flag
     
     Returns:
         Success message or error
@@ -1680,6 +1777,18 @@ async def delete_job(job_id: str):
             return ErrorResponse(error="Job not found")
     else:
         job_data = job_statuses[job_id].to_dict()
+    
+    # Initialize deleted images counter
+    deleted_images = 0
+    
+    # Collect images to potentially delete
+    image_paths_to_check = set()
+    
+    # Add images from job settings
+    if job_data.get("job_settings") and "segments" in job_data["job_settings"]:
+        for segment in job_data["job_settings"]["segments"]:
+            if "image_path" in segment and os.path.exists(segment["image_path"]):
+                image_paths_to_check.add(segment["image_path"])
     
     # Delete result video if it exists
     if job_data.get("result_video") and os.path.exists(job_data["result_video"]):
@@ -1704,11 +1813,47 @@ async def delete_job(job_id: str):
         except Exception as e:
             print(f"Failed to delete job file: {e}")
     
+    # Delete latent previews
+    for filename in os.listdir(upload_folder):
+        if filename.startswith(f"{job_id}_latent_"):
+            try:
+                os.remove(os.path.join(upload_folder, filename))
+            except Exception as e:
+                print(f"Failed to delete latent preview: {e}")
+    
     # Remove job from in-memory statuses
     if job_in_memory:
         del job_statuses[job_id]
     
-    return {"success": True, "message": f"Job {job_id} deleted"}
+    # If requested, delete image files only if not used by other jobs
+    if request and request.delete_images and image_paths_to_check:
+        # Get all image paths from all jobs
+        all_image_paths = set()
+        for other_job_id in list_saved_jobs():
+            if other_job_id == job_id:  # Skip the job we're deleting
+                continue
+                
+            other_job_data = load_job_data(other_job_id)
+            if other_job_data and other_job_data.get("job_settings") and "segments" in other_job_data["job_settings"]:
+                for segment in other_job_data["job_settings"]["segments"]:
+                    if "image_path" in segment:
+                        all_image_paths.add(segment["image_path"])
+        
+        # Delete images that are not used by any other jobs
+        for image_path in image_paths_to_check:
+            if image_path not in all_image_paths:
+                try:
+                    if os.path.exists(image_path) and os.path.isfile(image_path):
+                        os.remove(image_path)
+                        deleted_images += 1
+                except Exception as e:
+                    print(f"Failed to delete image file {image_path}: {e}")
+    
+    return {
+        "success": True, 
+        "message": f"Job {job_id} deleted",
+        "deleted_images": deleted_images
+    }
 
 def cleanup_thumbnail_cache(max_age_days=30):
     """
@@ -1735,6 +1880,110 @@ def cleanup_thumbnail_cache(max_age_days=30):
 
 # Run cleanup on startup with a max age of 30 days
 cleanup_thumbnail_cache(30)
+
+@app.post("/api/delete_video", response_model=Union[dict, ErrorResponse])
+async def delete_video(request: DeleteVideoRequest):
+    """
+    Delete an output video file
+    
+    Args:
+        request: DeleteVideoRequest containing the video path
+        
+    Returns:
+        Success message or error
+    """
+    try:
+        # Normalize video path
+        video_path = request.video_path
+        
+        # If path starts with /outputs/, remove that prefix and join with outputs_folder
+        if video_path.startswith('/outputs/'):
+            video_path = os.path.join(outputs_folder, video_path[9:])  # Remove '/outputs/' prefix
+        # If path doesn't start with the outputs folder, join it
+        elif not video_path.startswith(outputs_folder):
+            video_path = os.path.join(outputs_folder, video_path)
+            
+        # Get the basename for logging and response
+        video_basename = os.path.basename(video_path)
+        
+        # Print info for debugging
+        print(f"Attempting to delete video: {video_path}")
+            
+        # Check if file exists
+        if not os.path.exists(video_path):
+            print(f"Video file not found: {video_path}")
+            return ErrorResponse(error=f"Video file not found: {video_basename}")
+
+        # Delete associated thumbnail if it exists
+        try:
+            video_hash = hash(video_basename + str(os.path.getmtime(video_path)))
+            thumbnail_name = f"{video_hash}.jpg"
+            thumbnail_path = os.path.join(thumbnails_folder, thumbnail_name)
+            
+            if os.path.exists(thumbnail_path):
+                os.remove(thumbnail_path)
+                print(f"Deleted thumbnail: {thumbnail_path}")
+        except Exception as e:
+            print(f"Error deleting thumbnail: {e}")
+            # Continue with video deletion even if thumbnail deletion fails
+            
+        # Delete the video file
+        os.remove(video_path)
+        print(f"Successfully deleted video: {video_path}")
+            
+        return {
+            "success": True,
+            "message": f"Video {video_basename} deleted successfully"
+        }
+        
+    except Exception as e:
+        print(f"Error deleting video: {e}")
+        return ErrorResponse(error=f"Failed to delete video: {str(e)}")
+
+@app.get("/api/video_thumbnail")
+async def get_video_thumbnail(video: str):
+    """
+    Generate and return a thumbnail for a video file
+    
+    Args:
+        video: Path to the video file
+        
+    Returns:
+        The thumbnail image
+    """
+    try:
+        # Ensure the path is inside the outputs folder for security
+        if video.startswith('/outputs/'):
+            video_path = os.path.join(outputs_folder, os.path.basename(video))
+        elif not video.startswith(outputs_folder):
+            video_path = os.path.join(outputs_folder, video)
+        else:
+            video_path = video
+            
+        # Check if file exists
+        if not os.path.exists(video_path):
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"Video file not found: {os.path.basename(video_path)}"}
+            )
+            
+        # Generate thumbnail
+        thumbnail_path = generate_thumbnail(video_path)
+        
+        if thumbnail_path and os.path.exists(thumbnail_path):
+            return FileResponse(thumbnail_path)
+        else:
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to generate thumbnail"}
+            )
+            
+    except Exception as e:
+        print(f"Error generating thumbnail: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to generate thumbnail: {str(e)}"}
+        )
 
 # Run the application
 if __name__ == "__main__":

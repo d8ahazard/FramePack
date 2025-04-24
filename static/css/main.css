@@ -520,3 +520,59 @@ header h3 {
         font-size: 0.9rem;
     }
 } 
+
+
+/* #region Job Queue */
+.job-list {
+    max-height: 70vh;
+    overflow-y: auto;
+    border: 1px solid #dee2e6;
+    border-radius: 6px;
+    padding: 10px;
+    margin-bottom: 15px;
+}
+.job-item {
+    padding: 12px;
+    margin-bottom: 10px;
+    border-radius: 4px;
+    border: 1px solid #dee2e6;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+.job-item:hover {
+    background-color: #f8f9fa;
+}
+.job-item.active {
+    background-color: #e9ecef;
+    border-color: #adb5bd;
+}
+.job-item.pending {
+    border-left: 4px solid #0d6efd;
+}
+.job-item.completed {
+    border-left: 4px solid #198754;
+}
+.job-item.failed {
+    border-left: 4px solid #dc3545;
+}
+
+/* Invalid image styling */
+.invalid-image {
+    opacity: 0.6;
+    border: 2px dashed #dc3545 !important;
+}
+.invalid-image-badge {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background-color: #dc3545;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    z-index: 10;
+}
+.timeline-item {
+    position: relative;
+}
+/* #endregion Job Queue */

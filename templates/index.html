@@ -66,12 +66,14 @@
                                 </div>
                                 <p id="progressStatus" class="text-muted">Initializing...</p>
                                 <div class="d-flex align-items-start mb-3">
-                                    <div id="currentJobThumbnail" class="me-3 d-none" style="width: 100px; cursor: pointer;" title="Click to view job details">
-                                        <img id="currentJobImage" src="" alt="First frame" class="img-fluid border rounded" style="max-width: 100px; max-height: 100px; object-fit: contain;">
+                                    <div id="currentJobThumbnail" class="me-3 d-none" style="width: 200px; height: 60px; cursor: pointer; overflow: hidden;" title="Click to view job details">
+                                        <img id="currentJobImage" src="" alt="First frame" class="img-fluid border rounded" style="width: 100%; object-fit: contain;">
                                     </div>
                                     <div id="previewContainer" class="d-none flex-grow-1">
                                         <h4 class="fs-6">Preview</h4>
-                                        <img id="previewImage" src="" alt="Preview" class="img-fluid border rounded">
+                                        <div style="max-height: 220px; overflow: hidden;">
+                                            <img id="previewImage" src="" alt="Preview" class="img-fluid border rounded" style="width: 100%; max-height: 200px; object-fit: contain;">
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -272,7 +274,9 @@
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
-                    <video id="modalVideo" controls class="rounded"></video>
+                    <div class="text-center">
+                        <video id="modalVideo" controls class="img-fluid rounded" style="max-height: 60vh;"></video>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <a id="modalDownloadBtn" href="#" download class="btn btn-primary">

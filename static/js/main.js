@@ -139,6 +139,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initTheme();
 });
 
+// #region UI Handling
 // Initialize all DOM elements
 function initElements() {
     // Main interface elements
@@ -201,6 +202,28 @@ function showUploadModal() {
         uploadModal.show();
     }
 }
+
+// Format timestamp for display
+function formatTimestamp(timestamp) {
+    if (!timestamp) return 'Unknown date';
+    
+    const date = new Date(timestamp * 1000);
+    return date.toLocaleString();
+}
+
+// Show a message using a toast or alert
+function showMessage(message, type) {
+    // You could implement this with a toast notification
+    console.log(`${type.toUpperCase()}: ${message}`);
+    
+    // For now, use a simple alert
+    if (type === 'error') {
+        alert(`Error: ${message}`);
+    } else if (type === 'success') {
+        alert(`Success: ${message}`);
+    }
+}
+
 
 // Initialize event listeners
 function initEventListeners() {
@@ -316,6 +339,213 @@ function initEventListeners() {
     window.addEventListener('resize', enforceHorizontalLayout);
 }
 
+// Load outputs for the outputs tab
+async function loadOutputs() {
+    try {
+        elements.outputsContainer.innerHTML = `
+            <div class="col">
+                <div class="alert alert-info">
+                    <i class="bi bi-info-circle"></i> Loading output videos...
+                </div>
+            </div>
+        `;
+        
+        console.log('Fetching outputs from server...');
+        const response = await fetch('/api/list_outputs', {
+            method: 'GET',
+            headers: {
+                'Accept': 'application/json',
+                'Cache-Control': 'no-cache'
+            }
+        });
+        
+        console.log('Response status:', response.status);
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('Error response:', errorText);
+            throw new Error(`Failed to fetch outputs (${response.status}): ${errorText}`);
+        }
+        
+        const outputs = await response.json();
+        console.log('Received outputs:', outputs);
+        
+        if (!outputs || outputs.length === 0) {
+            elements.outputsContainer.innerHTML = `
+                <div class="col">
+                    <div class="alert alert-secondary">
+                        <i class="bi bi-info-circle"></i> No output videos available
+                    </div>
+                </div>
+            `;
+            return;
+        }
+        
+        // Sort outputs by timestamp (newest first)
+        outputs.sort((a, b) => {
+            return b.timestamp - a.timestamp;
+        });
+        
+        // Create output cards
+        let outputsHtml = '';
+        
+        outputs.forEach(output => {
+            const timestamp = formatTimestamp(output.timestamp);
+            
+            outputsHtml += `
+                <div class="col">
+                    <div class="card h-100">
+                        <div class="card-body">
+                            <h5 class="card-title fs-6">${output.name}</h5>
+                            <p class="card-text small text-muted">${timestamp}</p>
+                            <div class="ratio ratio-16x9 mb-3">
+                                <video src="${output.path}" class="img-fluid rounded" poster="${output.thumbnail || ''}" preload="none"></video>
+                            </div>
+                            <div class="d-grid gap-2">
+                                <button class="btn btn-primary btn-sm view-video-btn" data-video="${output.path}" data-name="${output.name}">
+                                    <i class="bi bi-play-fill"></i> Play Video
+                                </button>
+                                <a href="${output.path}" download="${output.name}" class="btn btn-outline-secondary btn-sm">
+                                    <i class="bi bi-download"></i> Download
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+        
+        elements.outputsContainer.innerHTML = outputsHtml;
+        
+        // Add click event listeners to view buttons
+        document.querySelectorAll('.view-video-btn').forEach(button => {
+            button.addEventListener('click', () => {
+                const videoPath = button.dataset.video;
+                const videoName = button.dataset.name;
+                openVideoViewer(videoPath, videoName);
+            });
+        });
+        
+    } catch (error) {
+        console.error('Error loading outputs:', error);
+        elements.outputsContainer.innerHTML = `
+            <div class="col">
+                <div class="alert alert-danger">
+                    <i class="bi bi-exclamation-triangle"></i> Failed to load outputs: ${error.message}
+                </div>
+            </div>
+        `;
+    }
+}
+
+// Open video viewer modal
+function openVideoViewer(videoPath, videoName) {
+    const modal = document.getElementById('videoViewerModal');
+    const video = document.getElementById('modalVideo');
+    const downloadBtn = document.getElementById('modalDownloadBtn');
+    const modalTitle = document.getElementById('videoViewerModalLabel');
+    
+    video.src = videoPath;
+    video.load();
+    modalTitle.textContent = videoName || 'Video Viewer';
+    downloadBtn.href = videoPath;
+    downloadBtn.download = videoName || 'video';
+    
+    // Handle fullscreen button click
+    document.getElementById('fullscreenBtn').addEventListener('click', function() {
+        if (video.requestFullscreen) {
+            video.requestFullscreen();
+        } else if (video.webkitRequestFullscreen) { /* Safari */
+            video.webkitRequestFullscreen();
+        } else if (video.msRequestFullscreen) { /* IE11 */
+            video.msRequestFullscreen();
+        }
+    });
+    
+    // Reset the video when the modal is hidden
+    modal.addEventListener('hidden.bs.modal', function() {
+        video.pause();
+        video.currentTime = 0;
+        video.src = '';
+    }, { once: true });
+    
+    const modalInstance = new bootstrap.Modal(modal);
+    modalInstance.show();
+}
+
+// Function to initialize the theme based on saved preference
+function initTheme() {
+    const darkModeToggle = document.getElementById('darkModeToggle');
+    const htmlElement = document.documentElement;
+    
+    // Check for saved theme preference
+    const savedTheme = localStorage.getItem('theme');
+    
+    // Apply saved theme or detect system preference
+    if (savedTheme) {
+        htmlElement.setAttribute('data-bs-theme', savedTheme);
+        darkModeToggle.checked = savedTheme === 'dark';
+    } else {
+        // Use system preference as fallback
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        if (prefersDark) {
+            htmlElement.setAttribute('data-bs-theme', 'dark');
+            darkModeToggle.checked = true;
+        }
+    }
+    
+    // Update icon based on current theme
+    updateThemeIcon(darkModeToggle.checked);
+}
+
+// Function to toggle dark mode
+function toggleDarkMode() {
+    const darkModeToggle = document.getElementById('darkModeToggle');
+    const htmlElement = document.documentElement;
+    
+    if (darkModeToggle.checked) {
+        htmlElement.setAttribute('data-bs-theme', 'dark');
+        localStorage.setItem('theme', 'dark');
+    } else {
+        htmlElement.setAttribute('data-bs-theme', 'light');
+        localStorage.setItem('theme', 'light');
+    }
+    
+    // Update icon based on current theme
+    updateThemeIcon(darkModeToggle.checked);
+}
+
+// Function to update theme icon
+function updateThemeIcon(isDark) {
+    const icon = document.querySelector('label[for="darkModeToggle"] i');
+    if (icon) {
+        if (isDark) {
+            icon.className = 'bi bi-moon-stars-fill';
+        } else {
+            icon.className = 'bi bi-brightness-high';
+        }
+    }
+}
+
+// Add this function to ensure horizontal layout is maintained
+function enforceHorizontalLayout() {
+    if (elements.timelineContainer) {
+        // Force horizontal layout with inline styles as a fallback
+        elements.timelineContainer.style.display = 'flex';
+        elements.timelineContainer.style.flexDirection = 'row';
+        elements.timelineContainer.style.flexWrap = 'wrap';
+        elements.timelineContainer.style.alignItems = 'flex-start';
+        
+        // Ensure the class is present
+        if (!elements.timelineContainer.classList.contains('timeline-container')) {
+            elements.timelineContainer.classList.add('timeline-container');
+        }
+    }
+} 
+// #endregion UI Handling
+
+
+// #region Job Queue
 // Load the job queue UI
 async function loadJobQueue() {
     try {
@@ -929,140 +1159,6 @@ async function cancelJob(jobId) {
     }
 }
 
-// Load outputs for the outputs tab
-async function loadOutputs() {
-    try {
-        elements.outputsContainer.innerHTML = `
-            <div class="col">
-                <div class="alert alert-info">
-                    <i class="bi bi-info-circle"></i> Loading output videos...
-                </div>
-            </div>
-        `;
-        
-        console.log('Fetching outputs from server...');
-        const response = await fetch('/api/list_outputs', {
-            method: 'GET',
-            headers: {
-                'Accept': 'application/json',
-                'Cache-Control': 'no-cache'
-            }
-        });
-        
-        console.log('Response status:', response.status);
-        
-        if (!response.ok) {
-            const errorText = await response.text();
-            console.error('Error response:', errorText);
-            throw new Error(`Failed to fetch outputs (${response.status}): ${errorText}`);
-        }
-        
-        const outputs = await response.json();
-        console.log('Received outputs:', outputs);
-        
-        if (!outputs || outputs.length === 0) {
-            elements.outputsContainer.innerHTML = `
-                <div class="col">
-                    <div class="alert alert-secondary">
-                        <i class="bi bi-info-circle"></i> No output videos available
-                    </div>
-                </div>
-            `;
-            return;
-        }
-        
-        // Sort outputs by timestamp (newest first)
-        outputs.sort((a, b) => {
-            return b.timestamp - a.timestamp;
-        });
-        
-        // Create output cards
-        let outputsHtml = '';
-        
-        outputs.forEach(output => {
-            const timestamp = formatTimestamp(output.timestamp);
-            
-            outputsHtml += `
-                <div class="col">
-                    <div class="card h-100">
-                        <div class="card-body">
-                            <h5 class="card-title fs-6">${output.name}</h5>
-                            <p class="card-text small text-muted">${timestamp}</p>
-                            <div class="ratio ratio-16x9 mb-3">
-                                <video src="${output.path}" class="img-fluid rounded" poster="${output.thumbnail || ''}" preload="none"></video>
-                            </div>
-                            <div class="d-grid gap-2">
-                                <button class="btn btn-primary btn-sm view-video-btn" data-video="${output.path}" data-name="${output.name}">
-                                    <i class="bi bi-play-fill"></i> Play Video
-                                </button>
-                                <a href="${output.path}" download="${output.name}" class="btn btn-outline-secondary btn-sm">
-                                    <i class="bi bi-download"></i> Download
-                                </a>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
-        });
-        
-        elements.outputsContainer.innerHTML = outputsHtml;
-        
-        // Add click event listeners to view buttons
-        document.querySelectorAll('.view-video-btn').forEach(button => {
-            button.addEventListener('click', () => {
-                const videoPath = button.dataset.video;
-                const videoName = button.dataset.name;
-                openVideoViewer(videoPath, videoName);
-            });
-        });
-        
-    } catch (error) {
-        console.error('Error loading outputs:', error);
-        elements.outputsContainer.innerHTML = `
-            <div class="col">
-                <div class="alert alert-danger">
-                    <i class="bi bi-exclamation-triangle"></i> Failed to load outputs: ${error.message}
-                </div>
-            </div>
-        `;
-    }
-}
-
-// Open video viewer modal
-function openVideoViewer(videoPath, videoName) {
-    const modal = document.getElementById('videoViewerModal');
-    const video = document.getElementById('modalVideo');
-    const downloadBtn = document.getElementById('modalDownloadBtn');
-    const modalTitle = document.getElementById('videoViewerModalLabel');
-    
-    video.src = videoPath;
-    video.load();
-    modalTitle.textContent = videoName || 'Video Viewer';
-    downloadBtn.href = videoPath;
-    downloadBtn.download = videoName || 'video';
-    
-    // Handle fullscreen button click
-    document.getElementById('fullscreenBtn').addEventListener('click', function() {
-        if (video.requestFullscreen) {
-            video.requestFullscreen();
-        } else if (video.webkitRequestFullscreen) { /* Safari */
-            video.webkitRequestFullscreen();
-        } else if (video.msRequestFullscreen) { /* IE11 */
-            video.msRequestFullscreen();
-        }
-    });
-    
-    // Reset the video when the modal is hidden
-    modal.addEventListener('hidden.bs.modal', function() {
-        video.pause();
-        video.currentTime = 0;
-        video.src = '';
-    }, { once: true });
-    
-    const modalInstance = new bootstrap.Modal(modal);
-    modalInstance.show();
-}
-
 // Format job timestamp for display
 function formatJobTimestamp(jobId) {
     const parts = jobId.split('_');
@@ -1085,87 +1181,134 @@ function formatJobTimestamp(jobId) {
     return jobId;
 }
 
-// Format timestamp for display
-function formatTimestamp(timestamp) {
-    if (!timestamp) return 'Unknown date';
-    
-    const date = new Date(timestamp * 1000);
-    return date.toLocaleString();
+// Function to poll job status
+function pollJobStatus(jobId) {
+    // Set up interval for polling the job status
+    const statusInterval = setInterval(async () => {
+        try {
+            const response = await fetch(`/api/job_status/${jobId}`);
+            if (!response.ok) {
+                throw new Error(`Failed to fetch job status: ${response.statusText}`);
+            }
+            
+            const data = await response.json();
+            const progressBar = document.getElementById('progressBar');
+            const progressStatus = document.getElementById('progressStatus');
+            const progressContainer = document.getElementById('progressContainer');
+            const generateBtn = document.getElementById('generateVideoBtn');
+            const currentJobImage = document.getElementById('currentJobImage');
+            const currentJobThumbnail = document.getElementById('currentJobThumbnail');
+            
+            // Update the progress bar and status message
+            progressBar.style.width = `${data.progress}%`;
+            progressBar.setAttribute('aria-valuenow', data.progress);
+            progressBar.textContent = `${data.progress}%`;
+            progressStatus.textContent = data.message || 'Processing...';
+            
+            // Show the thumbnail if we have segments
+            if (data.segments && data.segments.length > 0) {
+                currentJobImage.src = data.segments[0];
+                currentJobThumbnail.classList.remove('d-none');
+                
+                // Set up click handler to go to job queue tab and select this job
+                currentJobThumbnail.onclick = () => {
+                    // Switch to the job queue tab
+                    const queueTab = document.getElementById('queue-tab');
+                    bootstrap.Tab.getOrCreateInstance(queueTab).show();
+                    
+                    // Select this job
+                    loadJobDetails(jobId);
+                    
+                    // Highlight this job in the list
+                    const jobItems = document.querySelectorAll('.job-item');
+                    jobItems.forEach(item => {
+                        item.classList.remove('active');
+                        if (item.dataset.jobId === jobId) {
+                            item.classList.add('active');
+                        }
+                    });
+                };
+            } else {
+                // Hide the thumbnail if no segments are available yet
+                currentJobThumbnail.classList.add('d-none');
+            }
+            
+            // Check if job is completed or failed
+            if (data.status === 'completed' || data.status === 'failed') {
+                clearInterval(statusInterval);
+                
+                if (data.status === 'completed') {
+                    progressStatus.textContent = 'Video generation completed!';
+                    
+                    // If we have a result video, show it
+                    if (data.result_video) {
+                        const resultContainer = document.createElement('div');
+                        resultContainer.className = 'mt-3';
+                        resultContainer.innerHTML = `
+                            <h4 class="fs-6">Result</h4>
+                            <div class="d-flex flex-column">
+                                <video id="resultVideo" src="${data.result_video}" controls class="img-fluid rounded mb-2"></video>
+                                <div class="btn-group">
+                                    <a href="${data.result_video}" download class="btn btn-primary">
+                                        <i class="bi bi-download"></i> Download
+                                    </a>
+                                    <button type="button" class="btn btn-outline-primary" onclick="openVideoViewer('${data.result_video}', '${data.result_video.split('/').pop()}')">
+                                        <i class="bi bi-fullscreen"></i> Fullscreen
+                                    </button>
+                                </div>
+                            </div>
+                        `;
+                        progressContainer.appendChild(resultContainer);
+                    }
+                    
+                    // Success message and offer to clear timeline
+                    showMessage('Video generation completed successfully!', 'success');
+                    
+                    // Clear the timeline after successful generation
+                    if (confirm('Generation completed! Would you like to clear the timeline for a new project?')) {
+                        // Clear timeline
+                        elements.timelineContainer.innerHTML = '';
+                        timeline = [];
+                        updateTimelineStatus();
+                    }
+                    
+                } else {
+                    progressStatus.textContent = `Failed: ${data.message}`;
+                    showMessage(`Video generation failed: ${data.message}`, 'danger');
+                }
+                
+                // Re-enable the generate button
+                generateBtn.disabled = false;
+                
+                // Load the updated job list
+                loadJobQueue();
+                
+                // Load the updated outputs
+                loadOutputs();
+                
+                return;
+            }
+            
+        } catch (error) {
+            console.error('Error polling job status:', error);
+            clearInterval(statusInterval);
+            document.getElementById('progressStatus').textContent = `Error: ${error.message}`;
+            document.getElementById('generateVideoBtn').disabled = false;
+        }
+    }, 2000);
 }
 
-// Show a message using a toast or alert
-function showMessage(message, type) {
-    // You could implement this with a toast notification
-    console.log(`${type.toUpperCase()}: ${message}`);
-    
-    // For now, use a simple alert
-    if (type === 'error') {
-        alert(`Error: ${message}`);
-    } else if (type === 'success') {
-        alert(`Success: ${message}`);
-    }
+// Check for running job
+function checkForRunningJob() {
+    // TODO: Implement actual API call to check for running jobs
+    console.log('Checking for running jobs...');
 }
 
-// Add CSS for job queue items
-document.addEventListener('DOMContentLoaded', function() {
-    const style = document.createElement('style');
-    style.textContent = `
-        .job-list {
-            max-height: 70vh;
-            overflow-y: auto;
-            border: 1px solid #dee2e6;
-            border-radius: 6px;
-            padding: 10px;
-            margin-bottom: 15px;
-        }
-        .job-item {
-            padding: 12px;
-            margin-bottom: 10px;
-            border-radius: 4px;
-            border: 1px solid #dee2e6;
-            cursor: pointer;
-            transition: background-color 0.2s;
-        }
-        .job-item:hover {
-            background-color: #f8f9fa;
-        }
-        .job-item.active {
-            background-color: #e9ecef;
-            border-color: #adb5bd;
-        }
-        .job-item.pending {
-            border-left: 4px solid #0d6efd;
-        }
-        .job-item.completed {
-            border-left: 4px solid #198754;
-        }
-        .job-item.failed {
-            border-left: 4px solid #dc3545;
-        }
-        
-        /* Invalid image styling */
-        .invalid-image {
-            opacity: 0.6;
-            border: 2px dashed #dc3545 !important;
-        }
-        .invalid-image-badge {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            background-color: #dc3545;
-            color: white;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 12px;
-            z-index: 10;
-        }
-        .timeline-item {
-            position: relative;
-        }
-    `;
-    document.head.appendChild(style);
-});
 
+// #endregion Job Queue
+
+
+// #region File handling
 // Function to handle file selection from input
 function handleFileSelect(e) {
     const files = e.target.files;
@@ -1293,6 +1436,59 @@ function processSelectedFiles(files) {
     // The upload modal will be shown by the caller
 }
 
+
+// Function to upload a file to the server
+function uploadFileToServer(file) {
+    return new Promise((resolve, reject) => {
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        fetch('/api/upload_image', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Failed to upload file');
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (data.success) {
+                // Use the full server path returned from the API
+                const serverPath = data.path;
+                
+                if (!serverPath) {
+                    throw new Error('No valid file path returned from server');
+                }
+                
+                console.log(`File uploaded: ${serverPath}`);
+                resolve(serverPath);
+            } else {
+                reject(new Error(data.error || 'Unknown error uploading file'));
+            }
+        })
+        .catch(error => {
+            console.error('Error uploading file:', error);
+            reject(error);
+        });
+    });
+}
+
+// Check if an image path exists
+async function checkImageExists(imagePath) {
+    try {
+        const response = await fetch(imagePath, { method: 'HEAD' });
+        return response.ok;
+    } catch (error) {
+        console.error('Error checking image:', error);
+        return false;
+    }
+}
+// #endregion File handling
+
+
+// #region Timeline Array Update
 // Function to handle adding to timeline
 function handleAddToTimeline() {
     if (selectedFiles.length === 0) {
@@ -1411,55 +1607,6 @@ function handleAddToTimeline() {
             keepCurrentImage = false;
             currentEditIndex = -1;
         });
-}
-
-// Function to upload a file to the server
-function uploadFileToServer(file) {
-    return new Promise((resolve, reject) => {
-        const formData = new FormData();
-        formData.append('file', file);
-        
-        fetch('/api/upload_image', {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => {
-            if (!response.ok) {
-                throw new Error('Failed to upload file');
-            }
-            return response.json();
-        })
-        .then(data => {
-            if (data.success) {
-                // Use the full server path returned from the API
-                const serverPath = data.path;
-                
-                if (!serverPath) {
-                    throw new Error('No valid file path returned from server');
-                }
-                
-                console.log(`File uploaded: ${serverPath}`);
-                resolve(serverPath);
-            } else {
-                reject(new Error(data.error || 'Unknown error uploading file'));
-            }
-        })
-        .catch(error => {
-            console.error('Error uploading file:', error);
-            reject(error);
-        });
-    });
-}
-
-// Check if an image path exists
-async function checkImageExists(imagePath) {
-    try {
-        const response = await fetch(imagePath, { method: 'HEAD' });
-        return response.ok;
-    } catch (error) {
-        console.error('Error checking image:', error);
-        return false;
-    }
 }
 
 // Function to add an item to the timeline
@@ -2051,6 +2198,39 @@ function clearTimeline() {
     }
 }
 
+// Function to sort timeline items
+function sortTimeline(direction) {
+    // Get all timeline items
+    const timelineItems = Array.from(elements.timelineContainer.querySelectorAll('.timeline-item'));
+    
+    if (timelineItems.length <= 1) {
+        return; // Nothing to sort
+    }
+    
+    // Get sorted items based on file names
+    const sortedItems = timelineItems.sort((a, b) => {
+        const fileNameA = a.querySelector('img').alt || '';
+        const fileNameB = b.querySelector('img').alt || '';
+        
+        if (direction === 'asc') {
+            return fileNameA.localeCompare(fileNameB);
+        } else {
+            return fileNameB.localeCompare(fileNameA);
+        }
+    });
+    
+    // Reorder DOM elements
+    sortedItems.forEach(item => {
+        elements.timelineContainer.appendChild(item);
+    });
+    
+    // Update timeline array to match the new order
+    updateTimelineArray();
+}
+
+// #endregion Timeline Array Update
+
+
 function startGeneration() {
     if (timeline.length === 0) {
         alert('Please add at least one image to the timeline before generating.');
@@ -2198,225 +2378,3 @@ function startGeneration() {
     });
 }
 
-// Function to poll job status
-function pollJobStatus(jobId) {
-    // Set up interval for polling the job status
-    const statusInterval = setInterval(async () => {
-        try {
-            const response = await fetch(`/api/job_status/${jobId}`);
-            if (!response.ok) {
-                throw new Error(`Failed to fetch job status: ${response.statusText}`);
-            }
-            
-            const data = await response.json();
-            const progressBar = document.getElementById('progressBar');
-            const progressStatus = document.getElementById('progressStatus');
-            const progressContainer = document.getElementById('progressContainer');
-            const generateBtn = document.getElementById('generateVideoBtn');
-            const currentJobImage = document.getElementById('currentJobImage');
-            const currentJobThumbnail = document.getElementById('currentJobThumbnail');
-            
-            // Update the progress bar and status message
-            progressBar.style.width = `${data.progress}%`;
-            progressBar.setAttribute('aria-valuenow', data.progress);
-            progressBar.textContent = `${data.progress}%`;
-            progressStatus.textContent = data.message || 'Processing...';
-            
-            // Show the thumbnail if we have segments
-            if (data.segments && data.segments.length > 0) {
-                currentJobImage.src = data.segments[0];
-                currentJobThumbnail.classList.remove('d-none');
-                
-                // Set up click handler to go to job queue tab and select this job
-                currentJobThumbnail.onclick = () => {
-                    // Switch to the job queue tab
-                    const queueTab = document.getElementById('queue-tab');
-                    bootstrap.Tab.getOrCreateInstance(queueTab).show();
-                    
-                    // Select this job
-                    loadJobDetails(jobId);
-                    
-                    // Highlight this job in the list
-                    const jobItems = document.querySelectorAll('.job-item');
-                    jobItems.forEach(item => {
-                        item.classList.remove('active');
-                        if (item.dataset.jobId === jobId) {
-                            item.classList.add('active');
-                        }
-                    });
-                };
-            } else {
-                // Hide the thumbnail if no segments are available yet
-                currentJobThumbnail.classList.add('d-none');
-            }
-            
-            // Check if job is completed or failed
-            if (data.status === 'completed' || data.status === 'failed') {
-                clearInterval(statusInterval);
-                
-                if (data.status === 'completed') {
-                    progressStatus.textContent = 'Video generation completed!';
-                    
-                    // If we have a result video, show it
-                    if (data.result_video) {
-                        const resultContainer = document.createElement('div');
-                        resultContainer.className = 'mt-3';
-                        resultContainer.innerHTML = `
-                            <h4 class="fs-6">Result</h4>
-                            <div class="d-flex flex-column">
-                                <video id="resultVideo" src="${data.result_video}" controls class="img-fluid rounded mb-2"></video>
-                                <div class="btn-group">
-                                    <a href="${data.result_video}" download class="btn btn-primary">
-                                        <i class="bi bi-download"></i> Download
-                                    </a>
-                                    <button type="button" class="btn btn-outline-primary" onclick="openVideoViewer('${data.result_video}', '${data.result_video.split('/').pop()}')">
-                                        <i class="bi bi-fullscreen"></i> Fullscreen
-                                    </button>
-                                </div>
-                            </div>
-                        `;
-                        progressContainer.appendChild(resultContainer);
-                    }
-                    
-                    // Success message and offer to clear timeline
-                    showMessage('Video generation completed successfully!', 'success');
-                    
-                    // Clear the timeline after successful generation
-                    if (confirm('Generation completed! Would you like to clear the timeline for a new project?')) {
-                        // Clear timeline
-                        elements.timelineContainer.innerHTML = '';
-                        timeline = [];
-                        updateTimelineStatus();
-                    }
-                    
-                } else {
-                    progressStatus.textContent = `Failed: ${data.message}`;
-                    showMessage(`Video generation failed: ${data.message}`, 'danger');
-                }
-                
-                // Re-enable the generate button
-                generateBtn.disabled = false;
-                
-                // Load the updated job list
-                loadJobQueue();
-                
-                // Load the updated outputs
-                loadOutputs();
-                
-                return;
-            }
-            
-        } catch (error) {
-            console.error('Error polling job status:', error);
-            clearInterval(statusInterval);
-            document.getElementById('progressStatus').textContent = `Error: ${error.message}`;
-            document.getElementById('generateVideoBtn').disabled = false;
-        }
-    }, 2000);
-}
-
-// Check for running job
-function checkForRunningJob() {
-    // TODO: Implement actual API call to check for running jobs
-    console.log('Checking for running jobs...');
-}
-
-// Function to sort timeline items
-function sortTimeline(direction) {
-    // Get all timeline items
-    const timelineItems = Array.from(elements.timelineContainer.querySelectorAll('.timeline-item'));
-    
-    if (timelineItems.length <= 1) {
-        return; // Nothing to sort
-    }
-    
-    // Get sorted items based on file names
-    const sortedItems = timelineItems.sort((a, b) => {
-        const fileNameA = a.querySelector('img').alt || '';
-        const fileNameB = b.querySelector('img').alt || '';
-        
-        if (direction === 'asc') {
-            return fileNameA.localeCompare(fileNameB);
-        } else {
-            return fileNameB.localeCompare(fileNameA);
-        }
-    });
-    
-    // Reorder DOM elements
-    sortedItems.forEach(item => {
-        elements.timelineContainer.appendChild(item);
-    });
-    
-    // Update timeline array to match the new order
-    updateTimelineArray();
-}
-
-// Function to initialize the theme based on saved preference
-function initTheme() {
-    const darkModeToggle = document.getElementById('darkModeToggle');
-    const htmlElement = document.documentElement;
-    
-    // Check for saved theme preference
-    const savedTheme = localStorage.getItem('theme');
-    
-    // Apply saved theme or detect system preference
-    if (savedTheme) {
-        htmlElement.setAttribute('data-bs-theme', savedTheme);
-        darkModeToggle.checked = savedTheme === 'dark';
-    } else {
-        // Use system preference as fallback
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        if (prefersDark) {
-            htmlElement.setAttribute('data-bs-theme', 'dark');
-            darkModeToggle.checked = true;
-        }
-    }
-    
-    // Update icon based on current theme
-    updateThemeIcon(darkModeToggle.checked);
-}
-
-// Function to toggle dark mode
-function toggleDarkMode() {
-    const darkModeToggle = document.getElementById('darkModeToggle');
-    const htmlElement = document.documentElement;
-    
-    if (darkModeToggle.checked) {
-        htmlElement.setAttribute('data-bs-theme', 'dark');
-        localStorage.setItem('theme', 'dark');
-    } else {
-        htmlElement.setAttribute('data-bs-theme', 'light');
-        localStorage.setItem('theme', 'light');
-    }
-    
-    // Update icon based on current theme
-    updateThemeIcon(darkModeToggle.checked);
-}
-
-// Function to update theme icon
-function updateThemeIcon(isDark) {
-    const icon = document.querySelector('label[for="darkModeToggle"] i');
-    if (icon) {
-        if (isDark) {
-            icon.className = 'bi bi-moon-stars-fill';
-        } else {
-            icon.className = 'bi bi-brightness-high';
-        }
-    }
-}
-
-// Add this function to ensure horizontal layout is maintained
-function enforceHorizontalLayout() {
-    if (elements.timelineContainer) {
-        // Force horizontal layout with inline styles as a fallback
-        elements.timelineContainer.style.display = 'flex';
-        elements.timelineContainer.style.flexDirection = 'row';
-        elements.timelineContainer.style.flexWrap = 'wrap';
-        elements.timelineContainer.style.alignItems = 'flex-start';
-        
-        // Ensure the class is present
-        if (!elements.timelineContainer.classList.contains('timeline-container')) {
-            elements.timelineContainer.classList.add('timeline-container');
-        }
-    }
-} 
