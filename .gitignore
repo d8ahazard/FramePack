@@ -3,6 +3,7 @@ models/
 outputs/
 repo/
 uploads/
+.cache/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

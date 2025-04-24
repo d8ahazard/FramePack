@@ -63,72 +63,92 @@ from diffusers_helper.clip_vision import hf_clip_vision_encode
 from diffusers_helper.bucket_tools import find_nearest_bucket
 
 # ----------------------------------------
-# Model classes and helpers
+# Argument parsing / HF cache location
 # ----------------------------------------
+parser = argparse.ArgumentParser()
+parser.add_argument("--host", type=str, default="0.0.0.0")
+parser.add_argument("--port", type=int, default=8000)
+parser.add_argument("--preload", action="store_true", help="Preload all models at startup")
+parser.add_argument("--hf_token", type=str, help="Hugging Face authentication token")
+args = parser.parse_args()
 
-class JobStatus:
-    def __init__(self, job_id: str):
-        self.job_id = job_id
-        self.status = "pending"
-        self.progress = 0
-        self.message = "Initializing..."
-        self.preview_image = None
-        self.result_video = None
-        self.segments = []
+# Don't override HF_HOME if already set
+if 'HF_HOME' not in os.environ:
+    os.environ['HF_HOME'] = os.path.abspath(
+        os.path.realpath(os.path.join(os.path.dirname(__file__), './hf_download'))
+    )
 
-    def to_dict(self):
-        return {
-            "job_id": self.job_id,
-            "status": self.status,
-            "progress": self.progress,
-            "message": self.message,
-            "result_video": self.result_video,
-            "segments": self.segments
-        }
+print(args)
 
-class SegmentConfig(BaseModel):
-    image_path: str
-    prompt: str
-    duration: float
+# ----------------------------------------
+# Directory setup
+# ----------------------------------------
+# Output directory for videos
+outputs_folder = './outputs/'
+os.makedirs(outputs_folder, exist_ok=True)
 
-class VideoRequest(BaseModel):
-    global_prompt: str
-    negative_prompt: str
-    segments: List[SegmentConfig]
-    seed: int = 31337
-    steps: int = 25
-    guidance_scale: float = 10.0
-    use_teacache: bool = True
-    enable_adaptive_memory: bool = True
-    resolution: int = 640
-    mp4_crf: int = 16
-    gpu_memory_preservation: float = 6.0
+# Upload folder for images
+upload_folder = './uploads/'
+os.makedirs(upload_folder, exist_ok=True)
 
-class JobStatusResponse(BaseModel):
-    job_id: str
-    status: str
-    progress: int
-    message: str
-    result_video: Optional[str] = None
-    segments: List[str] = []
+# Add cache folder for thumbnails
+cache_folder = './.cache/'
+thumbnails_folder = os.path.join(cache_folder, 'thumbnails')
+os.makedirs(thumbnails_folder, exist_ok=True)
 
-class ErrorResponse(BaseModel):
-    error: str
-
-class UploadResponse(BaseModel):
-    success: bool
-    filename: Optional[str] = None
-    path: Optional[str] = None
-    error: Optional[str] = None
-
-class GenerateResponse(BaseModel):
-    job_id: str
+# Create folders for static files if they don't exist
+os.makedirs("static/images", exist_ok=True)
 
 # Global job tracking
 job_statuses = {}
-outputs_folder = './outputs/'
-os.makedirs(outputs_folder, exist_ok=True)
-    
+
+# ----------------------------------------
+# FastAPI app setup
+# ----------------------------------------
+app = FastAPI(
+    title="FramePack API",
+    description="API for image to video generation using FramePack",
+    version="1.0.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json"
+)
+
+# Configure logging to suppress job status logs
+class EndpointFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (record.getMessage().find("GET /api/job_status/") >= 0)
+
+# Apply the filter to the uvicorn access logger
+logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
+
+# CORS middleware setup
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Add a middleware to include response headers
+@app.middleware("http")
+async def add_response_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return response
+
+# Mount static files directory
+app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+app.mount("/thumbnails", StaticFiles(directory=thumbnails_folder), name="thumbnails")
+
+# Templates setup
+templates = Jinja2Templates(directory="templates")
+
 # ----------------------------------------
 # Model download & loading
 # ----------------------------------------
@@ -223,7 +243,6 @@ def preload_all_models(use_auth_token=None):
     
     print("All models preloaded successfully!")
     return model_paths
-
 
 # ----------------------------------------
 # VRAM & model-loading setup
@@ -324,6 +343,68 @@ def load_models():
         for m in (text_encoder, text_encoder_2, image_encoder, vae, transformer):
             m.to(gpu)
 
+
+# ----------------------------------------
+# Model classes and helpers
+# ----------------------------------------
+
+class JobStatus:
+    def __init__(self, job_id: str):
+        self.job_id = job_id
+        self.status = "pending"
+        self.progress = 0
+        self.message = "Initializing..."
+        self.preview_image = None
+        self.result_video = None
+        self.segments = []
+
+    def to_dict(self):
+        return {
+            "job_id": self.job_id,
+            "status": self.status,
+            "progress": self.progress,
+            "message": self.message,
+            "result_video": self.result_video,
+            "segments": self.segments
+        }
+
+class SegmentConfig(BaseModel):
+    image_path: str
+    prompt: str
+    duration: float
+
+class VideoRequest(BaseModel):
+    global_prompt: str
+    negative_prompt: str
+    segments: List[SegmentConfig]
+    seed: int = 31337
+    steps: int = 25
+    guidance_scale: float = 10.0
+    use_teacache: bool = True
+    enable_adaptive_memory: bool = True
+    resolution: int = 640
+    mp4_crf: int = 16
+    gpu_memory_preservation: float = 6.0
+
+class JobStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    progress: int
+    message: str
+    result_video: Optional[str] = None
+    segments: List[str] = []
+
+class ErrorResponse(BaseModel):
+    error: str
+
+class UploadResponse(BaseModel):
+    success: bool
+    filename: Optional[str] = None
+    path: Optional[str] = None
+    error: Optional[str] = None
+
+class GenerateResponse(BaseModel):
+    job_id: str
 
 # ----------------------------------------
 # Worker: single-segment generation
@@ -831,59 +912,6 @@ def worker_multi_segment(
     return final_output
 
 # ----------------------------------------
-# FastAPI app setup
-# ----------------------------------------
-app = FastAPI(
-    title="FramePack API",
-    description="API for image to video generation using FramePack",
-    version="1.0.0",
-    docs_url="/api/docs",
-    redoc_url="/api/redoc",
-    openapi_url="/api/openapi.json"
-)
-
-# Configure logging to suppress job status logs
-class EndpointFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        return not (record.getMessage().find("GET /api/job_status/") >= 0)
-
-# Apply the filter to the uvicorn access logger
-logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
-
-# CORS middleware setup
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Add a middleware to include response headers
-@app.middleware("http")
-async def add_response_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    return response
-
-# Mount static files directory
-app.mount("/static", StaticFiles(directory="static"), name="static")
-app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
-
-# Templates setup
-templates = Jinja2Templates(directory="templates")
-
-# Upload folder for images
-upload_folder = './uploads/'
-os.makedirs(upload_folder, exist_ok=True)
-
-# Create folders for static files if they don't exist
-os.makedirs("static/images", exist_ok=True)
-
-# ----------------------------------------
 # API Routes
 # ----------------------------------------
 
@@ -1050,6 +1078,49 @@ async def list_jobs():
     """
     return [JobStatusResponse(**status.to_dict()) for status in job_statuses.values()]
 
+def generate_thumbnail(video_path, max_age_days=7):
+    """
+    Generate a thumbnail for a video file using ffmpeg
+    
+    Args:
+        video_path: Path to the video file
+        max_age_days: Maximum age of thumbnail before regenerating
+        
+    Returns:
+        str: Path to the thumbnail file
+    """
+    # Create a hash of the video path to use as thumbnail filename
+    video_name = os.path.basename(video_path)
+    video_hash = hash(video_name + str(os.path.getmtime(video_path)))
+    thumbnail_name = f"{video_hash}.jpg"
+    thumbnail_path = os.path.join(thumbnails_folder, thumbnail_name)
+    
+    # Check if thumbnail exists and is recent enough
+    if os.path.exists(thumbnail_path):
+        thumbnail_age = time.time() - os.path.getmtime(thumbnail_path)
+        if thumbnail_age < max_age_days * 86400:  # Convert days to seconds
+            return thumbnail_path
+    
+    try:
+        # Extract a frame from the middle of the video (at 1 second or 50% of duration)
+        cmd = [
+            'ffmpeg', '-y', '-i', video_path,
+            '-ss', '00:00:01', '-vframes', '1',
+            '-vf', 'scale=480:-1',
+            thumbnail_path
+        ]
+        
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        
+        if os.path.exists(thumbnail_path):
+            return thumbnail_path
+        else:
+            print(f"Failed to create thumbnail for {video_path}")
+            return None
+    except Exception as e:
+        print(f"Error generating thumbnail: {e}")
+        return None
+
 @app.get("/api/list_outputs")
 async def list_outputs():
     """
@@ -1071,12 +1142,17 @@ async def list_outputs():
                 stats = os.stat(file_path)
                 timestamp = stats.st_mtime
                 
+                # Generate thumbnail
+                thumbnail_path = generate_thumbnail(file_path)
+                thumbnail_url = f"/thumbnails/{os.path.basename(thumbnail_path)}" if thumbnail_path else None
+                
                 # Create output entry
                 output = {
                     "name": filename,
                     "path": f"/outputs/{filename}",
                     "timestamp": timestamp,
-                    "size": stats.st_size
+                    "size": stats.st_size,
+                    "thumbnail": thumbnail_url
                 }
                 outputs.append(output)
         
@@ -1126,15 +1202,34 @@ async def delete_job(job_id: str):
     
     return {"success": True, "message": f"Job {job_id} deleted"}
 
+def cleanup_thumbnail_cache(max_age_days=30):
+    """
+    Clean up old thumbnails from the cache directory
+    
+    Args:
+        max_age_days: Maximum age of thumbnails to keep
+    """
+    try:
+        now = time.time()
+        count = 0
+        
+        for filename in os.listdir(thumbnails_folder):
+            file_path = os.path.join(thumbnails_folder, filename)
+            if os.path.isfile(file_path):
+                file_age = now - os.path.getmtime(file_path)
+                if file_age > max_age_days * 86400:  # Convert days to seconds
+                    os.remove(file_path)
+                    count += 1
+        
+        print(f"Cleaned up {count} old thumbnails")
+    except Exception as e:
+        print(f"Error cleaning up thumbnails: {e}")
+
+# Run cleanup on startup with a max age of 30 days
+cleanup_thumbnail_cache(30)
+
 # Run the application
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", type=str, default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--preload", action="store_true", help="Preload all models at startup")
-    parser.add_argument("--hf_token", type=str, help="Hugging Face authentication token")
-    args = parser.parse_args()
-    
     # Preload models if requested
     if args.preload:
         model_paths = preload_all_models(use_auth_token=args.hf_token)

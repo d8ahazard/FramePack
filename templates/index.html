@@ -101,12 +101,9 @@
                                             <input type="number" class="form-control" id="transitionTime" min="0" max="5" step="0.1" value="0.2">
                                         </div>
                                         <div class="mb-3">
-                                            <label for="outputWidth" class="form-label">Output Width</label>
-                                            <input type="number" class="form-control" id="outputWidth" min="320" max="3840" step="10" value="1920">
-                                        </div>
-                                        <div class="mb-3">
-                                            <label for="outputHeight" class="form-label">Output Height</label>
-                                            <input type="number" class="form-control" id="outputHeight" min="240" max="2160" step="10" value="1080">
+                                            <label for="resolution" class="form-label">Resolution</label>
+                                            <input type="number" class="form-control" id="resolution" min="240" max="720" step="16" value="640">
+                                            <small class="form-text text-muted">Target resolution for video (automatically determines width and height while maintaining aspect ratio)</small>
                                         </div>
                                         <div class="mb-3">
                                             <label for="outputFormat" class="form-label">Output Format</label>

@@ -152,8 +152,7 @@ function initElements() {
     elements.frameRate = document.getElementById('frameRate');
     elements.frameTime = document.getElementById('frameTime');
     elements.transitionTime = document.getElementById('transitionTime');
-    elements.outputWidth = document.getElementById('outputWidth');
-    elements.outputHeight = document.getElementById('outputHeight');
+    elements.resolution = document.getElementById('resolution');
     elements.outputFormat = document.getElementById('outputFormat');
     
     // Upload modal elements
@@ -1150,13 +1149,12 @@ function startGeneration() {
         return;
     }
     
-    // Collect settings
-    const settings = {
-        frameRate: elements.frameRate ? parseInt(elements.frameRate.value) : 30,
-        outputWidth: elements.outputWidth ? parseInt(elements.outputWidth.value) : 1920,
-        outputHeight: elements.outputHeight ? parseInt(elements.outputHeight.value) : 1080,
-        outputFormat: elements.outputFormat ? elements.outputFormat.value : 'mp4'
-    };
+    // Show progress UI
+    elements.progressContainer.classList.remove('d-none');
+    elements.progressBar.style.width = '0%';
+    elements.progressBar.setAttribute('aria-valuenow', 0);
+    elements.progressBar.textContent = '0%';
+    elements.progressStatus.textContent = 'Preparing generation request...';
     
     // Collect segments data
     const segments = timeline.map(item => {
@@ -1165,56 +1163,98 @@ function startGeneration() {
             ?.querySelector('.prompt-text');
         
         return {
-            image_path: item.file.name,
+            image_path: item.file.path || item.file.name,
             prompt: promptInput ? promptInput.value : '',
             duration: item.duration
         };
     });
     
-    // Show progress UI
-    elements.progressContainer.classList.remove('d-none');
-    elements.progressBar.style.width = '0%';
-    elements.progressBar.setAttribute('aria-valuenow', 0);
-    elements.progressBar.textContent = '0%';
-    elements.progressStatus.textContent = 'Preparing...';
+    // Create request payload with resolution parameter
+    const payload = {
+        global_prompt: "", // Can be set from a global prompt field if added
+        negative_prompt: "", // Can be set from a negative prompt field if added
+        segments: segments,
+        seed: Math.floor(Math.random() * 100000),
+        steps: 25,
+        guidance_scale: 10.0,
+        use_teacache: true,
+        enable_adaptive_memory: true,
+        resolution: elements.resolution ? parseInt(elements.resolution.value) : 640,
+        mp4_crf: 16,
+        gpu_memory_preservation: 6.0
+    };
     
-    // TODO: Implement actual API call for generation
-    // For now, simulate a generation process
-    simulateGeneration();
+    // Make API call
+    fetch('/api/generate_video', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+    })
+    .then(response => {
+        if (!response.ok) {
+            throw new Error('Failed to start generation');
+        }
+        return response.json();
+    })
+    .then(data => {
+        console.log('Generation started:', data);
+        elements.progressStatus.textContent = 'Generation started! Monitoring progress...';
+        
+        // Start polling for job status
+        const jobId = data.job_id;
+        pollJobStatus(jobId);
+    })
+    .catch(error => {
+        console.error('Error starting generation:', error);
+        elements.progressStatus.textContent = 'Error: ' + error.message;
+        elements.progressBar.classList.add('bg-danger');
+    });
 }
 
-// Simulation function for development (will be replaced with actual API call)
-function simulateGeneration() {
-    let progress = 0;
-    const interval = setInterval(() => {
-        progress += 5;
-        elements.progressBar.style.width = `${progress}%`;
-        elements.progressBar.setAttribute('aria-valuenow', progress);
-        elements.progressBar.textContent = `${progress}%`;
-        
-        if (progress === 25) {
-            elements.progressStatus.textContent = 'Processing images...';
-        } else if (progress === 50) {
-            elements.progressStatus.textContent = 'Generating frames...';
-            elements.previewContainer.classList.remove('d-none');
-            elements.previewImage.src = timeline[0].src;
-        } else if (progress === 75) {
-            elements.progressStatus.textContent = 'Creating video...';
-        }
-        
-        if (progress >= 100) {
-            clearInterval(interval);
-            elements.progressStatus.textContent = 'Generation completed!';
-            
-            // After a delay, switch to the output tab to show the result
-            setTimeout(() => {
-                const outputTab = document.getElementById('output-tab');
-                if (outputTab) {
-                    outputTab.click();
+// Function to poll job status
+function pollJobStatus(jobId) {
+    const statusUrl = `/api/job_status/${jobId}`;
+    const pollInterval = setInterval(() => {
+        fetch(statusUrl)
+            .then(response => response.json())
+            .then(data => {
+                // Update progress
+                const progress = data.progress || 0;
+                elements.progressBar.style.width = `${progress}%`;
+                elements.progressBar.setAttribute('aria-valuenow', progress);
+                elements.progressBar.textContent = `${progress}%`;
+                elements.progressStatus.textContent = data.message || 'Processing...';
+                
+                // Show preview if available
+                if (data.preview_image) {
+                    elements.previewContainer.classList.remove('d-none');
+                    elements.previewImage.src = data.preview_image;
                 }
-            }, 2000);
-        }
-    }, 200);
+                
+                // Check if job is complete or failed
+                if (data.status === 'completed') {
+                    clearInterval(pollInterval);
+                    elements.progressStatus.textContent = 'Video generation completed!';
+                    
+                    // After a delay, switch to the output tab to show the result
+                    setTimeout(() => {
+                        const outputTab = document.getElementById('output-tab');
+                        if (outputTab) {
+                            outputTab.click();
+                        }
+                    }, 2000);
+                } else if (data.status === 'failed') {
+                    clearInterval(pollInterval);
+                    elements.progressStatus.textContent = 'Error: ' + data.message;
+                    elements.progressBar.classList.add('bg-danger');
+                }
+            })
+            .catch(error => {
+                console.error('Error polling job status:', error);
+            });
+    }, 1000); // Poll every second
 }
 
 // Check for running job
