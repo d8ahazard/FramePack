@@ -296,6 +296,22 @@ function initEventListeners() {
         });
     });
     
+    // Add Clear Timeline button
+    // First check if it already exists to avoid duplicates
+    if (!document.getElementById('clearTimelineBtn')) {
+        const generateBtn = document.getElementById('generateVideoBtn');
+        if (generateBtn) {
+            const clearBtn = document.createElement('button');
+            clearBtn.id = 'clearTimelineBtn';
+            clearBtn.className = 'btn btn-outline-danger me-2';
+            clearBtn.innerHTML = '<i class="bi bi-trash"></i> Clear Timeline';
+            clearBtn.addEventListener('click', clearTimeline);
+            
+            // Insert before the generate button
+            generateBtn.parentNode.insertBefore(clearBtn, generateBtn);
+        }
+    }
+    
     // Apply horizontal layout on window resize
     window.addEventListener('resize', enforceHorizontalLayout);
 }
@@ -322,6 +338,26 @@ async function loadJobQueue() {
             `;
             return;
         }
+        
+        // Add management controls at the top
+        const managementControls = document.createElement('div');
+        managementControls.className = 'mb-3 d-flex justify-content-end';
+        
+        // Count completed jobs
+        const completedJobs = jobs.filter(job => job.status === 'completed');
+        if (completedJobs.length > 0) {
+            const clearCompletedBtn = document.createElement('button');
+            clearCompletedBtn.className = 'btn btn-sm btn-outline-danger';
+            clearCompletedBtn.innerHTML = '<i class="bi bi-trash"></i> Clear Completed Jobs';
+            clearCompletedBtn.onclick = () => {
+                if (confirm(`Are you sure you want to delete all ${completedJobs.length} completed jobs?`)) {
+                    clearCompletedJobs();
+                }
+            };
+            managementControls.appendChild(clearCompletedBtn);
+        }
+        
+        jobsContainer.appendChild(managementControls);
         
         // Sort jobs: running first, then queued, then completed/failed by timestamp (newest first)
         jobs.sort((a, b) => {
@@ -355,13 +391,24 @@ async function loadJobQueue() {
                 statusBadgeClass = 'bg-warning';
             }
             
+            // Job title/name display
+            const jobTitle = job.job_name || formatJobTimestamp(job.job_id);
+            
+            // Check if job has missing images
+            const hasInvalidImages = job.is_valid === false;
+            const invalidBadge = hasInvalidImages ? 
+                `<span class="badge bg-danger ms-2">Missing Images</span>` : '';
+            
             jobItem.innerHTML = `
                 <div class="d-flex justify-content-between align-items-center">
                     <div>
-                        <div class="fw-bold">${formatJobTimestamp(job.job_id)}</div>
+                        <div class="fw-bold">${jobTitle}</div>
                         <div class="text-muted small">ID: ${job.job_id}</div>
                     </div>
-                    <span class="badge ${statusBadgeClass}">${job.status}</span>
+                    <div>
+                        <span class="badge ${statusBadgeClass}">${job.status}</span>
+                        ${invalidBadge}
+                    </div>
                 </div>
                 <div class="mt-2">
                     <div class="text-muted small">${job.message || 'No message'}</div>
@@ -398,6 +445,61 @@ async function loadJobQueue() {
     }
 }
 
+// Function to clear all completed jobs
+async function clearCompletedJobs() {
+    // Get the list of jobs
+    try {
+        const response = await fetch('/api/list_jobs');
+        if (!response.ok) {
+            throw new Error(`Failed to fetch jobs: ${response.statusText}`);
+        }
+        
+        const jobs = await response.json();
+        
+        // Filter for completed jobs
+        const completedJobs = jobs.filter(job => job.status === 'completed');
+        
+        // Show loading message
+        const jobsContainer = document.getElementById('jobsContainer');
+        jobsContainer.innerHTML = `
+            <div class="alert alert-info">
+                <i class="bi bi-hourglass"></i> Cleaning up ${completedJobs.length} completed jobs...
+            </div>
+        `;
+        
+        // Delete each completed job
+        const deletePromises = completedJobs.map(job => 
+            fetch(`/api/job/${job.job_id}`, { method: 'DELETE' })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`Failed to delete job ${job.job_id}`);
+                    }
+                    return response.json();
+                })
+        );
+        
+        // Wait for all deletions to complete
+        await Promise.all(deletePromises);
+        
+        // Refresh the job queue
+        loadJobQueue();
+        
+        // Clear job details if showing a completed job
+        document.getElementById('jobDetailContainer').innerHTML = '';
+        document.getElementById('jobMediaContainer').classList.add('d-none');
+        
+        // Show success message
+        showMessage(`Successfully deleted ${completedJobs.length} completed jobs`, 'success');
+        
+    } catch (error) {
+        console.error('Error clearing completed jobs:', error);
+        showMessage(`Failed to clear completed jobs: ${error.message}`, 'error');
+        
+        // Refresh anyway to show current state
+        loadJobQueue();
+    }
+}
+
 // Load job details
 async function loadJobDetails(jobId) {
     try {
@@ -430,14 +532,31 @@ async function loadJobDetails(jobId) {
             statusBadgeClass = 'bg-warning';
         }
         
+        // Check if job has missing images
+        const hasInvalidImages = jobData.is_valid === false;
+        
+        // Display job name if available
+        const jobName = jobData.job_name ? 
+            `<p><strong>Name:</strong> ${jobData.job_name}</p>` : '';
+        
+        // Invalid images warning
+        const invalidImagesWarning = hasInvalidImages ? 
+            `<div class="alert alert-warning">
+                <i class="bi bi-exclamation-triangle me-2"></i>
+                This job is missing ${jobData.missing_images.length} image(s). You can reload 
+                the job to timeline but must fix the missing images before rerunning.
+            </div>` : '';
+        
         jobInfoCard.innerHTML = `
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="card-title mb-0">Job Information</h5>
                 <span class="badge ${statusBadgeClass}">${jobData.status}</span>
             </div>
             <div class="card-body">
+                ${invalidImagesWarning}
                 <p><strong>Job ID:</strong> ${jobId}</p>
-                <p><strong>Status:</strong> ${jobData.status}</p>
+                ${jobName}
+                <p><strong>Status:</strong> ${jobData.status.charAt(0).toUpperCase() + jobData.status.slice(1)}</p>
                 <p><strong>Progress:</strong> ${jobData.progress}%</p>
                 <p><strong>Message:</strong> ${jobData.message || 'No message'}</p>
                 <p><strong>Created:</strong> ${formatJobTimestamp(jobId)}</p>
@@ -511,30 +630,67 @@ async function loadJobDetails(jobId) {
             jobMediaContainer.classList.add('d-none');
         }
         
-        // Add cancel button if job is running or queued
+        // Add action buttons based on job status
+        const actionContainer = document.createElement('div');
+        actionContainer.className = 'mt-3 d-flex flex-wrap gap-2';
+        
+        // Cancel button if job is running or queued
         if (jobData.status === 'running' || jobData.status === 'queued') {
             const cancelBtn = document.createElement('button');
-            cancelBtn.className = 'btn btn-danger mt-3';
+            cancelBtn.className = 'btn btn-danger';
             cancelBtn.innerHTML = '<i class="bi bi-x-circle"></i> Cancel Job';
             cancelBtn.onclick = () => cancelJob(jobId);
-            jobDetailContainer.appendChild(cancelBtn);
+            actionContainer.appendChild(cancelBtn);
         }
         
-        // Add "View Result" button if job is completed
+        // View and download buttons if job is completed
         if (jobData.status === 'completed' && jobData.result_video) {
             const viewBtn = document.createElement('button');
-            viewBtn.className = 'btn btn-primary mt-3 me-2';
+            viewBtn.className = 'btn btn-primary';
             viewBtn.innerHTML = '<i class="bi bi-play-circle"></i> View Video';
             viewBtn.onclick = () => openVideoViewer(jobData.result_video, jobData.result_video.split('/').pop());
-            jobDetailContainer.appendChild(viewBtn);
+            actionContainer.appendChild(viewBtn);
             
             const downloadBtn = document.createElement('a');
-            downloadBtn.className = 'btn btn-outline-primary mt-3';
+            downloadBtn.className = 'btn btn-outline-primary';
             downloadBtn.href = jobData.result_video;
             downloadBtn.download = jobData.result_video.split('/').pop();
             downloadBtn.innerHTML = '<i class="bi bi-download"></i> Download Video';
-            jobDetailContainer.appendChild(downloadBtn);
+            actionContainer.appendChild(downloadBtn);
         }
+        
+        // Reload to timeline button for any job that has settings
+        if (jobData.job_settings) {
+            const reloadBtn = document.createElement('button');
+            reloadBtn.className = 'btn btn-outline-secondary';
+            reloadBtn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Load to Timeline';
+            reloadBtn.onclick = () => loadJobToTimeline(jobId);
+            actionContainer.appendChild(reloadBtn);
+        }
+        
+        // Rerun button for completed or failed jobs (only if images are valid)
+        if ((jobData.status === 'completed' || jobData.status === 'failed') && 
+            jobData.job_settings && jobData.is_valid !== false) {
+            const rerunBtn = document.createElement('button');
+            rerunBtn.className = 'btn btn-outline-success';
+            rerunBtn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Rerun Job';
+            rerunBtn.onclick = () => rerunJob(jobId);
+            actionContainer.appendChild(rerunBtn);
+        }
+        
+        // Delete button for any job
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'btn btn-outline-danger';
+        deleteBtn.innerHTML = '<i class="bi bi-trash"></i> Delete Job';
+        deleteBtn.onclick = () => {
+            if (confirm(`Are you sure you want to delete this job? This will remove all files related to ${jobId}.`)) {
+                deleteJob(jobId);
+            }
+        };
+        actionContainer.appendChild(deleteBtn);
+        
+        // Add the action container
+        jobDetailContainer.appendChild(actionContainer);
         
     } catch (error) {
         console.error('Error loading job details:', error);
@@ -544,6 +700,203 @@ async function loadJobDetails(jobId) {
             </div>
         `;
         document.getElementById('jobMediaContainer').classList.add('d-none');
+    }
+}
+
+// Load job to timeline
+async function loadJobToTimeline(jobId) {
+    try {
+        // Show confirmation if timeline has content
+        if (timeline.length > 0) {
+            if (!confirm('Loading this job will replace your current timeline. Continue?')) {
+                return;
+            }
+        }
+        
+        // Show loading indicator
+        const jobDetailContainer = document.getElementById('jobDetailContainer');
+        const loadingMessage = document.createElement('div');
+        loadingMessage.className = 'alert alert-info mt-3';
+        loadingMessage.innerHTML = '<i class="bi bi-hourglass"></i> Loading job to timeline...';
+        jobDetailContainer.appendChild(loadingMessage);
+        
+        // Fetch job data
+        const response = await fetch(`/api/reload_job/${jobId}`, {
+            method: 'POST'
+        });
+        
+        if (!response.ok) {
+            throw new Error(`Failed to load job data: ${response.statusText}`);
+        }
+        
+        const jobData = await response.json();
+        
+        if (!jobData.settings || !jobData.settings.segments) {
+            throw new Error('Invalid job data: missing segments');
+        }
+        
+        // Clear current timeline
+        elements.timelineContainer.innerHTML = '';
+        timeline = [];
+        
+        // Set form values
+        if (elements.globalPrompt) {
+            elements.globalPrompt.value = jobData.settings.global_prompt || '';
+        }
+        
+        if (elements.negativePrompt) {
+            elements.negativePrompt.value = jobData.settings.negative_prompt || '';
+        }
+        
+        if (elements.steps) {
+            elements.steps.value = jobData.settings.steps || 25;
+        }
+        
+        if (elements.guidanceScale) {
+            elements.guidanceScale.value = jobData.settings.guidance_scale || 10.0;
+        }
+        
+        if (elements.resolution) {
+            elements.resolution.value = jobData.settings.resolution || 640;
+        }
+        
+        if (elements.useTeacache) {
+            elements.useTeacache.checked = jobData.settings.use_teacache !== false;
+        }
+        
+        if (elements.enableAdaptiveMemory) {
+            elements.enableAdaptiveMemory.checked = jobData.settings.enable_adaptive_memory !== false;
+        }
+        
+        // Add each segment to timeline
+        for (const segment of jobData.settings.segments) {
+            // Create a file object representation
+            const fileObj = {
+                serverPath: segment.image_path,
+                duration: segment.duration || 3.0,
+                prompt: segment.prompt || '',
+                name: segment.image_path.split('/').pop() // Extract filename
+            };
+            
+            // Create a dummy source for display
+            fileObj.src = segment.image_path;
+            
+            // Add to timeline
+            addItemToTimeline(fileObj);
+        }
+        
+        // Update timeline status
+        updateTimelineStatus();
+        
+        // Switch to editor tab
+        const editorTab = document.getElementById('editor-tab');
+        if (editorTab) {
+            bootstrap.Tab.getOrCreateInstance(editorTab).show();
+        }
+        
+        // Remove loading message
+        loadingMessage.remove();
+        
+        // Show success message
+        showMessage('Job loaded to timeline successfully', 'success');
+        
+        // Validate images
+        if (!jobData.is_valid) {
+            showMessage(`Warning: ${jobData.missing_images.length} images are missing. You'll need to replace them before generating.`, 'warning');
+        }
+        
+    } catch (error) {
+        console.error('Error loading job to timeline:', error);
+        showMessage(`Failed to load job: ${error.message}`, 'error');
+    }
+}
+
+// Rerun a job
+async function rerunJob(jobId) {
+    try {
+        // Confirm with user
+        if (!confirm('Are you sure you want to rerun this job?')) {
+            return;
+        }
+        
+        // Show loading indicator
+        const jobDetailContainer = document.getElementById('jobDetailContainer');
+        const loadingMessage = document.createElement('div');
+        loadingMessage.className = 'alert alert-info mt-3';
+        loadingMessage.innerHTML = '<i class="bi bi-hourglass"></i> Starting job rerun...';
+        jobDetailContainer.appendChild(loadingMessage);
+        
+        // Call rerun API
+        const response = await fetch(`/api/rerun_job/${jobId}`, {
+            method: 'POST'
+        });
+        
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || 'Failed to rerun job');
+        }
+        
+        const result = await response.json();
+        
+        // Remove loading message
+        loadingMessage.remove();
+        
+        // Show success and switch to the new job
+        showMessage('Job restarted successfully!', 'success');
+        
+        // Refresh job queue
+        await loadJobQueue();
+        
+        // Select the new job
+        const jobItems = document.querySelectorAll('.job-item');
+        jobItems.forEach(item => {
+            item.classList.remove('active');
+            if (item.dataset.jobId === result.job_id) {
+                item.classList.add('active');
+                // Scroll to the new job
+                item.scrollIntoView({ behavior: 'smooth' });
+            }
+        });
+        
+        // Load details of the new job
+        loadJobDetails(result.job_id);
+        
+    } catch (error) {
+        console.error('Error rerunning job:', error);
+        showMessage(`Failed to rerun job: ${error.message}`, 'error');
+    }
+}
+
+// Delete a job
+async function deleteJob(jobId) {
+    try {
+        const response = await fetch(`/api/job/${jobId}`, {
+            method: 'DELETE'
+        });
+        
+        if (!response.ok) {
+            throw new Error('Failed to delete job');
+        }
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            // Refresh the job queue to show updated list
+            loadJobQueue();
+            
+            // Clear job details
+            document.getElementById('jobDetailContainer').innerHTML = '';
+            document.getElementById('jobMediaContainer').classList.add('d-none');
+            
+            // Show success message
+            showMessage('Job deleted successfully', 'success');
+        } else {
+            throw new Error(result.error || 'Failed to delete job');
+        }
+        
+    } catch (error) {
+        console.error('Error deleting job:', error);
+        showMessage(`Failed to delete job: ${error.message}`, 'error');
     }
 }
 
@@ -789,6 +1142,26 @@ document.addEventListener('DOMContentLoaded', function() {
         .job-item.failed {
             border-left: 4px solid #dc3545;
         }
+        
+        /* Invalid image styling */
+        .invalid-image {
+            opacity: 0.6;
+            border: 2px dashed #dc3545 !important;
+        }
+        .invalid-image-badge {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: #dc3545;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            z-index: 10;
+        }
+        .timeline-item {
+            position: relative;
+        }
     `;
     document.head.appendChild(style);
 });
@@ -943,40 +1316,85 @@ function handleAddToTimeline() {
         .then(serverPaths => {
             console.log('All files uploaded successfully', serverPaths);
             
-            // Add each file to the timeline with its server path
-            selectedFiles.forEach((fileObj, index) => {
-                if (serverPaths[index]) {
-                    // Use the server path instead of local file reference
-                    // This is the EXACT path returned from the server
-                    fileObj.serverPath = serverPaths[index];
-                    console.log(`Adding file ${index + 1}/${selectedFiles.length}: ${fileObj.name} (${serverPaths[index]})`);
-                    addItemToTimeline(fileObj);
+            // Check if we're in edit mode (replacing an image)
+            if (keepCurrentImage && currentEditIndex >= 0) {
+                // We're replacing an existing image in the timeline
+                const timelineItems = Array.from(elements.timelineContainer.children);
+                if (currentEditIndex < timelineItems.length) {
+                    // Get the first uploaded file (only allow one replacement)
+                    if (serverPaths[0]) {
+                        // Update the timeline array
+                        if (timeline[currentEditIndex]) {
+                            timeline[currentEditIndex].serverPath = serverPaths[0];
+                            timeline[currentEditIndex].src = selectedFiles[0].src;
+                            timeline[currentEditIndex].file = selectedFiles[0].file;
+                            timeline[currentEditIndex].valid = true; // Mark as valid since it's new
+                            
+                            // Update the DOM
+                            const imgElement = timelineItems[currentEditIndex].querySelector('img');
+                            if (imgElement) {
+                                imgElement.src = selectedFiles[0].src;
+                                imgElement.title = serverPaths[0];
+                                imgElement.classList.remove('invalid-image');
+                            }
+                            
+                            // Remove any invalid badge
+                            const invalidBadge = timelineItems[currentEditIndex].querySelector('.invalid-image-badge');
+                            if (invalidBadge) {
+                                invalidBadge.remove();
+                            }
+                            
+                            // Remove any replace button
+                            const replaceBtn = timelineItems[currentEditIndex].querySelector('.replace-image-btn');
+                            if (replaceBtn) {
+                                replaceBtn.remove();
+                            }
+                            
+                            console.log(`Replaced image at index ${currentEditIndex} with ${serverPaths[0]}`);
+                            showMessage('Image replaced successfully', 'success');
+                        }
+                    }
                 }
-            });
-            
-            // Close modal and clean up
-            uploadModal.hide();
-            
-            // Show confirmation toast or message
-            const count = selectedFiles.length;
-            const message = count === 1 
-                ? '1 image added to timeline' 
-                : `${count} images added to timeline`;
+                
+                // Reset edit mode
+                keepCurrentImage = false;
+                currentEditIndex = -1;
+            } else {
+                // Normal mode - add each file to the timeline with its server path
+                selectedFiles.forEach((fileObj, index) => {
+                    if (serverPaths[index]) {
+                        // Use the server path instead of local file reference
+                        // This is the EXACT path returned from the server
+                        fileObj.serverPath = serverPaths[index];
+                        console.log(`Adding file ${index + 1}/${selectedFiles.length}: ${fileObj.name} (${serverPaths[index]})`);
+                        addItemToTimeline(fileObj);
+                    }
+                });
+                
+                // Show confirmation toast or message
+                const count = selectedFiles.length;
+                const message = count === 1 
+                    ? '1 image added to timeline' 
+                    : `${count} images added to timeline`;
+                
+                // Make sure timeline UI is updated
+                updateTimelineStatus();
+                
+                // Remove any existing secondary drop zone to let updateTimelineStatus create it new
+                const existingDropZone = document.getElementById('secondaryDropZone');
+                if (existingDropZone) {
+                    existingDropZone.remove();
+                }
+                
+                // Call updateTimelineStatus again to ensure the secondary drop zone is created
+                updateTimelineStatus();
+            }
             
             // Reset selected files
             selectedFiles = [];
             
-            // Make sure timeline UI is updated
-            updateTimelineStatus();
-            
-            // Remove any existing secondary drop zone to let updateTimelineStatus create it new
-            const existingDropZone = document.getElementById('secondaryDropZone');
-            if (existingDropZone) {
-                existingDropZone.remove();
-            }
-            
-            // Call updateTimelineStatus again to ensure the secondary drop zone is created
-            updateTimelineStatus();
+            // Close modal
+            uploadModal.hide();
         })
         .catch(error => {
             console.error('Error uploading files:', error);
@@ -988,6 +1406,10 @@ function handleAddToTimeline() {
                 addToTimelineBtn.disabled = false;
                 addToTimelineBtn.innerHTML = 'Add to Timeline';
             }
+            
+            // Reset edit mode
+            keepCurrentImage = false;
+            currentEditIndex = -1;
         });
 }
 
@@ -1029,8 +1451,19 @@ function uploadFileToServer(file) {
     });
 }
 
+// Check if an image path exists
+async function checkImageExists(imagePath) {
+    try {
+        const response = await fetch(imagePath, { method: 'HEAD' });
+        return response.ok;
+    } catch (error) {
+        console.error('Error checking image:', error);
+        return false;
+    }
+}
+
 // Function to add an item to the timeline
-function addItemToTimeline(fileObj) {
+async function addItemToTimeline(fileObj) {
     // Remove the main dropzone if this is the first item
     const mainDropZone = elements.timelineContainer.querySelector('.timeline-dropzone');
     if (mainDropZone) {
@@ -1084,9 +1517,29 @@ function addItemToTimeline(fileObj) {
     // Create a frame number for visual reference
     const frameNumber = elements.timelineContainer.querySelectorAll('.timeline-item').length + 1;
     
+    // Check if image is missing
+    let imageExists = true;
+    let invalidImageClass = '';
+    let invalidImageBadge = '';
+    
+    if (serverPath) {
+        // Only check server path if it's a loaded/saved image
+        imageExists = await checkImageExists(serverPath);
+        
+        if (!imageExists) {
+            invalidImageClass = 'invalid-image';
+            invalidImageBadge = `
+                <div class="invalid-image-badge">
+                    <i class="bi bi-exclamation-triangle"></i> Missing
+                </div>
+            `;
+        }
+    }
+    
     timelineItem.innerHTML = `
         <div class="frame-number">${frameNumber}</div>
-        <img src="${displaySrc}" class="img-fluid rounded" alt="${fileObj.name}" title="${serverPath}">
+        <img src="${displaySrc}" class="img-fluid rounded ${invalidImageClass}" alt="${fileObj.name}" title="${serverPath}">
+        ${invalidImageBadge}
         
         <div class="timeline-item-duration">
             <label class="form-label small mb-1">Duration</label>
@@ -1098,7 +1551,7 @@ function addItemToTimeline(fileObj) {
         
         <div class="timeline-item-prompt">
             <label class="form-label small mb-1">Prompt</label>
-            <textarea class="form-control prompt-text" rows="2" placeholder="Frame prompt (optional)"></textarea>
+            <textarea class="form-control prompt-text" rows="2" placeholder="Frame prompt (optional)">${fileObj.prompt || ''}</textarea>
         </div>
         
         <div class="timeline-item-actions">
@@ -1108,6 +1561,10 @@ function addItemToTimeline(fileObj) {
             <button class="btn btn-sm btn-outline-danger delete-frame-btn">
                 <i class="bi bi-trash"></i> Remove
             </button>
+            ${!imageExists ? `
+            <button class="btn btn-sm btn-warning replace-image-btn">
+                <i class="bi bi-arrow-repeat"></i> Replace
+            </button>` : ''}
         </div>
     `;
     
@@ -1115,6 +1572,7 @@ function addItemToTimeline(fileObj) {
     const editBtn = timelineItem.querySelector('.edit-frame-btn');
     const deleteBtn = timelineItem.querySelector('.delete-frame-btn');
     const durationInput = timelineItem.querySelector('.duration-input');
+    const replaceBtn = timelineItem.querySelector('.replace-image-btn');
     
     if (editBtn) {
         editBtn.addEventListener('click', () => {
@@ -1147,6 +1605,19 @@ function addItemToTimeline(fileObj) {
         });
     }
     
+    if (replaceBtn) {
+        replaceBtn.addEventListener('click', () => {
+            // Set the current item for replacement
+            currentEditIndex = Array.from(elements.timelineContainer.children).indexOf(timelineItem);
+            
+            // Set the flag to keep the current image in the timeline
+            keepCurrentImage = true;
+            
+            // Show the upload modal to select a replacement
+            showUploadModal();
+        });
+    }
+    
     // Add drag and drop event listeners
     timelineItem.addEventListener('dragstart', handleDragStart);
     timelineItem.addEventListener('dragover', handleTimelineDragOver);
@@ -1159,7 +1630,8 @@ function addItemToTimeline(fileObj) {
         file: fileObj.file,
         serverPath: serverPath,
         duration: frameDuration,
-        prompt: ''
+        prompt: fileObj.prompt || '',
+        valid: imageExists
     });
     
     elements.timelineContainer.appendChild(timelineItem);
@@ -1417,6 +1889,12 @@ function updateTimelineStatus() {
         elements.generateVideoBtn.disabled = timeline.length < 1;
     }
     
+    // Also update Clear Timeline button if it exists
+    const clearBtn = document.getElementById('clearTimelineBtn');
+    if (clearBtn) {
+        clearBtn.disabled = timeline.length < 1;
+    }
+    
     // Show message when timeline is empty
     if (timeline.length === 0) {
         elements.timelineContainer.innerHTML = `
@@ -1552,10 +2030,37 @@ function updateTimelineStatus() {
     enforceHorizontalLayout();
 }
 
-// Function to start video generation
+// Function to clear the timeline
+function clearTimeline() {
+    if (timeline.length === 0) {
+        return; // Nothing to clear
+    }
+    
+    if (confirm('Are you sure you want to clear the timeline? This will remove all images.')) {
+        // Clear UI
+        elements.timelineContainer.innerHTML = '';
+        
+        // Clear timeline array
+        timeline = [];
+        
+        // Update status
+        updateTimelineStatus();
+        
+        // Show confirmation message
+        showMessage('Timeline cleared', 'info');
+    }
+}
+
 function startGeneration() {
     if (timeline.length === 0) {
         alert('Please add at least one image to the timeline before generating.');
+        return;
+    }
+    
+    // Check for invalid images in the timeline
+    const invalidImages = timeline.filter(item => item.valid === false);
+    if (invalidImages.length > 0) {
+        alert(`Cannot start generation: ${invalidImages.length} image(s) are missing or invalid. Please replace them before generating.`);
         return;
     }
     
@@ -1623,11 +2128,18 @@ function startGeneration() {
         return;
     }
     
+    // Generate a simple job name based on first image filename and timestamp
+    const currentDate = new Date();
+    const timestamp = currentDate.toISOString().slice(0, 16).replace('T', ' ');
+    const firstImageName = segments[0].image_path.split('/').pop().split('.')[0];
+    const jobName = `${firstImageName} - ${timestamp}`;
+    
     // Create request payload with all form settings
     const payload = {
         global_prompt: elements.globalPrompt ? elements.globalPrompt.value : "",
         negative_prompt: elements.negativePrompt ? elements.negativePrompt.value : "",
         segments: segments,
+        job_name: jobName,
         seed: Math.floor(Math.random() * 100000),
         steps: elements.steps ? parseInt(elements.steps.value) : 25,
         guidance_scale: elements.guidanceScale ? parseFloat(elements.guidanceScale.value) : 10.0,
@@ -1660,9 +2172,24 @@ function startGeneration() {
         console.log('Generation started:', data);
         elements.progressStatus.textContent = 'Generation started! Monitoring progress...';
         
+        // Store current job ID
+        currentJobId = data.job_id;
+        
+        // Clear the timeline after successfully starting a job
+        // Clear UI
+        elements.timelineContainer.innerHTML = '';
+        
+        // Clear timeline array
+        timeline = [];
+        
+        // Update status
+        updateTimelineStatus();
+        
+        // Show message
+        showMessage('Job started successfully and timeline cleared for new work', 'success');
+        
         // Start polling for job status
-        const jobId = data.job_id;
-        pollJobStatus(jobId);
+        pollJobStatus(data.job_id);
     })
     .catch(error => {
         console.error('Error starting generation:', error);
@@ -1751,7 +2278,17 @@ function pollJobStatus(jobId) {
                         progressContainer.appendChild(resultContainer);
                     }
                     
+                    // Success message and offer to clear timeline
                     showMessage('Video generation completed successfully!', 'success');
+                    
+                    // Clear the timeline after successful generation
+                    if (confirm('Generation completed! Would you like to clear the timeline for a new project?')) {
+                        // Clear timeline
+                        elements.timelineContainer.innerHTML = '';
+                        timeline = [];
+                        updateTimelineStatus();
+                    }
+                    
                 } else {
                     progressStatus.textContent = `Failed: ${data.message}`;
                     showMessage(`Video generation failed: ${data.message}`, 'danger');

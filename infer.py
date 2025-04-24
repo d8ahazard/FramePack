@@ -88,6 +88,10 @@ print(args)
 outputs_folder = './outputs/'
 os.makedirs(outputs_folder, exist_ok=True)
 
+# Job storage folder for persistent job data
+jobs_folder = os.path.join(outputs_folder, 'jobs')
+os.makedirs(jobs_folder, exist_ok=True)
+
 # Upload folder for images
 upload_folder = './uploads/'
 os.makedirs(upload_folder, exist_ok=True)
@@ -102,6 +106,83 @@ os.makedirs("static/images", exist_ok=True)
 
 # Global job tracking
 job_statuses = {}
+
+# ----------------------------------------
+# Job data persistence functions
+# ----------------------------------------
+def save_job_data(job_id, job_data):
+    """
+    Save job data to a JSON file
+    
+    Args:
+        job_id: Unique job ID
+        job_data: Dictionary of job data including settings and status
+    """
+    job_file = os.path.join(jobs_folder, f"{job_id}.json")
+    try:
+        with open(job_file, 'w') as f:
+            json.dump(job_data, f, indent=2)
+        return True
+    except Exception as e:
+        print(f"Error saving job data: {e}")
+        return False
+
+def load_job_data(job_id):
+    """
+    Load job data from a JSON file
+    
+    Args:
+        job_id: Unique job ID
+        
+    Returns:
+        dict: Job data or None if not found
+    """
+    job_file = os.path.join(jobs_folder, f"{job_id}.json")
+    if not os.path.exists(job_file):
+        return None
+    
+    try:
+        with open(job_file, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Error loading job data: {e}")
+        return None
+
+def list_saved_jobs():
+    """
+    List all saved job data files
+    
+    Returns:
+        list: List of job IDs
+    """
+    jobs = []
+    for filename in os.listdir(jobs_folder):
+        if filename.endswith('.json'):
+            job_id = filename.replace('.json', '')
+            jobs.append(job_id)
+    return jobs
+    
+def verify_job_images(job_data):
+    """
+    Check if all images in a job exist
+    
+    Args:
+        job_data: Dictionary of job data
+        
+    Returns:
+        tuple: (is_valid, invalid_images) where invalid_images is a list of missing image paths
+    """
+    if not job_data or 'segments' not in job_data:
+        return False, []
+    
+    missing_images = []
+    
+    for segment in job_data['segments']:
+        image_path = segment.get('image_path')
+        if not image_path or not os.path.exists(image_path):
+            missing_images.append(image_path)
+    
+    return len(missing_images) == 0, missing_images
 
 # ----------------------------------------
 # FastAPI app setup
@@ -352,25 +433,37 @@ def load_models():
 # ----------------------------------------
 
 class JobStatus:
-    def __init__(self, job_id: str):
+    def __init__(self, job_id: str, job_name: str = None):
         self.job_id = job_id
+        self.job_name = job_name
         self.status = "queued"
         self.progress = 0
         self.message = ""
         self.result_video = None
         self.segments = []
-        self.current_latents = None  # Add this to track current latent images
+        self.current_latents = None
+        self.is_valid = True
+        self.missing_images = []
+        self.job_settings = None
         
     def to_dict(self):
         return {
             "job_id": self.job_id,
+            "job_name": self.job_name,
             "status": self.status,
             "progress": self.progress,
             "message": self.message,
             "result_video": self.result_video,
             "segments": self.segments,
-            "current_latents": self.current_latents  # Include in the dict
+            "current_latents": self.current_latents,
+            "is_valid": self.is_valid,
+            "missing_images": self.missing_images,
+            "job_settings": self.job_settings
         }
+        
+    def set_job_settings(self, settings):
+        """Store the original job settings"""
+        self.job_settings = settings
 
 class SegmentConfig(BaseModel):
     image_path: str
@@ -381,6 +474,7 @@ class VideoRequest(BaseModel):
     global_prompt: str
     negative_prompt: str
     segments: List[SegmentConfig]
+    job_name: Optional[str] = None  # Optional job name for user reference
     seed: int = 31337
     steps: int = 25
     guidance_scale: float = 10.0
@@ -397,7 +491,11 @@ class JobStatusResponse(BaseModel):
     message: str
     result_video: Optional[str] = None
     segments: List[str] = []
-    current_latents: Optional[str] = None  # Add to response model
+    current_latents: Optional[str] = None
+    job_name: Optional[str] = None
+    is_valid: bool = True  # Whether all images in job still exist
+    missing_images: List[str] = []
+    job_settings: Optional[dict] = None  # For storing original settings
 
 class ErrorResponse(BaseModel):
     error: str
@@ -465,6 +563,9 @@ def worker(
     job_status = job_statuses.get(job_id, JobStatus(job_id))
     job_status.status = "running"
     
+    # Persist job status to disk
+    save_job_data(job_id, job_status.to_dict())
+    
     # how many latent sections
     total_latent_sections = int(
         max(round((total_second_length * 30) / (latent_window_size * 4)), 1)
@@ -484,6 +585,9 @@ def worker(
 
     job_status.message = "Starting..."
     job_status.progress = 0
+    
+    # Persist updated job status
+    save_job_data(job_id, job_status.to_dict())
     
     try:
         # -------------------------
@@ -532,6 +636,7 @@ def worker(
         # -------------------------
         job_status.message = "Text encoding..."
         job_status.progress = 5
+        save_job_data(job_id, job_status.to_dict())
 
         # We literally only need the TENC once, so just load and unload when done
         fake_diffusers_current_device(text_encoder, gpu)
@@ -567,6 +672,7 @@ def worker(
         # -------------------------
         job_status.message = "Image processing..."
         job_status.progress = 10
+        save_job_data(job_id, job_status.to_dict())
 
         H, W, C = input_image.shape
         height, width = find_nearest_bucket(H, W, resolution=resolution)
@@ -580,6 +686,7 @@ def worker(
         if has_end_image:
             job_status.message = "Processing end frame..."
             job_status.progress = 15
+            save_job_data(job_id, job_status.to_dict())
             
             end_np = resize_and_center_crop(end_image, width, height)
             Image.fromarray(end_np).save(os.path.join(outputs_folder, f"{job_id}_end.png"))
@@ -592,6 +699,7 @@ def worker(
         # -------------------------
         job_status.message = "VAE encoding..."
         job_status.progress = 20
+        save_job_data(job_id, job_status.to_dict())
 
         if vae not in models_to_keep_in_memory:
             load_model_as_complete(vae, target_device=gpu)
@@ -605,6 +713,7 @@ def worker(
         # -------------------------
         job_status.message = "CLIP Vision encoding..."
         job_status.progress = 25
+        save_job_data(job_id, job_status.to_dict())
         
         load_model_as_complete(image_encoder, target_device=gpu)
 
@@ -630,6 +739,7 @@ def worker(
         # -------------------------
         job_status.message = "Start sampling..."
         job_status.progress = 30
+        save_job_data(job_id, job_status.to_dict())
 
         rnd = torch.Generator("cpu").manual_seed(seed)
         num_frames = latent_window_size * 4 - 3
@@ -733,6 +843,8 @@ def worker(
                         status_obj = job_statuses.get(job_id)
                         if status_obj:
                             status_obj.current_latents = f"/uploads/{job_id}_latent_{step}.jpg"
+                            # Save updated status to disk
+                            save_job_data(job_id, status_obj.to_dict())
                     except Exception as e:
                         print(f"Error saving latent preview: {e}")
 
@@ -793,6 +905,8 @@ def worker(
                 unload_complete_models(vae)
                 
             job_status.segments.append(output_path)
+            # Save updated status to disk
+            save_job_data(job_id, job_status.to_dict())
             
             if is_last:
                 break
@@ -802,11 +916,16 @@ def worker(
         job_status.message = "Generation completed"
         job_status.result_video = output_path
         
+        # Save final status to disk
+        save_job_data(job_id, job_status.to_dict())
+        
         return output_path
 
     except Exception as e:
         job_status.status = "failed"
         job_status.message = str(e)
+        # Save error status to disk
+        save_job_data(job_id, job_status.to_dict())
         traceback.print_exc()
         return None
     finally:
@@ -853,9 +972,13 @@ def worker_multi_segment(
     job_status.progress = 0
     job_statuses[job_id] = job_status
     
+    # Save initial status to disk
+    save_job_data(job_id, job_status.to_dict())
+    
     if not segments:
         job_status.status = "failed"
         job_status.message = "No segments provided"
+        save_job_data(job_id, job_status.to_dict())
         return None
     
     master_job_id = job_id
@@ -867,6 +990,8 @@ def worker_multi_segment(
     # Single segment case - simple animation from one image
     if len(segments) == 1:
         job_status.message = "Processing single image video..."
+        save_job_data(job_id, job_status.to_dict())
+        
         current_segment = segments[0]
         
         try:
@@ -919,10 +1044,12 @@ def worker_multi_segment(
                 job_status.progress = 100
                 job_status.message = "Single image video generation completed!"
                 job_status.result_video = segment_output
+                save_job_data(job_id, job_status.to_dict())
                 return segment_output
             else:
                 job_status.status = "failed"
                 job_status.message = "Failed to generate video from single image"
+                save_job_data(job_id, job_status.to_dict())
                 return None
                 
         except Exception as e:
@@ -930,6 +1057,7 @@ def worker_multi_segment(
             print(error_msg)
             job_status.status = "failed"
             job_status.message = error_msg
+            save_job_data(job_id, job_status.to_dict())
             return None
 
     # Process multiple segments (original implementation)
@@ -977,10 +1105,12 @@ def worker_multi_segment(
             print(error_msg)
             job_status.status = "failed"
             job_status.message = error_msg
+            save_job_data(job_id, job_status.to_dict())
             return None
         
         job_status.message = f"Processing segment {seg_no}/{num_segments}..."
         job_status.progress = int(((num_segments - i) / num_segments) * 100)
+        save_job_data(job_id, job_status.to_dict())
         
         # Clear cache if needed
         curr_free = get_cuda_free_memory_gb(gpu)
@@ -1019,6 +1149,7 @@ def worker_multi_segment(
         else:
             job_status.status = "failed" 
             job_status.message = f"Failed to generate segment {seg_no}"
+            save_job_data(job_id, job_status.to_dict())
             return None
 
     # Concatenate all segments in order
@@ -1038,6 +1169,7 @@ def worker_multi_segment(
     except Exception as e:
         job_status.status = "failed"
         job_status.message = f"Failed to concatenate segments: {str(e)}"
+        save_job_data(job_id, job_status.to_dict())
         return None
 
     if not high_vram:
@@ -1053,6 +1185,7 @@ def worker_multi_segment(
     job_status.progress = 100
     job_status.message = "Video generation completed!"
     job_status.result_video = final_output
+    save_job_data(job_id, job_status.to_dict())
     
     return final_output
 
@@ -1144,13 +1277,26 @@ async def generate_video(
         job_id: A unique identifier for the job
     """
     job_id = generate_timestamp()
-    job_status = JobStatus(job_id)
+    job_status = JobStatus(job_id, request_data.job_name)
+    
+    # Store original job settings for later use
+    job_settings = request_data.dict()
+    job_status.set_job_settings(job_settings)
+    
+    # Save job to in-memory cache
     job_statuses[job_id] = job_status
+    
+    # Save job data to disk
+    job_data = job_status.to_dict()
+    save_job_data(job_id, job_data)
+    
     # Load models
     load_models()
     
     # Log the request for debugging
     print(f"Video generation request received:")
+    if request_data.job_name:
+        print(f"  Job name: {request_data.job_name}")
     print(f"  Global prompt: {request_data.global_prompt[:50]}..." if len(request_data.global_prompt) > 50 else f"  Global prompt: {request_data.global_prompt}")
     print(f"  Negative prompt: {request_data.negative_prompt[:50]}..." if len(request_data.negative_prompt) > 50 else f"  Negative prompt: {request_data.negative_prompt}")
     print(f"  Number of segments: {len(request_data.segments)}")
@@ -1208,10 +1354,41 @@ async def get_job_status(job_id: str):
     Returns:
         The job status information
     """
-    if job_id not in job_statuses:
+    # First check if job is in memory
+    if job_id in job_statuses:
+        status = job_statuses[job_id]
+        # Verify that any images are still valid
+        job_settings = status.job_settings
+        if job_settings and "segments" in job_settings:
+            is_valid, missing_images = verify_job_images(job_settings)
+            status.is_valid = is_valid
+            status.missing_images = missing_images
+        return JobStatusResponse(**status.to_dict())
+    
+    # If not in memory, try to load from disk
+    job_data = load_job_data(job_id)
+    if not job_data:
         return ErrorResponse(error="Job not found")
     
-    status = job_statuses[job_id]
+    # Create a JobStatus object from the saved data
+    status = JobStatus(job_id, job_data.get("job_name"))
+    status.status = job_data.get("status", "unknown")
+    status.progress = job_data.get("progress", 0)
+    status.message = job_data.get("message", "")
+    status.result_video = job_data.get("result_video")
+    status.segments = job_data.get("segments", [])
+    status.current_latents = job_data.get("current_latents")
+    status.job_settings = job_data.get("job_settings")
+    
+    # Verify images are still valid
+    if status.job_settings and "segments" in status.job_settings:
+        is_valid, missing_images = verify_job_images(status.job_settings)
+        status.is_valid = is_valid
+        status.missing_images = missing_images
+    
+    # Add to in-memory cache
+    job_statuses[job_id] = status
+    
     return JobStatusResponse(**status.to_dict())
 
 @app.get("/api/result_video/{job_id}")
@@ -1238,12 +1415,26 @@ async def get_result_video(job_id: str):
 @app.get("/api/list_jobs", response_model=List[JobStatusResponse])
 async def list_jobs():
     """
-    List all active jobs
+    List all jobs (both active in-memory jobs and saved jobs)
     
     Returns:
-        A list of all active job statuses
+        A list of all job statuses
     """
-    return [JobStatusResponse(**status.to_dict()) for status in job_statuses.values()]
+    # Get all job IDs from in-memory and saved jobs
+    all_job_ids = set(job_statuses.keys()).union(set(list_saved_jobs()))
+    
+    # Collect all job statuses
+    all_jobs = []
+    for job_id in all_job_ids:
+        try:
+            # Get job status (this will fetch from memory or disk)
+            job_resp = await get_job_status(job_id)
+            if not isinstance(job_resp, ErrorResponse):  # Only include valid jobs
+                all_jobs.append(job_resp)
+        except Exception as e:
+            print(f"Error getting job status for {job_id}: {e}")
+    
+    return all_jobs
 
 def generate_thumbnail(video_path, max_age_days=7):
     """
@@ -1333,6 +1524,141 @@ async def list_outputs():
     
     return outputs
 
+@app.post("/api/reload_job/{job_id}", response_model=Union[dict, ErrorResponse])
+async def reload_job(job_id: str):
+    """
+    Reload a saved job to get its settings and configuration
+    
+    Args:
+        job_id: The unique job identifier
+    
+    Returns:
+        The job data for reloading into the UI
+    """
+    # Try to load the job data
+    job_data = load_job_data(job_id)
+    if not job_data:
+        return ErrorResponse(error="Job not found")
+    
+    # Check if the job has settings
+    job_settings = job_data.get("job_settings")
+    if not job_settings:
+        return ErrorResponse(error="Job settings not found")
+    
+    # Verify images still exist
+    is_valid, missing_images = verify_job_images(job_settings)
+    
+    return {
+        "job_id": job_id,
+        "job_name": job_data.get("job_name"),
+        "is_valid": is_valid,
+        "missing_images": missing_images,
+        "settings": job_settings
+    }
+
+@app.post("/api/rerun_job/{job_id}", response_model=Union[GenerateResponse, ErrorResponse])
+async def rerun_job(
+    job_id: str,
+    background_tasks: BackgroundTasks
+):
+    """
+    Re-run a completed or failed job
+    
+    Args:
+        job_id: The unique job identifier
+    
+    Returns:
+        new_job_id: A new job ID for the rerun
+    """
+    # Try to load the job data
+    job_data = load_job_data(job_id)
+    if not job_data:
+        return ErrorResponse(error="Job not found")
+    
+    # Check if the job has settings
+    job_settings = job_data.get("job_settings")
+    if not job_settings:
+        return ErrorResponse(error="Cannot rerun job: missing settings")
+    
+    # Verify images still exist
+    is_valid, missing_images = verify_job_images(job_settings)
+    if not is_valid:
+        return ErrorResponse(error=f"Cannot rerun job: {len(missing_images)} missing images: {', '.join(missing_images[:3])}")
+    
+    # Create a new job ID
+    new_job_id = generate_timestamp()
+    
+    # Create request data from job settings
+    try:
+        # Copy all fields from the original job settings
+        segments = []
+        for segment in job_settings.get("segments", []):
+            segments.append(SegmentConfig(
+                image_path=segment.get("image_path"),
+                prompt=segment.get("prompt", ""),
+                duration=segment.get("duration", 1.0)
+            ))
+            
+        request_data = VideoRequest(
+            global_prompt=job_settings.get("global_prompt", ""),
+            negative_prompt=job_settings.get("negative_prompt", ""),
+            segments=segments,
+            job_name=f"Rerun of {job_data.get('job_name', job_id)}",
+            seed=job_settings.get("seed", 31337),
+            steps=job_settings.get("steps", 25),
+            guidance_scale=job_settings.get("guidance_scale", 10.0),
+            use_teacache=job_settings.get("use_teacache", True),
+            enable_adaptive_memory=job_settings.get("enable_adaptive_memory", True),
+            resolution=job_settings.get("resolution", 640),
+            mp4_crf=job_settings.get("mp4_crf", 16),
+            gpu_memory_preservation=job_settings.get("gpu_memory_preservation", 6.0)
+        )
+        
+        # Create the job status
+        job_status = JobStatus(new_job_id, request_data.job_name)
+        job_status.set_job_settings(request_data.dict())
+        job_statuses[new_job_id] = job_status
+        
+        # Save to disk
+        save_job_data(new_job_id, job_status.to_dict())
+        
+        # Load models
+        load_models()
+        
+        # Extract segments for processing
+        segments_for_processing = []
+        for segment in request_data.segments:
+            segments_for_processing.append({
+                "image_path": segment.image_path,
+                "prompt": segment.prompt,
+                "duration": segment.duration
+            })
+        
+        # Start the job in the background
+        background_tasks.add_task(
+            worker_multi_segment,
+            job_id=new_job_id,
+            segments=segments_for_processing,
+            global_prompt=request_data.global_prompt,
+            n_prompt=request_data.negative_prompt,
+            seed=request_data.seed,
+            steps=request_data.steps,
+            cfg=1.0,  # Fixed parameter
+            gs=request_data.guidance_scale,
+            rs=0.0,   # Fixed parameter
+            gpu_memory_preservation=request_data.gpu_memory_preservation,
+            use_teacache=request_data.use_teacache,
+            mp4_crf=request_data.mp4_crf,
+            enable_adaptive_memory=request_data.enable_adaptive_memory,
+            resolution=request_data.resolution
+        )
+        
+        return GenerateResponse(job_id=new_job_id)
+        
+    except Exception as e:
+        print(f"Error rerunning job: {e}")
+        return ErrorResponse(error=f"Error rerunning job: {str(e)}")
+
 @app.delete("/api/job/{job_id}", response_model=Union[dict, ErrorResponse])
 async def delete_job(job_id: str):
     """
@@ -1344,28 +1670,43 @@ async def delete_job(job_id: str):
     Returns:
         Success message or error
     """
-    if job_id not in job_statuses:
-        return ErrorResponse(error="Job not found")
+    job_in_memory = job_id in job_statuses
+    job_data = None
     
-    status = job_statuses[job_id]
+    # Try to load from disk if not in memory
+    if not job_in_memory:
+        job_data = load_job_data(job_id)
+        if not job_data:
+            return ErrorResponse(error="Job not found")
+    else:
+        job_data = job_statuses[job_id].to_dict()
     
     # Delete result video if it exists
-    if status.result_video and os.path.exists(status.result_video):
+    if job_data.get("result_video") and os.path.exists(job_data["result_video"]):
         try:
-            os.remove(status.result_video)
+            os.remove(job_data["result_video"])
         except Exception as e:
             print(f"Failed to delete video file: {e}")
     
     # Delete segment videos if they exist
-    for segment in status.segments:
+    for segment in job_data.get("segments", []):
         if os.path.exists(segment):
             try:
                 os.remove(segment)
             except Exception as e:
                 print(f"Failed to delete segment file: {e}")
     
-    # Remove job from statuses
-    del job_statuses[job_id]
+    # Delete job JSON file
+    job_file = os.path.join(jobs_folder, f"{job_id}.json")
+    if os.path.exists(job_file):
+        try:
+            os.remove(job_file)
+        except Exception as e:
+            print(f"Failed to delete job file: {e}")
+    
+    # Remove job from in-memory statuses
+    if job_in_memory:
+        del job_statuses[job_id]
     
     return {"success": True, "message": f"Job {job_id} deleted"}
 
