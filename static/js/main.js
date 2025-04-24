@@ -134,6 +134,9 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Initial load of outputs in the outputs tab
     loadOutputs();
+    
+    // Initialize theme
+    initTheme();
 });
 
 // Initialize all DOM elements
@@ -149,10 +152,15 @@ function initElements() {
     elements.previewImage = document.getElementById('previewImage');
     
     // Form inputs
+    elements.globalPrompt = document.getElementById('globalPrompt');
+    elements.negativePrompt = document.getElementById('negativePrompt');
     elements.frameRate = document.getElementById('frameRate');
     elements.frameTime = document.getElementById('frameTime');
-    elements.transitionTime = document.getElementById('transitionTime');
     elements.resolution = document.getElementById('resolution');
+    elements.steps = document.getElementById('steps');
+    elements.guidanceScale = document.getElementById('guidanceScale');
+    elements.useTeacache = document.getElementById('useTeacache');
+    elements.enableAdaptiveMemory = document.getElementById('enableAdaptiveMemory');
     elements.outputFormat = document.getElementById('outputFormat');
     
     // Upload modal elements
@@ -205,6 +213,12 @@ function initEventListeners() {
     
     if (elements.generateVideoBtn) {
         elements.generateVideoBtn.addEventListener('click', startGeneration);
+    }
+    
+    // Theme toggle
+    const darkModeToggle = document.getElementById('darkModeToggle');
+    if (darkModeToggle) {
+        darkModeToggle.addEventListener('change', toggleDarkMode);
     }
     
     // File input change event
@@ -752,7 +766,22 @@ function handleFileDrop(e) {
     elements.uploadDropArea.classList.remove('active');
     
     const files = e.dataTransfer.files;
-    processSelectedFiles(files);
+    if (files.length > 0) {
+        console.log(`Dropped ${files.length} files onto upload area`);
+        
+        // Clear previous files if we're not in edit mode
+        if (!keepCurrentImage) {
+            selectedFiles = [];
+        }
+        
+        // Process the files
+        processSelectedFiles(files);
+        
+        // Show the upload modal to review the dropped files
+        if (uploadModal && !uploadModal._isShown) {
+            uploadModal.show();
+        }
+    }
 }
 
 // Function to trigger file input click
@@ -770,10 +799,16 @@ function processSelectedFiles(files) {
         selectedFiles = [];
     }
     
+    // Convert FileList to Array to ensure proper iteration
+    const filesArray = Array.from(files);
+    
     // Process each file
-    Array.from(files).forEach(file => {
+    filesArray.forEach(file => {
         // Only process image files
-        if (!file.type.match('image.*')) return;
+        if (!file.type.match('image.*')) {
+            console.log('Skipping non-image file:', file.name);
+            return;
+        }
         
         const reader = new FileReader();
         
@@ -785,7 +820,8 @@ function processSelectedFiles(files) {
             selectedFiles.push({
                 file: file,
                 src: imgSrc,
-                name: fileName
+                name: fileName,
+                duration: elements.frameTime ? parseFloat(elements.frameTime.value) : 0.5
             });
             
             // Create thumbnail
@@ -795,16 +831,39 @@ function processSelectedFiles(files) {
                         <img src="${imgSrc}" class="card-img-top" alt="${fileName}">
                         <div class="card-body p-2">
                             <p class="card-text small text-muted text-truncate">${fileName}</p>
+                            <div class="input-group input-group-sm">
+                                <span class="input-group-text">Duration</span>
+                                <input type="number" class="form-control image-duration" 
+                                    value="${elements.frameTime ? parseFloat(elements.frameTime.value) : 0.5}" 
+                                    min="0.1" max="10" step="0.1">
+                                <span class="input-group-text">s</span>
+                            </div>
                         </div>
                     </div>
                 </div>
             `;
             
             elements.imageUploadContainer.insertAdjacentHTML('beforeend', thumbnailHtml);
+            
+            // Add change event to duration inputs
+            const allDurationInputs = elements.imageUploadContainer.querySelectorAll('.image-duration');
+            const lastInput = allDurationInputs[allDurationInputs.length - 1];
+            if (lastInput) {
+                lastInput.addEventListener('change', (e) => {
+                    const index = Array.from(allDurationInputs).indexOf(e.target);
+                    if (index >= 0 && index < selectedFiles.length) {
+                        selectedFiles[index].duration = parseFloat(e.target.value);
+                    }
+                });
+            }
+            
+            console.log(`Processed file: ${fileName}, total files: ${selectedFiles.length}`);
         };
         
         reader.readAsDataURL(file);
     });
+    
+    // The upload modal will be shown by the caller
 }
 
 // Function to add images to timeline
@@ -814,24 +873,57 @@ function handleAddToTimeline() {
         return;
     }
     
+    console.log(`Adding ${selectedFiles.length} files to timeline`);
+    
     // For each selected file, add to timeline
-    selectedFiles.forEach(fileObj => {
+    selectedFiles.forEach((fileObj, index) => {
+        console.log(`Adding file ${index + 1}/${selectedFiles.length}: ${fileObj.name}`);
         addItemToTimeline(fileObj);
     });
     
     // Close modal and clean up
     uploadModal.hide();
+    
+    // Show confirmation toast or message
+    const count = selectedFiles.length;
+    const message = count === 1 
+        ? '1 image added to timeline' 
+        : `${count} images added to timeline`;
+    
+    // Simple alert for now - could be replaced with a nicer toast notification
+    alert(message);
+    
+    // Reset selected files
     selectedFiles = [];
+    
+    // Make sure timeline UI is updated
+    updateTimelineStatus();
+    
+    // Remove any existing secondary drop zone to let updateTimelineStatus create it new
+    const existingDropZone = document.getElementById('secondaryDropZone');
+    if (existingDropZone) {
+        existingDropZone.remove();
+    }
+    
+    // Call updateTimelineStatus again to ensure the secondary drop zone is created
     updateTimelineStatus();
 }
 
 // Function to add an item to the timeline
 function addItemToTimeline(fileObj) {
+    // Remove the main dropzone if this is the first item
+    if (timeline.length === 0) {
+        const mainDropZone = elements.timelineContainer.querySelector('.timeline-dropzone');
+        if (mainDropZone) {
+            mainDropZone.remove();
+        }
+    }
+    
     const timelineItem = document.createElement('div');
     timelineItem.className = 'card mb-3 timeline-item';
     timelineItem.draggable = true;
     
-    const frameDuration = elements.frameTime ? parseFloat(elements.frameTime.value) : 0.5;
+    const frameDuration = fileObj.duration || (elements.frameTime ? parseFloat(elements.frameTime.value) : 0.5);
     
     timelineItem.innerHTML = `
         <div class="card-body">
@@ -839,7 +931,11 @@ function addItemToTimeline(fileObj) {
                 <div class="col-md-4 mb-3 mb-md-0">
                     <div class="drag-handle"><i class="bi bi-grip-vertical"></i></div>
                     <img src="${fileObj.src}" class="img-fluid rounded" alt="${fileObj.name}">
-                    <span class="duration-badge">${frameDuration}s</span>
+                    <div class="input-group input-group-sm mt-2">
+                        <span class="input-group-text">Duration</span>
+                        <input type="number" class="form-control duration-input" value="${frameDuration}" min="0.1" max="10" step="0.1">
+                        <span class="input-group-text">s</span>
+                    </div>
                 </div>
                 <div class="col-md-8">
                     <textarea class="form-control prompt-text mb-2" placeholder="Frame prompt (optional)"></textarea>
@@ -859,6 +955,7 @@ function addItemToTimeline(fileObj) {
     // Attach event listeners
     const editBtn = timelineItem.querySelector('.edit-frame-btn');
     const deleteBtn = timelineItem.querySelector('.delete-frame-btn');
+    const durationInput = timelineItem.querySelector('.duration-input');
     
     if (editBtn) {
         editBtn.addEventListener('click', () => {
@@ -869,8 +966,25 @@ function addItemToTimeline(fileObj) {
     if (deleteBtn) {
         deleteBtn.addEventListener('click', () => {
             timelineItem.remove();
-            updateTimelineStatus();
             updateTimelineArray();
+            updateTimelineStatus();
+            
+            // If timeline is now empty after removal, ensure no secondary drop zone
+            if (timeline.length === 0) {
+                const secondaryDropZone = document.getElementById('secondaryDropZone');
+                if (secondaryDropZone) {
+                    secondaryDropZone.remove();
+                }
+            }
+        });
+    }
+    
+    if (durationInput) {
+        durationInput.addEventListener('change', () => {
+            const index = Array.from(elements.timelineContainer.children).indexOf(timelineItem);
+            if (index >= 0 && index < timeline.length) {
+                timeline[index].duration = parseFloat(durationInput.value);
+            }
         });
     }
     
@@ -966,7 +1080,7 @@ function updateTimelineArray() {
     items.forEach((item, index) => {
         const img = item.querySelector('img');
         const promptText = item.querySelector('.prompt-text');
-        const durationBadge = item.querySelector('.duration-badge');
+        const durationInput = item.querySelector('.duration-input');
         
         // Find matching item in original timeline
         const originalItem = timeline.find(t => {
@@ -977,7 +1091,8 @@ function updateTimelineArray() {
             // Update with current values
             newTimeline.push({
                 ...originalItem,
-                prompt: promptText ? promptText.value : ''
+                prompt: promptText ? promptText.value : '',
+                duration: durationInput ? parseFloat(durationInput.value) : originalItem.duration
             });
         }
     });
@@ -1033,20 +1148,13 @@ function initTimelineDropZone() {
         
         // Handle files dropped directly from the desktop
         if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            // Instead of processing immediately, show the upload modal first
+            selectedFiles = []; // Clear any previously selected files
             processSelectedFiles(e.dataTransfer.files);
             
-            // If files were processed, add them to timeline
-            if (selectedFiles.length > 0) {
-                // Clear the empty state UI first if needed
-                if (timeline.length === 0) {
-                    elements.timelineContainer.innerHTML = '';
-                }
-                
-                selectedFiles.forEach(fileObj => {
-                    addItemToTimeline(fileObj);
-                });
-                selectedFiles = [];
-                updateTimelineStatus();
+            // Show the upload modal to allow user to confirm/adjust before adding to timeline
+            if (uploadModal) {
+                uploadModal.show();
             }
         }
     });
@@ -1085,7 +1193,17 @@ function deleteCurrentFrame() {
     editItemModal.hide();
     currentEditIndex = -1;
     
+    // Update UI
+    updateTimelineArray();
     updateTimelineStatus();
+    
+    // If timeline is now empty after removal, ensure no secondary drop zone
+    if (timeline.length === 0) {
+        const secondaryDropZone = document.getElementById('secondaryDropZone');
+        if (secondaryDropZone) {
+            secondaryDropZone.remove();
+        }
+    }
 }
 
 // Function to save frame changes
@@ -1100,9 +1218,9 @@ function saveFrameChanges() {
     // Update DOM
     const timelineItems = elements.timelineContainer.querySelectorAll('.timeline-item');
     if (timelineItems[currentEditIndex]) {
-        const durationBadge = timelineItems[currentEditIndex].querySelector('.duration-badge');
-        if (durationBadge) {
-            durationBadge.textContent = `${duration}s`;
+        const durationInput = timelineItems[currentEditIndex].querySelector('.duration-input');
+        if (durationInput) {
+            durationInput.value = duration;
         }
     }
     
@@ -1125,10 +1243,9 @@ function updateTimelineStatus() {
                 <div class="text-center py-5">
                     <i class="bi bi-images fs-1 mb-3"></i>
                     <h5>Drop Images Here</h5>
-                    <p class="text-muted">Drag and drop images to add them to your timeline</p>
-                    <p>- or -</p>
-                    <button class="btn btn-primary" id="dropzoneUploadBtn">
-                        <i class="bi bi-upload me-1"></i> Select Files
+                    <p class="text-muted">Drag and drop images here to add them to your timeline</p>
+                    <button class="btn btn-primary mt-3" id="dropzoneUploadBtn">
+                        <i class="bi bi-upload me-1"></i> Browse for Images
                     </button>
                 </div>
             </div>
@@ -1138,6 +1255,70 @@ function updateTimelineStatus() {
         const dropzoneUploadBtn = document.getElementById('dropzoneUploadBtn');
         if (dropzoneUploadBtn) {
             dropzoneUploadBtn.addEventListener('click', showUploadModal);
+        }
+        
+        // Remove any secondary drop zone when empty
+        const secondaryDropZone = document.getElementById('secondaryDropZone');
+        if (secondaryDropZone) {
+            secondaryDropZone.remove();
+        }
+    } else {
+        // When timeline has items, remove the main dropzone if it exists
+        const mainDropZone = elements.timelineContainer.querySelector('.timeline-dropzone');
+        if (mainDropZone) {
+            mainDropZone.remove();
+        }
+        
+        // Add a secondary drop zone below the timeline when items exist
+        if (!document.getElementById('secondaryDropZone')) {
+            const secondaryDropZone = document.createElement('div');
+            secondaryDropZone.id = 'secondaryDropZone';
+            secondaryDropZone.className = 'timeline-dropzone mt-4';
+            secondaryDropZone.innerHTML = `
+                <div class="text-center py-3">
+                    <i class="bi bi-plus-circle fs-2 mb-2"></i>
+                    <h6>Add More Images</h6>
+                    <p class="text-muted small">Drag and drop more images here</p>
+                </div>
+            `;
+            
+            // Add event listeners for the secondary drop zone
+            secondaryDropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                secondaryDropZone.classList.add('active');
+            });
+            
+            secondaryDropZone.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                secondaryDropZone.classList.remove('active');
+            });
+            
+            secondaryDropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                secondaryDropZone.classList.remove('active');
+                
+                // Handle files dropped on the secondary zone
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    // Clear previous selection and process the new files
+                    selectedFiles = [];
+                    processSelectedFiles(e.dataTransfer.files);
+                    
+                    // Show the upload modal
+                    if (uploadModal) {
+                        uploadModal.show();
+                    }
+                }
+            });
+            
+            secondaryDropZone.addEventListener('click', () => {
+                showUploadModal();
+            });
+            
+            // Append the secondary drop zone after the timeline container
+            elements.timelineContainer.after(secondaryDropZone);
         }
     }
 }
@@ -1169,16 +1350,16 @@ function startGeneration() {
         };
     });
     
-    // Create request payload with resolution parameter
+    // Create request payload with all form settings
     const payload = {
-        global_prompt: "", // Can be set from a global prompt field if added
-        negative_prompt: "", // Can be set from a negative prompt field if added
+        global_prompt: elements.globalPrompt ? elements.globalPrompt.value : "",
+        negative_prompt: elements.negativePrompt ? elements.negativePrompt.value : "",
         segments: segments,
         seed: Math.floor(Math.random() * 100000),
-        steps: 25,
-        guidance_scale: 10.0,
-        use_teacache: true,
-        enable_adaptive_memory: true,
+        steps: elements.steps ? parseInt(elements.steps.value) : 25,
+        guidance_scale: elements.guidanceScale ? parseFloat(elements.guidanceScale.value) : 10.0,
+        use_teacache: elements.useTeacache ? elements.useTeacache.checked : true,
+        enable_adaptive_memory: elements.enableAdaptiveMemory ? elements.enableAdaptiveMemory.checked : true,
         resolution: elements.resolution ? parseInt(elements.resolution.value) : 640,
         mp4_crf: 16,
         gpu_memory_preservation: 6.0
@@ -1291,4 +1472,58 @@ function sortTimeline(direction) {
     
     // Update timeline array to match the new order
     updateTimelineArray();
+}
+
+// Function to initialize the theme based on saved preference
+function initTheme() {
+    const darkModeToggle = document.getElementById('darkModeToggle');
+    const htmlElement = document.documentElement;
+    
+    // Check for saved theme preference
+    const savedTheme = localStorage.getItem('theme');
+    
+    // Apply saved theme or detect system preference
+    if (savedTheme) {
+        htmlElement.setAttribute('data-bs-theme', savedTheme);
+        darkModeToggle.checked = savedTheme === 'dark';
+    } else {
+        // Use system preference as fallback
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        if (prefersDark) {
+            htmlElement.setAttribute('data-bs-theme', 'dark');
+            darkModeToggle.checked = true;
+        }
+    }
+    
+    // Update icon based on current theme
+    updateThemeIcon(darkModeToggle.checked);
+}
+
+// Function to toggle dark mode
+function toggleDarkMode() {
+    const darkModeToggle = document.getElementById('darkModeToggle');
+    const htmlElement = document.documentElement;
+    
+    if (darkModeToggle.checked) {
+        htmlElement.setAttribute('data-bs-theme', 'dark');
+        localStorage.setItem('theme', 'dark');
+    } else {
+        htmlElement.setAttribute('data-bs-theme', 'light');
+        localStorage.setItem('theme', 'light');
+    }
+    
+    // Update icon based on current theme
+    updateThemeIcon(darkModeToggle.checked);
+}
+
+// Function to update theme icon
+function updateThemeIcon(isDark) {
+    const icon = document.querySelector('label[for="darkModeToggle"] i');
+    if (icon) {
+        if (isDark) {
+            icon.className = 'bi bi-moon-stars-fill';
+        } else {
+            icon.className = 'bi bi-brightness-high';
+        }
+    }
 } 
