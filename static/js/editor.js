@@ -84,6 +84,13 @@ function initEventListeners() {
         elements.generateVideoBtn.addEventListener('click', startGeneration);
     }
     
+    // Add Save Job button event
+    const saveJobBtn = document.getElementById('saveJobBtn');
+    if (saveJobBtn) {
+        console.log('saveJobBtn event listener added');
+        saveJobBtn.addEventListener('click', saveJob);
+    }
+    
     // File input change event
     if (elements.fileInput) {
         console.log('fileInput change event');
@@ -209,6 +216,12 @@ function updateTimelineStatus() {
     if (elements.generateVideoBtn) {
         // Need at least 1 frame to generate a video
         elements.generateVideoBtn.disabled = timeline.length < 1;
+    }
+    
+    // Also update Save Job button if it exists
+    const saveJobBtn = document.getElementById('saveJobBtn');
+    if (saveJobBtn) {
+        saveJobBtn.disabled = timeline.length < 1;
     }
     
     // Also update Clear Timeline button if it exists
@@ -440,121 +453,8 @@ function startGeneration() {
     elements.progressBar.textContent = '0%';
     elements.progressStatus.textContent = 'Preparing generation request...';
     
-    // Collect segments data
-    const segments = [];
-    
-    // For a single image, we need special handling to create a self-transition
-    if (timeline.length === 1) {
-        const singleFrame = timeline[0];
-        const promptInput = elements.timelineContainer.querySelector('.prompt-text');
-        
-        // Use the full server path directly
-        const imagePath = singleFrame.serverPath;
-        if (!imagePath) {
-            console.error('No server path found for the single image:', singleFrame);
-            alert('Error: Missing server path for the image. Please try re-uploading.');
-            return;
-        }
-        
-        console.log(`Single image path: ${imagePath}`);
-        
-        // Add single segment with longer duration for self-transition
-        segments.push({
-            image_path: imagePath,
-            prompt: promptInput ? promptInput.value : '',
-            duration: singleFrame.duration || 3.0
-        });
-    } else {
-        // Process multiple images: Create transitions between each pair of frames
-        for (let i = 0; i < timeline.length - 1; i++) {
-            const currentFrame = timeline[i];
-            const promptInput = Array.from(elements.timelineContainer.children)
-                .find((_, idx) => idx === i)
-                ?.querySelector('.prompt-text');
-            
-            // Use the full server path directly
-            const imagePath = currentFrame.serverPath;
-            if (!imagePath) {
-                console.error(`No server path found for image at index ${i}:`, currentFrame);
-                alert(`Error: Missing server path for image ${i + 1}. Please try re-uploading.`);
-                return;
-            }
-            
-            // Log each path for debugging
-            console.log(`Segment ${i + 1} path: ${imagePath}`);
-            
-            segments.push({
-                image_path: imagePath,
-                prompt: promptInput ? promptInput.value : '',
-                duration: currentFrame.duration
-            });
-        }
-        
-        // Add the last frame with its prompt
-        const lastIndex = timeline.length - 1;
-        const lastFrame = timeline[lastIndex];
-        const lastPromptInput = Array.from(elements.timelineContainer.children)
-            .find((_, idx) => idx === lastIndex)
-            ?.querySelector('.prompt-text');
-            
-        // Check if the includeAsSegment property exists, fall back to the checkbox if not
-        let includeLastFrame = lastFrame.includeAsSegment;
-        if (includeLastFrame === undefined) {
-            const includeLastFrameCheckbox = Array.from(elements.timelineContainer.children)
-                .find((_, idx) => idx === lastIndex)
-                ?.querySelector('.include-last-frame-checkbox');
-            includeLastFrame = includeLastFrameCheckbox ? includeLastFrameCheckbox.checked : false;
-        }
-        
-        // Check if the last frame has a valid path
-        if (!lastFrame.serverPath) {
-            console.error(`No server path found for the last image:`, lastFrame);
-            alert(`Error: Missing server path for the last image. Please try re-uploading.`);
-            return;
-        }
-        
-        // Log the last frame for debugging
-        console.log(`Last frame path: ${lastFrame.serverPath}`);
-        
-        // If include last frame is checked, add it as a segment
-        if (includeLastFrame) {
-            console.log(`Including last frame as a segment with duration: ${lastFrame.duration}`);
-            segments.push({
-                image_path: lastFrame.serverPath,
-                prompt: lastPromptInput ? lastPromptInput.value : '',
-                duration: lastFrame.duration || 3.0
-            });
-        }
-    }
-    
-    if (segments.length === 0) {
-        // Reset progress UI
-        elements.progressContainer.classList.add('d-none');
-        return;
-    }
-    
-    // Generate a simple job name based on first image filename and timestamp
-    const currentDate = new Date();
-    const timestamp = currentDate.toISOString().slice(0, 16).replace('T', ' ');
-    const firstImageName = segments[0].image_path.split('/').pop().split('.')[0];
-    const jobName = `${firstImageName} - ${timestamp}`;
-    
-    // Create request payload with all form settings
-    const payload = {
-        global_prompt: elements.globalPrompt ? elements.globalPrompt.value : "",
-        negative_prompt: elements.negativePrompt ? elements.negativePrompt.value : "",
-        segments: segments,
-        job_name: jobName,
-        seed: Math.floor(Math.random() * 100000),
-        steps: elements.steps ? parseInt(elements.steps.value) : 25,
-        guidance_scale: elements.guidanceScale ? parseFloat(elements.guidanceScale.value) : 10.0,
-        use_teacache: elements.useTeacache ? elements.useTeacache.checked : true,
-        enable_adaptive_memory: elements.enableAdaptiveMemory ? elements.enableAdaptiveMemory.checked : true,
-        resolution: elements.resolution ? parseInt(elements.resolution.value) : 640,
-        mp4_crf: 16,
-        gpu_memory_preservation: 6.0,
-        include_last_frame: includeLastFrame
-    };
+    // Use common function to prepare the job payload
+    const payload = prepareJobPayload();
     
     console.log('Sending generation request with payload:', JSON.stringify(payload, null, 2));
     
@@ -607,6 +507,179 @@ function startGeneration() {
         elements.progressStatus.textContent = 'Error: ' + error.message;
         elements.progressBar.classList.add('bg-danger');
     });
+}
+
+// Function to save job without starting generation or clearing timeline
+function saveJob() {
+    if (timeline.length === 0) {
+        alert('Please add at least one image to the timeline before saving a job.');
+        return;
+    }
+    
+    // Check for invalid images in the timeline
+    const invalidImages = timeline.filter(item => item.valid === false);
+    if (invalidImages.length > 0) {
+        alert(`Cannot save job: ${invalidImages.length} image(s) are missing or invalid. Please replace them before saving.`);
+        return;
+    }
+    
+    // Use common function to prepare the job payload
+    const payload = prepareJobPayload();
+    // Add flag to indicate this is a saved job, not for immediate processing
+    payload.saved_only = true;
+    
+    console.log('Saving job with payload:', JSON.stringify(payload, null, 2));
+    
+    // Make API call to save job
+    fetch('/api/save_job', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+    })
+    .then(response => {
+        if (!response.ok) {
+            return response.text().then(text => {
+                throw new Error(`Failed to save job: ${text}`);
+            });
+        }
+        return response.json();
+    })
+    .then(data => {
+        console.log('Job saved:', data);
+        
+        // Show success message
+        showMessage('Job saved successfully!', 'success');
+        
+        // Refresh the job queue
+        loadJobQueue();
+        
+        // Notify via WebSocket if supported
+        if (window.WebSocket) {
+            // Optional: could add a specific notification for saved jobs
+        }
+    })
+    .catch(error => {
+        console.error('Error saving job:', error);
+        showMessage('Error saving job: ' + error.message, 'error');
+    });
+}
+
+// Common function to prepare job payload from timeline
+function prepareJobPayload() {
+    // Collect segments data
+    const segments = [];
+    
+    // For a single image, we need special handling to create a self-transition
+    if (timeline.length === 1) {
+        const singleFrame = timeline[0];
+        const promptInput = elements.timelineContainer.querySelector('.prompt-text');
+        
+        // Use the full server path directly
+        const imagePath = singleFrame.serverPath;
+        if (!imagePath) {
+            console.error('No server path found for the single image:', singleFrame);
+            throw new Error('Missing server path for the image. Please try re-uploading.');
+        }
+        
+        console.log(`Single image path: ${imagePath}`);
+        
+        // Add single segment with longer duration for self-transition
+        segments.push({
+            image_path: imagePath,
+            prompt: promptInput ? promptInput.value : '',
+            duration: singleFrame.duration || 3.0
+        });
+    } else {
+        // Process multiple images: Create transitions between each pair of frames
+        for (let i = 0; i < timeline.length - 1; i++) {
+            const currentFrame = timeline[i];
+            const promptInput = Array.from(elements.timelineContainer.children)
+                .find((_, idx) => idx === i)
+                ?.querySelector('.prompt-text');
+            
+            // Use the full server path directly
+            const imagePath = currentFrame.serverPath;
+            if (!imagePath) {
+                console.error(`No server path found for image at index ${i}:`, currentFrame);
+                throw new Error(`Missing server path for image ${i + 1}. Please try re-uploading.`);
+            }
+            
+            // Log each path for debugging
+            console.log(`Segment ${i + 1} path: ${imagePath}`);
+            
+            segments.push({
+                image_path: imagePath,
+                prompt: promptInput ? promptInput.value : '',
+                duration: currentFrame.duration
+            });
+        }
+        
+        // Add the last frame with its prompt
+        const lastIndex = timeline.length - 1;
+        const lastFrame = timeline[lastIndex];
+        const lastPromptInput = Array.from(elements.timelineContainer.children)
+            .find((_, idx) => idx === lastIndex)
+            ?.querySelector('.prompt-text');
+            
+        // Check if the includeAsSegment property exists, fall back to the checkbox if not
+        let includeLastFrame = lastFrame.includeAsSegment;
+        if (includeLastFrame === undefined) {
+            const includeLastFrameCheckbox = Array.from(elements.timelineContainer.children)
+                .find((_, idx) => idx === lastIndex)
+                ?.querySelector('.include-last-frame-checkbox');
+            includeLastFrame = includeLastFrameCheckbox ? includeLastFrameCheckbox.checked : false;
+        }
+        
+        // Check if the last frame has a valid path
+        if (!lastFrame.serverPath) {
+            console.error(`No server path found for the last image:`, lastFrame);
+            throw new Error(`Missing server path for the last image. Please try re-uploading.`);
+        }
+        
+        // Log the last frame for debugging
+        console.log(`Last frame path: ${lastFrame.serverPath}`);
+        
+        // If include last frame is checked, add it as a segment
+        if (includeLastFrame) {
+            console.log(`Including last frame as a segment with duration: ${lastFrame.duration}`);
+            segments.push({
+                image_path: lastFrame.serverPath,
+                prompt: lastPromptInput ? lastPromptInput.value : '',
+                duration: lastFrame.duration || 3.0
+            });
+        }
+    }
+    
+    if (segments.length === 0) {
+        throw new Error('No valid segments found in timeline.');
+    }
+    
+    // Generate a simple job name based on first image filename and timestamp
+    const currentDate = new Date();
+    const timestamp = currentDate.toISOString().slice(0, 16).replace('T', ' ');
+    const firstImageName = segments[0].image_path.split('/').pop().split('.')[0];
+    const jobName = `${firstImageName} - ${timestamp}`;
+    
+    // Create request payload with all form settings
+    const payload = {
+        global_prompt: elements.globalPrompt ? elements.globalPrompt.value : "",
+        negative_prompt: elements.negativePrompt ? elements.negativePrompt.value : "",
+        segments: segments,
+        job_name: jobName,
+        seed: Math.floor(Math.random() * 100000),
+        steps: elements.steps ? parseInt(elements.steps.value) : 25,
+        guidance_scale: elements.guidanceScale ? parseFloat(elements.guidanceScale.value) : 10.0,
+        use_teacache: elements.useTeacache ? elements.useTeacache.checked : true,
+        enable_adaptive_memory: elements.enableAdaptiveMemory ? elements.enableAdaptiveMemory.checked : true,
+        resolution: elements.resolution ? parseInt(elements.resolution.value) : 640,
+        mp4_crf: 16,
+        gpu_memory_preservation: 6.0,
+        include_last_frame: includeLastFrame
+    };
+    
+    return payload;
 }
 
 // Function to connect to job websocket and handle updates
@@ -1314,6 +1387,7 @@ export {
     saveFrameChanges,
     deleteCurrentFrame,
     startGeneration,
+    saveJob,
     pollJobStatus,
     uploadModal,
     setupJobWebsocketConnection,

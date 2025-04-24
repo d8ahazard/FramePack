@@ -67,6 +67,7 @@ const elements = {
     // New UI elements
     uploadImagesBtn: null,
     generateVideoBtn: null,
+    saveJobBtn: null,
     timelineContainer: null,
     progressContainer: null,
     progressStatus: null,
@@ -158,6 +159,7 @@ function initElements() {
     // Main interface elements
     elements.uploadImagesBtn = document.getElementById('uploadImagesBtn');
     elements.generateVideoBtn = document.getElementById('generateVideoBtn');
+    elements.saveJobBtn = document.getElementById('saveJobBtn');
     elements.timelineContainer = document.getElementById('timelineContainer');
     elements.progressContainer = document.getElementById('progressContainer');
     elements.progressBar = document.getElementById('progressBar');
