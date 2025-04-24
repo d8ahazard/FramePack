@@ -282,4 +282,54 @@ body {
 
 .timeline-arrow {
   color: var(--amethyst);
+}
+
+/* Job preview media containers */
+#currentJobThumbnail {
+  border: 2px solid var(--neutral-dark);
+  border-radius: 6px;
+  padding: 2px;
+  background-color: var(--neutral-dark);
+  transition: all 0.2s ease;
+}
+
+#currentJobThumbnail:hover {
+  border-color: var(--amethyst);
+  transform: scale(1.05);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+}
+
+#jobMediaContainer .card {
+  background-color: var(--neutral-darker);
+  border-color: var(--neutral-dark);
+}
+
+#jobMediaContainer .card-header {
+  background-color: var(--neutral-dark);
+  border-color: var(--neutral);
+}
+
+#jobCurrentVideo, #jobCurrentLatents {
+  max-height: 300px;
+  object-fit: contain;
+  background-color: var(--neutral-darkest);
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+/* Job item status colors */
+.job-item.running {
+  border-left-color: var(--amethyst);
+}
+
+.job-item.queued {
+  border-left-color: var(--burnt-orange);
+}
+
+.job-item.completed {
+  border-left-color: var(--cucumber);
+}
+
+.job-item.failed {
+  border-left-color: var(--french-mauve);
 } 

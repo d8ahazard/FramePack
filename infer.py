@@ -354,13 +354,13 @@ def load_models():
 class JobStatus:
     def __init__(self, job_id: str):
         self.job_id = job_id
-        self.status = "pending"
+        self.status = "queued"
         self.progress = 0
-        self.message = "Initializing..."
-        self.preview_image = None
+        self.message = ""
         self.result_video = None
         self.segments = []
-
+        self.current_latents = None  # Add this to track current latent images
+        
     def to_dict(self):
         return {
             "job_id": self.job_id,
@@ -368,7 +368,8 @@ class JobStatus:
             "progress": self.progress,
             "message": self.message,
             "result_video": self.result_video,
-            "segments": self.segments
+            "segments": self.segments,
+            "current_latents": self.current_latents  # Include in the dict
         }
 
 class SegmentConfig(BaseModel):
@@ -396,6 +397,7 @@ class JobStatusResponse(BaseModel):
     message: str
     result_video: Optional[str] = None
     segments: List[str] = []
+    current_latents: Optional[str] = None  # Add to response model
 
 class ErrorResponse(BaseModel):
     error: str
@@ -461,6 +463,7 @@ def worker(
     adaptive_memory_management = enable_adaptive_memory
     
     job_status = job_statuses.get(job_id, JobStatus(job_id))
+    job_status.status = "running"
     
     # how many latent sections
     total_latent_sections = int(
@@ -692,7 +695,11 @@ def worker(
                 transformer.initialize_teacache(enable_teacache=False)
 
             def callback(d):
-                preview = vae_decode_fake(d['denoised'])
+                # Get denoised latents
+                denoised = d['denoised']
+                
+                # Create preview using vae_decode_fake (faster)
+                preview = vae_decode_fake(denoised)
                 preview = (preview * 255.0).detach().cpu().numpy().clip(0, 255).astype(np.uint8)
                 preview = einops.rearrange(preview, 'b c t h w -> (b h) (t w) c')
                 
@@ -708,8 +715,27 @@ def worker(
                 
                 job_status.progress = total_progress
                 job_status.message = f"Generated {max(0, (total_generated * 4 - 3))} frames, {(max(0, (total_generated * 4 - 3)) / 30):.2f}s so far"
-                job_status.preview_image = preview_path
                 
+                # Save latent visualization (only for certain steps to avoid too many files)
+                if step % 5 == 0:  # Save every 5th step for efficiency
+                    try:
+                        # Get a single frame from the preview for the latent visualization
+                        # Extract the middle frame if multiple frames are available
+                        t_dim = preview.shape[1] // preview.shape[0]
+                        mid_frame_idx = t_dim // 2
+                        latent_preview = preview[:, mid_frame_idx * preview.shape[0]:(mid_frame_idx + 1) * preview.shape[0]]
+                        
+                        # Save to a temporary file
+                        latent_file = os.path.join(upload_folder, f"{job_id}_latent_{step}.jpg")
+                        Image.fromarray(latent_preview).save(latent_file)
+                        
+                        # Update job status with current latent
+                        status_obj = job_statuses.get(job_id)
+                        if status_obj:
+                            status_obj.current_latents = f"/uploads/{job_id}_latent_{step}.jpg"
+                    except Exception as e:
+                        print(f"Error saving latent preview: {e}")
+
                 return
 
             generated = sample_hunyuan(
@@ -822,6 +848,7 @@ def worker_multi_segment(
 ):
     global job_statuses
     job_status = job_statuses.get(job_id, JobStatus(job_id))
+    job_status.status = "running"
     job_status.message = "Starting multi-segment generation..."
     job_status.progress = 0
     job_statuses[job_id] = job_status
@@ -837,6 +864,75 @@ def worker_multi_segment(
 
     segment_paths = []
 
+    # Single segment case - simple animation from one image
+    if len(segments) == 1:
+        job_status.message = "Processing single image video..."
+        current_segment = segments[0]
+        
+        try:
+            # Get the image path directly from the segment
+            image_path = current_segment['image_path']
+            
+            if not os.path.exists(image_path):
+                raise FileNotFoundError(f"Image file not found: {image_path}")
+                
+            # Load start image
+            print(f"Loading single image from: {image_path}")
+            start_image = np.array(Image.open(image_path).convert('RGB'))
+            
+            # Use segment prompt if provided, concatenate with global prompt
+            segment_prompt = current_segment.get('prompt', '').strip()
+            if segment_prompt:
+                # Concatenate with global prompt
+                combined_prompt = f"{global_prompt.strip()}, {segment_prompt}"
+            else:
+                combined_prompt = global_prompt
+                
+            # Get segment duration (longer for single image)
+            segment_duration = current_segment.get('duration', 3.0)
+            
+            # Generate the video with the single image
+            segment_output = worker(
+                job_id=master_job_id,
+                input_image=start_image,
+                end_image=None,  # No end image for single image case
+                prompt=combined_prompt,
+                n_prompt=n_prompt,
+                seed=seed,
+                total_second_length=segment_duration,
+                latent_window_size=latent_window_size,
+                steps=steps,
+                cfg=cfg,
+                gs=gs,
+                rs=rs,
+                gpu_memory_preservation=gpu_memory_preservation,
+                use_teacache=use_teacache,
+                mp4_crf=mp4_crf,
+                enable_adaptive_memory=enable_adaptive_memory,
+                resolution=resolution,
+                segment_index=0,
+                master_job_id=master_job_id
+            )
+            
+            if segment_output:
+                job_status.status = "completed"
+                job_status.progress = 100
+                job_status.message = "Single image video generation completed!"
+                job_status.result_video = segment_output
+                return segment_output
+            else:
+                job_status.status = "failed"
+                job_status.message = "Failed to generate video from single image"
+                return None
+                
+        except Exception as e:
+            error_msg = f"Error processing single image: {str(e)}"
+            print(error_msg)
+            job_status.status = "failed"
+            job_status.message = error_msg
+            return None
+
+    # Process multiple segments (original implementation)
     # Process segments in reverse order
     num_segments = len(segments)
     for i in range(num_segments - 1, -1, -1):

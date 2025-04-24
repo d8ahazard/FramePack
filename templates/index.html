@@ -65,9 +65,14 @@
                                     <div id="progressBar" class="progress-bar" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
                                 </div>
                                 <p id="progressStatus" class="text-muted">Initializing...</p>
-                                <div id="previewContainer" class="d-none mb-3">
-                                    <h4 class="fs-6">Preview</h4>
-                                    <img id="previewImage" src="" alt="Preview" class="img-fluid border rounded">
+                                <div class="d-flex align-items-start mb-3">
+                                    <div id="currentJobThumbnail" class="me-3 d-none" style="width: 100px; cursor: pointer;" title="Click to view job details">
+                                        <img id="currentJobImage" src="" alt="First frame" class="img-fluid border rounded" style="max-width: 100px; max-height: 100px; object-fit: contain;">
+                                    </div>
+                                    <div id="previewContainer" class="d-none flex-grow-1">
+                                        <h4 class="fs-6">Preview</h4>
+                                        <img id="previewImage" src="" alt="Preview" class="img-fluid border rounded">
+                                    </div>
                                 </div>
                             </div>
                             
@@ -75,7 +80,7 @@
                             <div id="timelineContainer" class="timeline-container mb-4">
                                 <!-- Timeline items will be added here -->
                                 <div class="alert alert-info">
-                                    <i class="bi bi-info-circle me-2"></i> Upload at least two images to create a video. Each frame (except the last) will transition to the next frame, creating a seamless animation.
+                                    <i class="bi bi-info-circle me-2"></i> Upload one or more images to create a video. For multiple images, each frame (except the last) will transition to the next frame, creating a seamless animation.
                                 </div>
                             </div>
                             
@@ -158,6 +163,9 @@
                                 <div class="alert alert-secondary">
                                     <i class="bi bi-info-circle"></i> Select a job to view details
                                 </div>
+                            </div>
+                            <div id="jobMediaContainer" class="mt-4 d-none">
+                                <!-- Media content will be dynamically generated -->
                             </div>
                         </div>
                     </div>

@@ -303,22 +303,19 @@ function initEventListeners() {
 // Load the job queue UI
 async function loadJobQueue() {
     try {
-        jobQueueElements.jobsContainer.innerHTML = `
-            <div class="alert alert-info">
-                <i class="bi bi-info-circle"></i> Loading jobs...
-            </div>
-        `;
-        
         const response = await fetch('/api/list_jobs');
-        
         if (!response.ok) {
-            throw new Error('Failed to fetch job queue');
+            throw new Error(`Failed to fetch jobs: ${response.statusText}`);
         }
         
         const jobs = await response.json();
+        const jobsContainer = document.getElementById('jobsContainer');
+        
+        // Clear the container
+        jobsContainer.innerHTML = '';
         
         if (jobs.length === 0) {
-            jobQueueElements.jobsContainer.innerHTML = `
+            jobsContainer.innerHTML = `
                 <div class="alert alert-secondary">
                     <i class="bi bi-info-circle"></i> No jobs in queue
                 </div>
@@ -326,99 +323,76 @@ async function loadJobQueue() {
             return;
         }
         
-        // Sort jobs by timestamp (newest first)
+        // Sort jobs: running first, then queued, then completed/failed by timestamp (newest first)
         jobs.sort((a, b) => {
-            const aTime = a.job_id.split('_')[0] + '_' + a.job_id.split('_')[1];
-            const bTime = b.job_id.split('_')[0] + '_' + b.job_id.split('_')[1];
-            return bTime.localeCompare(aTime);
+            // First, prioritize by status
+            const statusOrder = { 'running': 0, 'queued': 1, 'completed': 2, 'failed': 3 };
+            const statusDiff = statusOrder[a.status] - statusOrder[b.status];
+            
+            if (statusDiff !== 0) return statusDiff;
+            
+            // If same status, sort by timestamp (extracted from job_id)
+            const aTime = parseInt(a.job_id.split('-')[0]);
+            const bTime = parseInt(b.job_id.split('-')[0]);
+            return bTime - aTime; // Newest first
         });
         
-        // Create a list of jobs
-        let jobsHtml = '';
-        
+        // Add each job to the container
         jobs.forEach(job => {
-            const jobTime = formatJobTimestamp(job.job_id);
-            let statusClass = '';
-            let statusIcon = '';
+            const jobItem = document.createElement('div');
+            jobItem.className = `job-item ${job.status}`;
+            jobItem.dataset.jobId = job.job_id;
             
-            switch (job.status) {
-                case 'pending':
-                    statusClass = 'pending';
-                    statusIcon = '<i class="bi bi-hourglass-split me-2"></i>';
-                    break;
-                case 'completed':
-                    statusClass = 'completed';
-                    statusIcon = '<i class="bi bi-check-circle me-2"></i>';
-                    break;
-                case 'failed':
-                    statusClass = 'failed';
-                    statusIcon = '<i class="bi bi-exclamation-triangle me-2"></i>';
-                    break;
-                default:
-                    statusIcon = '<i class="bi bi-question-circle me-2"></i>';
+            // Determine the status badge class
+            let statusBadgeClass = 'bg-secondary';
+            if (job.status === 'completed') {
+                statusBadgeClass = 'bg-success';
+            } else if (job.status === 'failed') {
+                statusBadgeClass = 'bg-danger';
+            } else if (job.status === 'running') {
+                statusBadgeClass = 'bg-primary';
+            } else if (job.status === 'queued') {
+                statusBadgeClass = 'bg-warning';
             }
             
-            jobsHtml += `
-                <div class="job-item ${statusClass}" data-job-id="${job.job_id}">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <div>
-                            ${statusIcon}
-                            <strong>Job ${jobTime}</strong>
-                        </div>
-                        <div class="job-actions">
-                            ${job.status === 'pending' ? 
-                                `<button class="btn btn-sm btn-outline-danger cancel-job-btn" data-job-id="${job.job_id}">
-                                    <i class="bi bi-x-circle"></i> Cancel
-                                </button>` : 
-                                `<span class="badge ${job.status === 'completed' ? 'bg-success' : 'bg-danger'}">${job.status}</span>`
-                            }
-                        </div>
+            jobItem.innerHTML = `
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <div class="fw-bold">${formatJobTimestamp(job.job_id)}</div>
+                        <div class="text-muted small">ID: ${job.job_id}</div>
                     </div>
+                    <span class="badge ${statusBadgeClass}">${job.status}</span>
                 </div>
+                <div class="mt-2">
+                    <div class="text-muted small">${job.message || 'No message'}</div>
+                </div>
+                ${job.status === 'running' ? `
+                <div class="progress mt-2" style="height: 5px;">
+                    <div class="progress-bar" role="progressbar" style="width: ${job.progress}%" aria-valuenow="${job.progress}" aria-valuemin="0" aria-valuemax="100"></div>
+                </div>` : ''}
             `;
-        });
-        
-        jobQueueElements.jobsContainer.innerHTML = jobsHtml;
-        
-        // Add click event listeners to job items
-        document.querySelectorAll('.job-item').forEach(jobItem => {
-            jobItem.addEventListener('click', (e) => {
-                if (e.target.closest('.cancel-job-btn')) {
-                    // If the click was on the cancel button, don't select the job
-                    return;
-                }
-                
+            
+            jobItem.addEventListener('click', () => {
                 // Remove active class from all job items
                 document.querySelectorAll('.job-item').forEach(item => {
                     item.classList.remove('active');
                 });
                 
-                // Add active class to clicked job item
+                // Add active class to the clicked job item
                 jobItem.classList.add('active');
                 
-                // Load job details
-                const jobId = jobItem.dataset.jobId;
-                loadJobDetails(jobId);
+                // Load the job details
+                loadJobDetails(job.job_id);
             });
-        });
-        
-        // Add click event listeners to cancel buttons
-        document.querySelectorAll('.cancel-job-btn').forEach(button => {
-            button.addEventListener('click', async (e) => {
-                e.stopPropagation(); // Prevent job selection
-                const jobId = button.dataset.jobId;
-                
-                if (confirm(`Are you sure you want to cancel job ${formatJobTimestamp(jobId)}?`)) {
-                    await cancelJob(jobId);
-                }
-            });
+            
+            jobsContainer.appendChild(jobItem);
         });
         
     } catch (error) {
         console.error('Error loading job queue:', error);
-        jobQueueElements.jobsContainer.innerHTML = `
+        document.getElementById('jobsContainer').innerHTML = `
             <div class="alert alert-danger">
-                <i class="bi bi-exclamation-triangle"></i> Failed to load job queue: ${error.message}
+                <i class="bi bi-exclamation-triangle"></i> Error loading jobs: ${error.message}
             </div>
         `;
     }
@@ -427,118 +401,149 @@ async function loadJobQueue() {
 // Load job details
 async function loadJobDetails(jobId) {
     try {
-        jobQueueElements.jobDetailContainer.innerHTML = `
-            <div class="alert alert-info">
-                <i class="bi bi-info-circle"></i> Loading job details...
+        const response = await fetch(`/api/job_status/${jobId}`);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch job details: ${response.statusText}`);
+        }
+        
+        const jobData = await response.json();
+        
+        // Clear previous content
+        const jobDetailContainer = document.getElementById('jobDetailContainer');
+        jobDetailContainer.innerHTML = '';
+        
+        const jobMediaContainer = document.getElementById('jobMediaContainer');
+        
+        // Basic job information card
+        const jobInfoCard = document.createElement('div');
+        jobInfoCard.className = 'card mb-3';
+        
+        // Determine the status badge class
+        let statusBadgeClass = 'bg-secondary';
+        if (jobData.status === 'completed') {
+            statusBadgeClass = 'bg-success';
+        } else if (jobData.status === 'failed') {
+            statusBadgeClass = 'bg-danger';
+        } else if (jobData.status === 'running') {
+            statusBadgeClass = 'bg-primary';
+        } else if (jobData.status === 'queued') {
+            statusBadgeClass = 'bg-warning';
+        }
+        
+        jobInfoCard.innerHTML = `
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">Job Information</h5>
+                <span class="badge ${statusBadgeClass}">${jobData.status}</span>
+            </div>
+            <div class="card-body">
+                <p><strong>Job ID:</strong> ${jobId}</p>
+                <p><strong>Status:</strong> ${jobData.status}</p>
+                <p><strong>Progress:</strong> ${jobData.progress}%</p>
+                <p><strong>Message:</strong> ${jobData.message || 'No message'}</p>
+                <p><strong>Created:</strong> ${formatJobTimestamp(jobId)}</p>
+                ${jobData.result_video ? `<p><strong>Result:</strong> <a href="${jobData.result_video}" target="_blank">${jobData.result_video.split('/').pop()}</a></p>` : ''}
+                
+                ${jobData.status === 'running' || jobData.status === 'completed' ? 
+                    `<div class="progress mb-3">
+                        <div class="progress-bar" role="progressbar" style="width: ${jobData.progress}%" aria-valuenow="${jobData.progress}" aria-valuemin="0" aria-valuemax="100">${jobData.progress}%</div>
+                    </div>` : ''}
             </div>
         `;
         
-        const response = await fetch(`/api/job_status/${jobId}`);
+        // Add the job info card
+        jobDetailContainer.appendChild(jobInfoCard);
         
-        if (!response.ok) {
-            throw new Error('Failed to fetch job details');
-        }
-        
-        const job = await response.json();
-        
-        // Create job details UI
-        let statusBadgeClass = '';
-        switch (job.status) {
-            case 'pending':
-                statusBadgeClass = 'bg-primary';
-                break;
-            case 'completed':
-                statusBadgeClass = 'bg-success';
-                break;
-            case 'failed':
-                statusBadgeClass = 'bg-danger';
-                break;
-            default:
-                statusBadgeClass = 'bg-secondary';
-        }
-        
-        let detailsHtml = `
-            <div class="card mb-3">
-                <div class="card-body">
-                    <h3 class="fs-5 mb-3">Job ${formatJobTimestamp(jobId)}</h3>
-                    <span class="badge ${statusBadgeClass} mb-3">${job.status}</span>
-                    
-                    <div class="row mb-3">
-                        <div class="col-md-4 fw-bold">Job ID:</div>
-                        <div class="col-md-8">${jobId}</div>
-                    </div>
-        `;
-        
-        if (job.status === 'pending') {
-            // For pending jobs, show progress information
-            const progressPercentage = job.progress || 0;
+        // Show video and latents if job is running or completed
+        if (jobData.status === 'running' || jobData.status === 'completed') {
+            jobMediaContainer.classList.remove('d-none');
             
-            detailsHtml += `
-                <div class="row mb-3">
-                    <div class="col-md-4 fw-bold">Progress:</div>
-                    <div class="col-md-8">
-                        <div class="progress">
-                            <div class="progress-bar" role="progressbar" style="width: ${progressPercentage}%" 
-                                aria-valuenow="${progressPercentage}" aria-valuemin="0" aria-valuemax="100">
-                                ${progressPercentage}%
-                            </div>
-                        </div>
+            // Handle video preview
+            const videoContainer = document.createElement('div');
+            videoContainer.className = 'col-md-6';
+            videoContainer.innerHTML = `
+                <div class="card mb-3">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0 fs-6">Current Output</h5>
                     </div>
-                </div>
-                
-                <div class="row mb-3">
-                    <div class="col-md-4 fw-bold">Status:</div>
-                    <div class="col-md-8">${job.message || 'Processing...'}</div>
+                    <div class="card-body text-center">
+                        ${jobData.result_video ? 
+                            `<video id="jobCurrentVideo" src="${jobData.result_video}" controls class="img-fluid rounded"></video>` :
+                            `<div class="text-muted py-5"><i class="bi bi-film me-2"></i>Video not available yet</div>`
+                        }
+                    </div>
                 </div>
             `;
             
-            if (job.preview_image) {
-                detailsHtml += `
-                    <div class="row mb-3">
-                        <div class="col-md-4 fw-bold">Preview:</div>
-                        <div class="col-md-8">
-                            <img src="${job.preview_image}" class="img-fluid rounded" alt="Preview">
-                        </div>
-                    </div>
-                `;
+            // Handle latents preview
+            const latentsContainer = document.createElement('div');
+            latentsContainer.className = 'col-md-6';
+            
+            // Determine which image to show, with fallbacks
+            let latentImageSrc = '';
+            if (jobData.current_latents) {
+                latentImageSrc = jobData.current_latents;
+            } else if (jobData.segments && jobData.segments.length > 0) {
+                latentImageSrc = jobData.segments[0];
             }
             
-        } else if (job.status === 'completed') {
-            // For completed jobs, show the result video
-            detailsHtml += `
-                <div class="row mb-3">
-                    <div class="col-12">
-                        <video src="${job.result_video}" controls class="img-fluid rounded mb-3"></video>
-                        <a href="${job.result_video}" download class="btn btn-primary btn-sm">
-                            <i class="bi bi-download"></i> Download Video
-                        </a>
+            latentsContainer.innerHTML = `
+                <div class="card mb-3">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0 fs-6">Current Latents</h5>
+                    </div>
+                    <div class="card-body text-center">
+                        ${latentImageSrc ? 
+                            `<img id="jobCurrentLatents" src="${latentImageSrc}" class="img-fluid rounded" alt="Current latents">` :
+                            `<div class="text-muted py-5"><i class="bi bi-image me-2"></i>Latent image not available yet</div>`
+                        }
                     </div>
                 </div>
             `;
-        } else if (job.status === 'failed') {
-            // For failed jobs, show the error message
-            detailsHtml += `
-                <div class="row mb-3">
-                    <div class="col-md-4 fw-bold">Error:</div>
-                    <div class="col-md-8 text-danger">${job.message || 'Unknown error'}</div>
-                </div>
-            `;
+            
+            // Clear existing content and add new containers
+            jobMediaContainer.innerHTML = '';
+            const rowContainer = document.createElement('div');
+            rowContainer.className = 'row';
+            rowContainer.appendChild(videoContainer);
+            rowContainer.appendChild(latentsContainer);
+            jobMediaContainer.appendChild(rowContainer);
+        } else {
+            jobMediaContainer.classList.add('d-none');
         }
         
-        detailsHtml += `
-                </div>
-            </div>
-        `;
+        // Add cancel button if job is running or queued
+        if (jobData.status === 'running' || jobData.status === 'queued') {
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'btn btn-danger mt-3';
+            cancelBtn.innerHTML = '<i class="bi bi-x-circle"></i> Cancel Job';
+            cancelBtn.onclick = () => cancelJob(jobId);
+            jobDetailContainer.appendChild(cancelBtn);
+        }
         
-        jobQueueElements.jobDetailContainer.innerHTML = detailsHtml;
+        // Add "View Result" button if job is completed
+        if (jobData.status === 'completed' && jobData.result_video) {
+            const viewBtn = document.createElement('button');
+            viewBtn.className = 'btn btn-primary mt-3 me-2';
+            viewBtn.innerHTML = '<i class="bi bi-play-circle"></i> View Video';
+            viewBtn.onclick = () => openVideoViewer(jobData.result_video, jobData.result_video.split('/').pop());
+            jobDetailContainer.appendChild(viewBtn);
+            
+            const downloadBtn = document.createElement('a');
+            downloadBtn.className = 'btn btn-outline-primary mt-3';
+            downloadBtn.href = jobData.result_video;
+            downloadBtn.download = jobData.result_video.split('/').pop();
+            downloadBtn.innerHTML = '<i class="bi bi-download"></i> Download Video';
+            jobDetailContainer.appendChild(downloadBtn);
+        }
         
     } catch (error) {
         console.error('Error loading job details:', error);
-        jobQueueElements.jobDetailContainer.innerHTML = `
+        document.getElementById('jobDetailContainer').innerHTML = `
             <div class="alert alert-danger">
-                <i class="bi bi-exclamation-triangle"></i> Failed to load job details: ${error.message}
+                <i class="bi bi-exclamation-triangle"></i> Error loading job details: ${error.message}
             </div>
         `;
+        document.getElementById('jobMediaContainer').classList.add('d-none');
     }
 }
 
@@ -1408,8 +1413,8 @@ function saveFrameChanges() {
 function updateTimelineStatus() {
     // Enable/disable generate button based on timeline
     if (elements.generateVideoBtn) {
-        // Need at least 2 frames to generate a video
-        elements.generateVideoBtn.disabled = timeline.length < 2;
+        // Need at least 1 frame to generate a video
+        elements.generateVideoBtn.disabled = timeline.length < 1;
     }
     
     // Show message when timeline is empty
@@ -1419,7 +1424,7 @@ function updateTimelineStatus() {
                 <div class="text-center py-5">
                     <i class="bi bi-images fs-1 mb-3"></i>
                     <h5 class="fw-bold mb-3">Add Images to Timeline</h5>
-                    <p class="text-muted mb-4">Upload at least two images to create transitions between frames</p>
+                    <p class="text-muted mb-4">Upload one or more images to create videos</p>
                     <button class="btn btn-primary mt-2 px-4 py-2" id="dropzoneUploadBtn">
                         <i class="bi bi-upload me-2"></i> Browse for Images
                     </button>
@@ -1562,39 +1567,54 @@ function startGeneration() {
     elements.progressStatus.textContent = 'Preparing generation request...';
     
     // Collect segments data
-    // Create N-1 segments for N frames, since we need pairs of frames to create transitions
     const segments = [];
     
-    // Only process up to the second-to-last frame as segment starts
-    for (let i = 0; i < timeline.length - 1; i++) {
-        const currentFrame = timeline[i];
-        const promptInput = Array.from(elements.timelineContainer.children)
-            .find((_, idx) => idx === i)
-            ?.querySelector('.prompt-text');
+    // For a single image, we need to create a special case
+    if (timeline.length === 1) {
+        const singleFrame = timeline[0];
+        const promptInput = elements.timelineContainer.querySelector('.prompt-text');
         
         // Use the full server path directly
-        const imagePath = currentFrame.serverPath;
+        const imagePath = singleFrame.serverPath;
         if (!imagePath) {
-            console.error(`No server path found for image at index ${i}:`, currentFrame);
-            alert(`Error: Missing server path for image ${i + 1}. Please try re-uploading.`);
+            console.error('No server path found for the single image:', singleFrame);
+            alert('Error: Missing server path for the image. Please try re-uploading.');
             return;
         }
         
-        // Log each path for debugging
-        console.log(`Segment ${i + 1} path: ${imagePath}`);
+        console.log(`Single image path: ${imagePath}`);
         
+        // Add single segment with longer duration
         segments.push({
             image_path: imagePath,
             prompt: promptInput ? promptInput.value : '',
-            duration: currentFrame.duration
+            duration: singleFrame.duration || 3.0
         });
-    }
-    
-    // Special case: If only one frame, we can't create a segment
-    if (timeline.length === 1) {
-        alert('Please add at least two images to create a video. A single image cannot be animated.');
-        elements.progressContainer.classList.add('d-none');
-        return;
+    } else {
+        // Process multiple images: Create N-1 segments for N frames
+        for (let i = 0; i < timeline.length - 1; i++) {
+            const currentFrame = timeline[i];
+            const promptInput = Array.from(elements.timelineContainer.children)
+                .find((_, idx) => idx === i)
+                ?.querySelector('.prompt-text');
+            
+            // Use the full server path directly
+            const imagePath = currentFrame.serverPath;
+            if (!imagePath) {
+                console.error(`No server path found for image at index ${i}:`, currentFrame);
+                alert(`Error: Missing server path for image ${i + 1}. Please try re-uploading.`);
+                return;
+            }
+            
+            // Log each path for debugging
+            console.log(`Segment ${i + 1} path: ${imagePath}`);
+            
+            segments.push({
+                image_path: imagePath,
+                prompt: promptInput ? promptInput.value : '',
+                duration: currentFrame.duration
+            });
+        }
     }
     
     if (segments.length === 0) {
@@ -1653,46 +1673,109 @@ function startGeneration() {
 
 // Function to poll job status
 function pollJobStatus(jobId) {
-    const statusUrl = `/api/job_status/${jobId}`;
-    const pollInterval = setInterval(() => {
-        fetch(statusUrl)
-            .then(response => response.json())
-            .then(data => {
-                // Update progress
-                const progress = data.progress || 0;
-                elements.progressBar.style.width = `${progress}%`;
-                elements.progressBar.setAttribute('aria-valuenow', progress);
-                elements.progressBar.textContent = `${progress}%`;
-                elements.progressStatus.textContent = data.message || 'Processing...';
+    // Set up interval for polling the job status
+    const statusInterval = setInterval(async () => {
+        try {
+            const response = await fetch(`/api/job_status/${jobId}`);
+            if (!response.ok) {
+                throw new Error(`Failed to fetch job status: ${response.statusText}`);
+            }
+            
+            const data = await response.json();
+            const progressBar = document.getElementById('progressBar');
+            const progressStatus = document.getElementById('progressStatus');
+            const progressContainer = document.getElementById('progressContainer');
+            const generateBtn = document.getElementById('generateVideoBtn');
+            const currentJobImage = document.getElementById('currentJobImage');
+            const currentJobThumbnail = document.getElementById('currentJobThumbnail');
+            
+            // Update the progress bar and status message
+            progressBar.style.width = `${data.progress}%`;
+            progressBar.setAttribute('aria-valuenow', data.progress);
+            progressBar.textContent = `${data.progress}%`;
+            progressStatus.textContent = data.message || 'Processing...';
+            
+            // Show the thumbnail if we have segments
+            if (data.segments && data.segments.length > 0) {
+                currentJobImage.src = data.segments[0];
+                currentJobThumbnail.classList.remove('d-none');
                 
-                // Show preview if available
-                if (data.preview_image) {
-                    elements.previewContainer.classList.remove('d-none');
-                    elements.previewImage.src = data.preview_image;
-                }
-                
-                // Check if job is complete or failed
-                if (data.status === 'completed') {
-                    clearInterval(pollInterval);
-                    elements.progressStatus.textContent = 'Video generation completed!';
+                // Set up click handler to go to job queue tab and select this job
+                currentJobThumbnail.onclick = () => {
+                    // Switch to the job queue tab
+                    const queueTab = document.getElementById('queue-tab');
+                    bootstrap.Tab.getOrCreateInstance(queueTab).show();
                     
-                    // After a delay, switch to the output tab to show the result
-                    setTimeout(() => {
-                        const outputTab = document.getElementById('output-tab');
-                        if (outputTab) {
-                            outputTab.click();
+                    // Select this job
+                    loadJobDetails(jobId);
+                    
+                    // Highlight this job in the list
+                    const jobItems = document.querySelectorAll('.job-item');
+                    jobItems.forEach(item => {
+                        item.classList.remove('active');
+                        if (item.dataset.jobId === jobId) {
+                            item.classList.add('active');
                         }
-                    }, 2000);
-                } else if (data.status === 'failed') {
-                    clearInterval(pollInterval);
-                    elements.progressStatus.textContent = 'Error: ' + data.message;
-                    elements.progressBar.classList.add('bg-danger');
+                    });
+                };
+            } else {
+                // Hide the thumbnail if no segments are available yet
+                currentJobThumbnail.classList.add('d-none');
+            }
+            
+            // Check if job is completed or failed
+            if (data.status === 'completed' || data.status === 'failed') {
+                clearInterval(statusInterval);
+                
+                if (data.status === 'completed') {
+                    progressStatus.textContent = 'Video generation completed!';
+                    
+                    // If we have a result video, show it
+                    if (data.result_video) {
+                        const resultContainer = document.createElement('div');
+                        resultContainer.className = 'mt-3';
+                        resultContainer.innerHTML = `
+                            <h4 class="fs-6">Result</h4>
+                            <div class="d-flex flex-column">
+                                <video id="resultVideo" src="${data.result_video}" controls class="img-fluid rounded mb-2"></video>
+                                <div class="btn-group">
+                                    <a href="${data.result_video}" download class="btn btn-primary">
+                                        <i class="bi bi-download"></i> Download
+                                    </a>
+                                    <button type="button" class="btn btn-outline-primary" onclick="openVideoViewer('${data.result_video}', '${data.result_video.split('/').pop()}')">
+                                        <i class="bi bi-fullscreen"></i> Fullscreen
+                                    </button>
+                                </div>
+                            </div>
+                        `;
+                        progressContainer.appendChild(resultContainer);
+                    }
+                    
+                    showMessage('Video generation completed successfully!', 'success');
+                } else {
+                    progressStatus.textContent = `Failed: ${data.message}`;
+                    showMessage(`Video generation failed: ${data.message}`, 'danger');
                 }
-            })
-            .catch(error => {
-                console.error('Error polling job status:', error);
-            });
-    }, 1000); // Poll every second
+                
+                // Re-enable the generate button
+                generateBtn.disabled = false;
+                
+                // Load the updated job list
+                loadJobQueue();
+                
+                // Load the updated outputs
+                loadOutputs();
+                
+                return;
+            }
+            
+        } catch (error) {
+            console.error('Error polling job status:', error);
+            clearInterval(statusInterval);
+            document.getElementById('progressStatus').textContent = `Error: ${error.message}`;
+            document.getElementById('generateVideoBtn').disabled = false;
+        }
+    }, 2000);
 }
 
 // Check for running job
