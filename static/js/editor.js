@@ -532,6 +532,9 @@ function pollJobStatus(jobId) {
                 currentJobImage.src = data.segments[0];
                 currentJobThumbnail.classList.remove('d-none');
                 
+                // Add a title to help users understand this is a latent representation
+                currentJobImage.title = "Latent representation (864×64)";
+                
                 // Set up click handler to go to job queue tab and select this job
                 currentJobThumbnail.onclick = () => {
                     // Switch to the job queue tab

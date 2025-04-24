@@ -332,4 +332,47 @@ body {
 
 .job-item.failed {
   border-left-color: var(--french-mauve);
+}
+
+/* Update latent preview styling for dark theme */
+#jobCurrentLatents {
+  width: 100%;
+  height: auto;
+  max-height: none;
+  object-fit: contain;
+  background-color: var(--neutral-darkest);
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  padding: 10px 0;
+}
+
+#jobMediaContainer .card-body:has(#jobCurrentLatents) {
+  padding: 10px;
+  background-color: var(--neutral-darkest);
+  border-radius: 0 0 0 0;
+}
+
+#jobMediaContainer .card-footer {
+  background-color: var(--neutral-dark);
+  border-color: var(--neutral);
+  color: var(--neutral-light);
+}
+
+/* Video preview styling */
+#jobCurrentVideo {
+  max-height: 300px;
+  object-fit: contain;
+  background-color: var(--neutral-darkest);
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+/* Progress view job thumbnail styling */
+#currentJobThumbnail {
+  background-color: var(--neutral-darkest);
+  border: 1px solid var(--neutral-dark);
+}
+
+#currentJobImage {
+  border-radius: 4px;
 } 

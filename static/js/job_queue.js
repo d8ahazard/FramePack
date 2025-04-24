@@ -346,10 +346,13 @@ async function loadJobDetails(jobId) {
                     </div>
                     <div class="card-body text-center">
                         ${latentImageSrc ? 
-                            `<img id="jobCurrentLatents" src="${latentImageSrc}" class="img-fluid rounded" alt="Current latents">` :
+                            `<img id="jobCurrentLatents" src="${latentImageSrc}" class="img-fluid rounded" alt="Current latents" title="Latent representation (864×64)">` :
                             `<div class="text-muted py-5"><i class="bi bi-image me-2"></i>Latent image not available yet</div>`
                         }
                     </div>
+                    ${latentImageSrc ? `<div class="card-footer p-2 text-center">
+                        <small class="text-muted">Latent dimensions: 864×64 pixels</small>
+                    </div>` : ''}
                 </div>
             `;
             

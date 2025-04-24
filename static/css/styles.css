@@ -525,11 +525,23 @@ body {
     background-color: #f8f9fa;
 }
 
-#currentImageContainer {
-    border: 1px solid #ddd;
-    padding: 10px;
+#currentJobThumbnail {
+    width: 200px;
+    height: auto;
+    min-height: 60px;
+    cursor: pointer;
+    overflow: hidden;
+    margin-right: 12px;
+    background-color: #000;
+    border-radius: 6px;
+    padding: 5px;
+}
+
+#currentJobImage {
+    width: 100%;
+    height: auto;
+    object-fit: contain;
     border-radius: 4px;
-    background-color: #f8f9fa;
 }
 
 /* Progress and result styles */
@@ -698,6 +710,33 @@ header h3 {
 
 .job-item.failed {
     border-left-color: #dc3545;
+}
+
+/* Latent preview specific styling */
+#jobCurrentLatents {
+    width: 100%;
+    height: auto;
+    max-height: none;
+    object-fit: contain;
+    background-color: #000;
+    border-radius: 4px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    padding: 10px 0;
+}
+
+/* Latent container specific styling */
+#jobMediaContainer .card-body:has(#jobCurrentLatents) {
+    padding: 10px;
+    background-color: #000;
+    border-radius: 0 0 4px 4px;
+}
+
+/* Video preview maintains original styling */
+#jobCurrentVideo {
+    max-height: 300px;
+    object-fit: contain;
+    border-radius: 4px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
 /* Output videos grid */

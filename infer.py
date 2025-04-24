@@ -860,25 +860,30 @@ def worker(
                 # Save latent visualization (only for certain steps to avoid too many files)
                 if step % 5 == 0:  # Save every 5th step for efficiency
                     try:
-                        # Get a single frame from the preview for the latent visualization
-                        # Extract the middle frame if multiple frames are available
-                        t_dim = preview.shape[1] // preview.shape[0]
-                        mid_frame_idx = t_dim // 2
-                        latent_preview = preview[:, mid_frame_idx * preview.shape[0]:(mid_frame_idx + 1) * preview.shape[0]]
-                        
-                        # Save to a temporary file
-                        latent_file = os.path.join(upload_folder, f"{job_id}_latent_{step}.jpg")
-                        Image.fromarray(latent_preview).save(latent_file)
+                        # Use a consistent filename for the current job's latent visualization
+                        # This will overwrite the previous one instead of creating multiple files
+                        latent_file = os.path.join(upload_folder, f"{job_id}_latent.jpg")
+                        Image.fromarray(preview).save(latent_file)
                         
                         # Update job status with current latent
                         status_obj = job_statuses.get(job_id)
                         if status_obj:
-                            status_obj.current_latents = f"/uploads/{job_id}_latent_{step}.jpg"
+                            # Use a consistent path that doesn't include the step number
+                            status_obj.current_latents = f"/uploads/{job_id}_latent.jpg"
+                            # Add a cache-busting parameter to force browser refresh
+                            status_obj.current_latents += f"?step={step}&t={int(time.time())}"
                             # Save updated status to disk
                             save_job_data(job_id, status_obj.to_dict())
                     except Exception as e:
                         print(f"Error saving latent preview: {e}")
-
+                
+                # Check if the job has been cancelled
+                status_obj = job_statuses.get(job_id)
+                if status_obj and status_obj.status == "cancelled":
+                    print(f"Job {job_id} was cancelled during processing")
+                    # This will cause the sampling to stop at the current step
+                    d['stop'] = True
+                
                 return
 
             generated = sample_hunyuan(
@@ -1040,6 +1045,15 @@ def worker_multi_segment(
 
     segment_paths = []
 
+    # Check if the job has been cancelled
+    if job_status.status == "cancelled":
+        print(f"Job {job_id} was cancelled before processing started")
+        try:
+            shutil.rmtree(master_temp)
+        except Exception as e:
+            print(f"Cleanup error: {e}")
+        return None
+
     # Single segment case - simple animation from one image
     if len(segments) == 1:
         job_status.message = "Processing single image video..."
@@ -1048,6 +1062,15 @@ def worker_multi_segment(
         current_segment = segments[0]
         
         try:
+            # Check if the job has been cancelled
+            if job_status.status == "cancelled":
+                print(f"Job {job_id} was cancelled before single segment processing started")
+                try:
+                    shutil.rmtree(master_temp)
+                except Exception as e:
+                    print(f"Cleanup error: {e}")
+                return None
+            
             # Get the image path directly from the segment
             image_path = current_segment['image_path']
             
@@ -1127,6 +1150,16 @@ def worker_multi_segment(
         seg_no = num_segments - i
         segment_idx = num_segments - 1 - i  # Index in the workloads array
         current_segment = segments[i]
+        
+        # Check if the job has been cancelled
+        job_status = job_statuses.get(job_id)
+        if job_status and job_status.status == "cancelled":
+            print(f"Job {job_id} was cancelled before segment {seg_no} processing started")
+            try:
+                shutil.rmtree(master_temp)
+            except Exception as e:
+                print(f"Cleanup error: {e}")
+            return None
         
         # Calculate progress up to this segment
         previous_segments_progress = 0
@@ -1854,6 +1887,64 @@ async def delete_job(job_id: str, request: DeleteJobRequest = None):
         "message": f"Job {job_id} deleted",
         "deleted_images": deleted_images
     }
+
+@app.post("/api/cancel_job/{job_id}", response_model=Union[dict, ErrorResponse])
+async def cancel_job(job_id: str):
+    """
+    Cancel a running job
+    
+    Args:
+        job_id: The unique job identifier
+        
+    Returns:
+        Success message or error
+    """
+    # Check if job exists
+    if job_id not in job_statuses and not load_job_data(job_id):
+        return ErrorResponse(error="Job not found")
+    
+    try:
+        # Get the job status
+        if job_id in job_statuses:
+            job_status = job_statuses[job_id]
+        else:
+            job_data = load_job_data(job_id)
+            if not job_data:
+                return ErrorResponse(error="Job not found")
+            job_status = JobStatus(job_id, job_data.get("job_name"))
+            job_status.__dict__.update(job_data)
+            job_statuses[job_id] = job_status
+        
+        # Only cancel if the job is running or queued
+        if job_status.status not in ["running", "queued"]:
+            return ErrorResponse(error=f"Cannot cancel job with status '{job_status.status}'")
+        
+        # Update job status
+        job_status.status = "cancelled"
+        job_status.message = "Job cancelled by user"
+        
+        # Save the updated status to disk
+        save_job_data(job_id, job_status.to_dict())
+        
+        # Note: The actual cancellation of the running process happens in the worker functions
+        # They periodically check the job status and will detect the cancelled state
+        
+        # Clean up any temporary preview files
+        latent_preview = os.path.join(upload_folder, f"{job_id}_latent.jpg")
+        if os.path.exists(latent_preview):
+            try:
+                os.remove(latent_preview)
+            except Exception as e:
+                print(f"Failed to delete latent preview: {e}")
+        
+        return {
+            "success": True,
+            "message": f"Job {job_id} has been cancelled"
+        }
+        
+    except Exception as e:
+        print(f"Error cancelling job: {e}")
+        return ErrorResponse(error=f"Failed to cancel job: {str(e)}")
 
 def cleanup_thumbnail_cache(max_age_days=30):
     """
