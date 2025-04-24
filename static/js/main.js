@@ -222,6 +222,10 @@ function initEventListeners() {
     // File input change event
     if (elements.fileInput) {
         elements.fileInput.addEventListener('change', handleFileSelect);
+        // Add click event listener to prevent propagation
+        elements.fileInput.addEventListener('click', (e) => {
+            e.stopPropagation();
+        });
     }
     
     // Upload drop area events
