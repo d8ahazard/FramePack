@@ -16,13 +16,16 @@ import einops
 import numpy as np
 from huggingface_hub import snapshot_download
 import uvicorn
-from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from pydantic import BaseModel
+from starlette.endpoints import WebSocketEndpoint
+from starlette.types import Receive, Scope, Send
+import asyncio
 
 from PIL import Image
 from diffusers import AutoencoderKLHunyuanVideo
@@ -111,21 +114,23 @@ job_statuses = {}
 # Job data persistence functions
 # ----------------------------------------
 def save_job_data(job_id, job_data):
-    """
-    Save job data to a JSON file
+    """Save job data to disk for persistence."""
+    os.makedirs("jobs", exist_ok=True)
     
-    Args:
-        job_id: Unique job ID
-        job_data: Dictionary of job data including settings and status
-    """
-    job_file = os.path.join(jobs_folder, f"{job_id}.json")
-    try:
-        with open(job_file, 'w') as f:
-            json.dump(job_data, f, indent=2)
-        return True
-    except Exception as e:
-        print(f"Error saving job data: {e}")
-        return False
+    # For compatibility: if job_data is a JobStatus object, convert it to dict
+    if isinstance(job_data, JobStatus):
+        data_dict = job_data.to_dict()
+    else:
+        data_dict = job_data
+        
+    # Save to disk
+    with open(f"jobs/{job_id}.json", "w") as f:
+        json.dump(data_dict, f)
+        
+    # Broadcast update to WebSocket clients
+    asyncio.create_task(manager.broadcast(job_id, data_dict))
+    
+    return True
 
 def load_job_data(job_id):
     """
@@ -483,6 +488,7 @@ class VideoRequest(BaseModel):
     resolution: int = 640
     mp4_crf: int = 16
     gpu_memory_preservation: float = 6.0
+    include_last_frame: bool = False  # Control whether to generate a segment for the last frame
 
 class JobStatusResponse(BaseModel):
     job_id: str
@@ -833,58 +839,59 @@ def worker(
 
             def callback(d):
                 # Get denoised latents
-                denoised = d['denoised']
-                
-                # Create preview using vae_decode_fake (faster)
-                preview = vae_decode_fake(denoised)
-                preview = (preview * 255.0).detach().cpu().numpy().clip(0, 255).astype(np.uint8)
-                preview = einops.rearrange(preview, 'b c t h w -> (b h) (t w) c')
-                
-                # Save preview as temp file
-                preview_path = os.path.join(temp_dir, "preview.jpg")
-                Image.fromarray(preview).save(preview_path)
-                
-                step = d['i'] + 1
-                # Calculate overall progress considering current latent section and step
-                current_step = pad_idx * steps + step
-                pct_of_sampling = current_step / total_sample_steps
-                sampling_progress = int(sampling_progress_start + (pct_of_sampling * sampling_progress_range))
-                
-                job_status.progress = sampling_progress
-                job_status.message = f"Generated {max(0, (total_generated * 4 - 3))} frames, {(max(0, (total_generated * 4 - 3)) / 30):.2f}s so far"
-                save_job_data(job_id, job_status.to_dict())
-                
-                if progress_callback:
-                    progress_callback(sampling_progress)
-                
-                # Save latent visualization (only for certain steps to avoid too many files)
-                if step % 5 == 0:  # Save every 5th step for efficiency
+                step = d['step']
+
+                # Process every 5th step
+                if step % 5 == 0 or step == steps - 1:
                     try:
-                        # Use a consistent filename for the current job's latent visualization
-                        # This will overwrite the previous one instead of creating multiple files
-                        latent_file = os.path.join(upload_folder, f"{job_id}_latent.jpg")
-                        Image.fromarray(preview).save(latent_file)
+                        denoised = d['denoised']
+            
+                        # Create preview using vae_decode_fake (faster)
+                        preview = vae_decode_fake(denoised)
+                        preview = (preview * 255.0).detach().cpu().numpy().clip(0, 255).astype(np.uint8)
+                        preview = einops.rearrange(preview, 'b c t h w -> (b h) (t w) c')
                         
-                        # Update job status with current latent
+                        output_filename = f"uploads/{job_id}_latent.jpg"
+                        # Save the latent as an image
+                        Image.fromarray(preview).save(output_filename)
+                        
+                        # Update job status with latest latent preview
                         status_obj = job_statuses.get(job_id)
                         if status_obj:
                             # Use a consistent path that doesn't include the step number
                             status_obj.current_latents = f"/uploads/{job_id}_latent.jpg"
                             # Add a cache-busting parameter to force browser refresh
                             status_obj.current_latents += f"?step={step}&t={int(time.time())}"
+                            
+                            # Check if this segment is already in the list (avoid duplicates)
+                            segment_paths = status_obj.segments
+                            segment_path = status_obj.current_latents
+                            
+                            # Clear previous segments if this is the first step
+                            if step == 0:
+                                segment_paths = []
+                            
+                            # Replace the last segment or add a new one
+                            if segment_paths and segment_path.split('?')[0] == segment_paths[-1].split('?')[0]:
+                                segment_paths[-1] = segment_path
+                            else:
+                                segment_paths.append(segment_path)
+                                
+                            status_obj.segments = segment_paths
+                            
                             # Save updated status to disk
                             save_job_data(job_id, status_obj.to_dict())
                     except Exception as e:
                         print(f"Error saving latent preview: {e}")
-                
-                # Check if the job has been cancelled
-                status_obj = job_statuses.get(job_id)
-                if status_obj and status_obj.status == "cancelled":
-                    print(f"Job {job_id} was cancelled during processing")
-                    # This will cause the sampling to stop at the current step
-                    d['stop'] = True
-                
-                return
+                    
+                    # Check if the job has been cancelled
+                    status_obj = job_statuses.get(job_id)
+                    if status_obj and status_obj.status == "cancelled":
+                        print(f"Job {job_id} was cancelled during processing")
+                        # This will cause the sampling to stop at the current step
+                        d['stop'] = True
+                    
+                    return
 
             generated = sample_hunyuan(
                 transformer=transformer,
@@ -951,7 +958,11 @@ def worker(
         job_status.progress = 100
         job_status.message = "Generation completed"
         job_status.result_video = output_path
-        
+        # Delete the latent preview image
+        output_filename = f"uploads/{job_id}_latent.jpg"
+                        
+        if os.path.exists(output_filename):
+            os.remove(output_filename)
         # Save final status to disk
         save_job_data(job_id, job_status.to_dict())
         if progress_callback:
@@ -1199,6 +1210,22 @@ def worker_multi_segment(
                     
                 print(f"Loading end image from: {end_image_path}")
                 end_image = np.array(Image.open(end_image_path).convert('RGB'))
+            else:
+                # Check if this is the last frame and include_last_frame is False
+                # In this case, we want to generate a segment for the last frame
+                # If include_last_frame is False, we need to handle it differently
+                include_last_frame = job_status.job_settings.get('include_last_frame', False) if job_status.job_settings else False
+                if i == num_segments - 1 and not include_last_frame:
+                    # For the last frame without an end frame (with include_last_frame=False), 
+                    # we'll create a transition from the last frame to itself
+                    # just to complete the sequence, but with a very short duration
+                    end_image = start_image  # Use the same image as start
+                    print(f"Using self-transition for last frame (include_last_frame=False)")
+                elif i == num_segments - 1 and include_last_frame:
+                    # If this is the last frame and include_last_frame is True,
+                    # we use the same image as both start and end, but keep the full duration
+                    end_image = start_image
+                    print(f"Including last frame as segment with full duration (include_last_frame=True)")
         
         except Exception as e:
             error_msg = f"Error loading image for segment {seg_no}: {str(e)}"
@@ -1410,6 +1437,7 @@ async def generate_video(
     print(f"  Negative prompt: {request_data.negative_prompt[:50]}..." if len(request_data.negative_prompt) > 50 else f"  Negative prompt: {request_data.negative_prompt}")
     print(f"  Number of segments: {len(request_data.segments)}")
     print(f"  Resolution: {request_data.resolution}")
+    print(f"  Include last frame: {request_data.include_last_frame}")
     
     # Process segments
     segments = []
@@ -2075,6 +2103,66 @@ async def get_video_thumbnail(video: str):
             status_code=500,
             content={"error": f"Failed to generate thumbnail: {str(e)}"}
         )
+
+# WebSocket connection manager
+class ConnectionManager:
+    def __init__(self):
+        # Store active connections by job_id
+        self.active_connections: Dict[str, Set[WebSocket]] = {}
+        
+    async def connect(self, websocket: WebSocket, job_id: str):
+        await websocket.accept()
+        if job_id not in self.active_connections:
+            self.active_connections[job_id] = set()
+        self.active_connections[job_id].add(websocket)
+        
+    def disconnect(self, websocket: WebSocket, job_id: str):
+        if job_id in self.active_connections:
+            self.active_connections[job_id].discard(websocket)
+            if not self.active_connections[job_id]:
+                del self.active_connections[job_id]
+                
+    async def broadcast(self, job_id: str, data: dict):
+        if job_id in self.active_connections:
+            disconnected = set()
+            for connection in self.active_connections[job_id]:
+                try:
+                    await connection.send_text(json.dumps(data))
+                except Exception as e:
+                    print(f"Error sending to websocket: {e}")
+                    disconnected.add(connection)
+            
+            # Clean up disconnected clients
+            for conn in disconnected:
+                self.disconnect(conn, job_id)
+
+# Create a connection manager instance
+manager = ConnectionManager()
+
+# WebSocket endpoint for job status updates
+@app.websocket("/ws/job/{job_id}")
+async def websocket_endpoint(websocket: WebSocket, job_id: str):
+    await manager.connect(websocket, job_id)
+    
+    # Send initial job status on connection
+    try:
+        status_obj = job_statuses.get(job_id)
+        if status_obj:
+            await websocket.send_text(json.dumps(status_obj.to_dict()))
+    except Exception as e:
+        print(f"Error sending initial job status: {e}")
+    
+    try:
+        while True:
+            # Wait for any client messages (mostly ping/pong)
+            data = await websocket.receive_text()
+            # Just echo back to confirm connection is alive
+            await websocket.send_text(data)
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, job_id)
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+        manager.disconnect(websocket, job_id)
 
 # Run the application
 if __name__ == "__main__":

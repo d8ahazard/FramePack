@@ -9,6 +9,10 @@ let errorModal = null;
 let editItemModal = null;
 let videoViewerModal = null;
 
+// WebSocket handling
+let jobSocket = null;
+const jobEventListeners = [];
+
 // Variables for edit mode
 let editElements = {};
 let isEditingMode = false;
@@ -225,6 +229,81 @@ async function checkImageExists(imagePath) {
     }
 }
 
+// WebSocket functionality
+function connectJobWebsocket(jobId) {
+    // Close existing connection if any
+    if (jobSocket && jobSocket.readyState !== WebSocket.CLOSED) {
+        jobSocket.close();
+    }
+    
+    // Create a new WebSocket connection
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/job/${jobId}`;
+    
+    console.log(`Connecting to WebSocket: ${wsUrl}`);
+    jobSocket = new WebSocket(wsUrl);
+    
+    jobSocket.onopen = function() {
+        console.log('WebSocket connection established');
+    };
+    
+    jobSocket.onmessage = function(event) {
+        try {
+            const data = JSON.parse(event.data);
+            console.log('WebSocket message received:', data);
+            
+            // Notify all listeners
+            jobEventListeners.forEach(listener => {
+                try {
+                    listener(data);
+                } catch (listenerError) {
+                    console.error('Error in job event listener:', listenerError);
+                }
+            });
+        } catch (error) {
+            console.error('Error parsing WebSocket message:', error);
+        }
+    };
+    
+    jobSocket.onclose = function(event) {
+        if (event.wasClean) {
+            console.log(`WebSocket connection closed cleanly, code=${event.code}, reason=${event.reason}`);
+        } else {
+            console.warn('WebSocket connection died');
+            // Try to reconnect after a delay if it wasn't intentionally closed
+            setTimeout(() => {
+                if (jobId) {
+                    connectJobWebsocket(jobId);
+                }
+            }, 5000);
+        }
+    };
+    
+    jobSocket.onerror = function(error) {
+        console.error('WebSocket error:', error);
+    };
+    
+    return jobSocket;
+}
+
+function disconnectJobWebsocket() {
+    if (jobSocket && jobSocket.readyState !== WebSocket.CLOSED) {
+        jobSocket.close();
+        jobSocket = null;
+    }
+}
+
+function addJobEventListener(callback) {
+    jobEventListeners.push(callback);
+    return jobEventListeners.length - 1; // Return index for removal
+}
+
+function removeJobEventListener(index) {
+    if (index >= 0 && index < jobEventListeners.length) {
+        jobEventListeners.splice(index, 1);
+    }
+}
+
 // Export shared functions and variables
 export {
     timeline,
@@ -237,5 +316,9 @@ export {
     showMessage,
     initElements,
     enforceHorizontalLayout,
-    checkImageExists
+    checkImageExists,
+    connectJobWebsocket,
+    disconnectJobWebsocket,
+    addJobEventListener,
+    removeJobEventListener
 }; 

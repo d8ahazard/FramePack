@@ -8,7 +8,11 @@ import {
     keepCurrentImage, 
     showMessage, 
     enforceHorizontalLayout, 
-    checkImageExists 
+    checkImageExists,
+    connectJobWebsocket,
+    disconnectJobWebsocket,
+    addJobEventListener,
+    removeJobEventListener
 } from './common.js';
 
 import {
@@ -314,23 +318,85 @@ function updateTimelineStatus() {
             if (durationInput) {
                 durationInput.disabled = false;
             }
+            
+            // Remove include last frame checkbox from non-last items
+            const existingCheckbox = item.querySelector('.include-last-frame-container');
+            if (existingCheckbox && idx !== lastIndex) {
+                existingCheckbox.remove();
+            }
         });
         
-        // Add note to the last item
+        // Add note and checkbox to the last item
         if (lastIndex >= 0) {
             const lastItem = timelineItems[lastIndex];
             const durationSection = lastItem.querySelector('.timeline-item-duration');
             
             if (durationSection) {
-                const note = document.createElement('div');
-                note.className = 'last-frame-info';
-                note.innerHTML = '<i class="bi bi-info-circle"></i> Duration not used for last frame';
-                durationSection.appendChild(note);
+                // First check if there's already a checkbox
+                let includeLastFrameCheckbox = lastItem.querySelector('.include-last-frame-checkbox');
+                let checkboxContainer = lastItem.querySelector('.include-last-frame-container');
+                let isChecked = includeLastFrameCheckbox ? includeLastFrameCheckbox.checked : false;
                 
-                // Disable the duration input for the last item
+                // If no checkbox exists, create it
+                if (!checkboxContainer) {
+                    checkboxContainer = document.createElement('div');
+                    checkboxContainer.className = 'include-last-frame-container mt-2';
+                    checkboxContainer.innerHTML = `
+                        <div class="form-check">
+                            <input class="form-check-input include-last-frame-checkbox" type="checkbox" id="includeLastFrame_${lastIndex}" ${isChecked ? 'checked' : ''}>
+                            <label class="form-check-label small" for="includeLastFrame_${lastIndex}">
+                                Include as segment
+                            </label>
+                        </div>
+                    `;
+                    durationSection.appendChild(checkboxContainer);
+                    
+                    // Get the newly created checkbox
+                    includeLastFrameCheckbox = checkboxContainer.querySelector('.include-last-frame-checkbox');
+                }
+                
+                // Add event listener to checkbox
+                if (includeLastFrameCheckbox) {
+                    // First remove any existing listeners
+                    const newCheckbox = includeLastFrameCheckbox.cloneNode(true);
+                    includeLastFrameCheckbox.parentNode.replaceChild(newCheckbox, includeLastFrameCheckbox);
+                    includeLastFrameCheckbox = newCheckbox;
+                    
+                    includeLastFrameCheckbox.addEventListener('change', (e) => {
+                        const durationInput = lastItem.querySelector('.duration-input');
+                        const note = lastItem.querySelector('.last-frame-info');
+                        
+                        if (e.target.checked) {
+                            // Enable duration input when checked
+                            if (durationInput) durationInput.disabled = false;
+                            if (note) note.innerHTML = '<i class="bi bi-info-circle"></i> Duration used for this frame';
+                        } else {
+                            // Disable duration input when unchecked
+                            if (durationInput) durationInput.disabled = true;
+                            if (note) note.innerHTML = '<i class="bi bi-info-circle"></i> Duration not used for last frame';
+                        }
+                    });
+                }
+                
+                // Add or update the note
+                let note = lastItem.querySelector('.last-frame-info');
+                if (!note) {
+                    note = document.createElement('div');
+                    note.className = 'last-frame-info';
+                    durationSection.appendChild(note);
+                }
+                
+                // Set the note text based on checkbox state
+                if (includeLastFrameCheckbox && includeLastFrameCheckbox.checked) {
+                    note.innerHTML = '<i class="bi bi-info-circle"></i> Duration used for this frame';
+                } else {
+                    note.innerHTML = '<i class="bi bi-info-circle"></i> Duration not used for last frame';
+                }
+                
+                // Update the duration input based on checkbox state
                 const durationInput = lastItem.querySelector('.duration-input');
                 if (durationInput) {
-                    durationInput.disabled = true;
+                    durationInput.disabled = !(includeLastFrameCheckbox && includeLastFrameCheckbox.checked);
                 }
             }
         }
@@ -377,7 +443,7 @@ function startGeneration() {
     // Collect segments data
     const segments = [];
     
-    // For a single image, we need to create a special case
+    // For a single image, we need special handling to create a self-transition
     if (timeline.length === 1) {
         const singleFrame = timeline[0];
         const promptInput = elements.timelineContainer.querySelector('.prompt-text');
@@ -392,14 +458,14 @@ function startGeneration() {
         
         console.log(`Single image path: ${imagePath}`);
         
-        // Add single segment with longer duration
+        // Add single segment with longer duration for self-transition
         segments.push({
             image_path: imagePath,
             prompt: promptInput ? promptInput.value : '',
             duration: singleFrame.duration || 3.0
         });
     } else {
-        // Process multiple images: Create N-1 segments for N frames
+        // Process multiple images: Create transitions between each pair of frames
         for (let i = 0; i < timeline.length - 1; i++) {
             const currentFrame = timeline[i];
             const promptInput = Array.from(elements.timelineContainer.children)
@@ -421,6 +487,42 @@ function startGeneration() {
                 image_path: imagePath,
                 prompt: promptInput ? promptInput.value : '',
                 duration: currentFrame.duration
+            });
+        }
+        
+        // Add the last frame with its prompt
+        const lastIndex = timeline.length - 1;
+        const lastFrame = timeline[lastIndex];
+        const lastPromptInput = Array.from(elements.timelineContainer.children)
+            .find((_, idx) => idx === lastIndex)
+            ?.querySelector('.prompt-text');
+            
+        // Check if the includeAsSegment property exists, fall back to the checkbox if not
+        let includeLastFrame = lastFrame.includeAsSegment;
+        if (includeLastFrame === undefined) {
+            const includeLastFrameCheckbox = Array.from(elements.timelineContainer.children)
+                .find((_, idx) => idx === lastIndex)
+                ?.querySelector('.include-last-frame-checkbox');
+            includeLastFrame = includeLastFrameCheckbox ? includeLastFrameCheckbox.checked : false;
+        }
+        
+        // Check if the last frame has a valid path
+        if (!lastFrame.serverPath) {
+            console.error(`No server path found for the last image:`, lastFrame);
+            alert(`Error: Missing server path for the last image. Please try re-uploading.`);
+            return;
+        }
+        
+        // Log the last frame for debugging
+        console.log(`Last frame path: ${lastFrame.serverPath}`);
+        
+        // If include last frame is checked, add it as a segment
+        if (includeLastFrame) {
+            console.log(`Including last frame as a segment with duration: ${lastFrame.duration}`);
+            segments.push({
+                image_path: lastFrame.serverPath,
+                prompt: lastPromptInput ? lastPromptInput.value : '',
+                duration: lastFrame.duration || 3.0
             });
         }
     }
@@ -450,7 +552,8 @@ function startGeneration() {
         enable_adaptive_memory: elements.enableAdaptiveMemory ? elements.enableAdaptiveMemory.checked : true,
         resolution: elements.resolution ? parseInt(elements.resolution.value) : 640,
         mp4_crf: 16,
-        gpu_memory_preservation: 6.0
+        gpu_memory_preservation: 6.0,
+        include_last_frame: includeLastFrame
     };
     
     console.log('Sending generation request with payload:', JSON.stringify(payload, null, 2));
@@ -490,11 +593,14 @@ function startGeneration() {
         
         // Refresh the job queue
         loadJobQueue();
-        // Show message
-        //showMessage('Job started successfully and timeline cleared for new work', 'success');
         
-        // Start polling for job status
-        pollJobStatus(data.job_id);
+        // Start websocket connection if supported
+        if (window.WebSocket) {
+            setupJobWebsocketConnection(currentJobId);
+        } else {
+            // Fallback to polling for browsers without WebSocket support
+            pollJobStatus(data.job_id);
+        }
     })
     .catch(error => {
         console.error('Error starting generation:', error);
@@ -503,7 +609,149 @@ function startGeneration() {
     });
 }
 
-// Function to poll job status
+// Function to connect to job websocket and handle updates
+function setupJobWebsocketConnection(jobId) {
+    const socket = connectJobWebsocket(jobId);
+    
+    // Register a handler for job updates
+    const listenerIndex = addJobEventListener(handleJobUpdate);
+    
+    // Process job updates from websocket
+    function handleJobUpdate(data) {
+        if (!data || data.job_id !== jobId) return;
+        
+        updateJobUI(data);
+        
+        // If job is complete or failed, clean up
+        if (data.status === 'completed' || data.status === 'failed') {
+            disconnectJobWebsocket();
+            removeJobEventListener(listenerIndex);
+            handleJobCompletion(data);
+        }
+    }
+    
+    return socket;
+}
+
+// Update the job UI based on status data
+function updateJobUI(data) {
+    const progressBar = document.getElementById('progressBar');
+    const progressStatus = document.getElementById('progressStatus');
+    const progressContainer = document.getElementById('progressContainer');
+    const generateBtn = document.getElementById('generateVideoBtn');
+    const currentJobImage = document.getElementById('currentJobImage');
+    const currentJobThumbnail = document.getElementById('currentJobThumbnail');
+    
+    // Update the progress bar and status message
+    progressBar.style.width = `${data.progress}%`;
+    progressBar.setAttribute('aria-valuenow', data.progress);
+    progressBar.textContent = `${data.progress}%`;
+    progressStatus.textContent = data.message || 'Processing...';
+    
+    // Show the thumbnail if we have segments
+    if (data.segments && data.segments.length > 0) {
+        // Use the most recent segment (avoid duplicates)
+        const latestSegment = data.segments[data.segments.length - 1];
+        
+        currentJobImage.src = latestSegment;
+        currentJobThumbnail.classList.remove('d-none');
+        
+        // Add a title to help users understand this is a latent representation
+        currentJobImage.title = "Latent representation (864×64)";
+        
+        // Set up click handler to go to job queue tab and select this job
+        currentJobThumbnail.onclick = () => {
+            // Switch to the job queue tab
+            const queueTab = document.getElementById('queue-tab');
+            bootstrap.Tab.getOrCreateInstance(queueTab).show();
+            
+            // Load this job in the job queue tab
+            // Need to use a dynamic import to avoid circular dependencies
+            import('./job_queue.js').then(jobQueueModule => {
+                jobQueueModule.loadJobDetails(data.job_id);
+                
+                // Highlight this job in the list
+                const jobItems = document.querySelectorAll('.job-item');
+                jobItems.forEach(item => {
+                    item.classList.remove('active');
+                    if (item.dataset.jobId === data.job_id) {
+                        item.classList.add('active');
+                    }
+                });
+            });
+        };
+    } else {
+        // Hide the thumbnail if no segments are available yet
+        currentJobThumbnail.classList.add('d-none');
+    }
+}
+
+// Handle job completion (success or failure)
+function handleJobCompletion(data) {
+    const progressStatus = document.getElementById('progressStatus');
+    const progressContainer = document.getElementById('progressContainer');
+    const generateBtn = document.getElementById('generateVideoBtn');
+    
+    if (data.status === 'completed') {
+        progressStatus.textContent = 'Video generation completed!';
+        
+        // If we have a result video, show it
+        if (data.result_video) {
+            const resultContainer = document.createElement('div');
+            resultContainer.className = 'mt-3';
+            resultContainer.innerHTML = `
+                <h4 class="fs-6">Result</h4>
+                <div class="d-flex flex-column">
+                    <video id="resultVideo" src="${data.result_video}" controls class="img-fluid rounded mb-2"></video>
+                    <div class="btn-group">
+                        <a href="${data.result_video}" download class="btn btn-primary">
+                            <i class="bi bi-download"></i> Download
+                        </a>
+                        <button type="button" class="btn btn-outline-primary" onclick="window.openVideoViewerFn('${data.result_video}', '${data.result_video.split('/').pop()}')">
+                            <i class="bi bi-fullscreen"></i> Fullscreen
+                        </button>
+                    </div>
+                </div>
+            `;
+            progressContainer.appendChild(resultContainer);
+            
+            // Define the openVideoViewer function globally for the button to use
+            import('./outputs.js').then(outputsModule => {
+                window.openVideoViewerFn = outputsModule.openVideoViewer;
+            });
+        }
+        
+        // Success message and offer to clear timeline
+        showMessage('Video generation completed successfully!', 'success');
+        
+        // Clear the timeline after successful generation
+        if (confirm('Generation completed! Would you like to clear the timeline for a new project?')) {
+            // Clear timeline
+            elements.timelineContainer.innerHTML = '';
+            timeline.length = 0;
+            updateTimelineStatus();
+        }
+        
+    } else {
+        progressStatus.textContent = `Failed: ${data.message}`;
+        showMessage(`Video generation failed: ${data.message}`, 'danger');
+    }
+    
+    // Re-enable the generate button
+    generateBtn.disabled = false;
+    
+    // Load the updated job list by importing the job queue module
+    import('./job_queue.js').then(jobQueueModule => {
+        jobQueueModule.loadJobQueue();
+    });
+    
+    // Load the updated outputs by importing the outputs module
+    import('./outputs.js').then(outputsModule => {
+        outputsModule.loadOutputs();
+    });
+}
+
+// Function to poll job status - preserved for backwards compatibility
 function pollJobStatus(jobId) {
     // Set up interval for polling the job status
     const statusInterval = setInterval(async () => {
@@ -514,118 +762,15 @@ function pollJobStatus(jobId) {
             }
             
             const data = await response.json();
-            const progressBar = document.getElementById('progressBar');
-            const progressStatus = document.getElementById('progressStatus');
-            const progressContainer = document.getElementById('progressContainer');
-            const generateBtn = document.getElementById('generateVideoBtn');
-            const currentJobImage = document.getElementById('currentJobImage');
-            const currentJobThumbnail = document.getElementById('currentJobThumbnail');
             
-            // Update the progress bar and status message
-            progressBar.style.width = `${data.progress}%`;
-            progressBar.setAttribute('aria-valuenow', data.progress);
-            progressBar.textContent = `${data.progress}%`;
-            progressStatus.textContent = data.message || 'Processing...';
-            
-            // Show the thumbnail if we have segments
-            if (data.segments && data.segments.length > 0) {
-                currentJobImage.src = data.segments[0];
-                currentJobThumbnail.classList.remove('d-none');
-                
-                // Add a title to help users understand this is a latent representation
-                currentJobImage.title = "Latent representation (864×64)";
-                
-                // Set up click handler to go to job queue tab and select this job
-                currentJobThumbnail.onclick = () => {
-                    // Switch to the job queue tab
-                    const queueTab = document.getElementById('queue-tab');
-                    bootstrap.Tab.getOrCreateInstance(queueTab).show();
-                    
-                    // Load this job in the job queue tab
-                    // Need to use a dynamic import to avoid circular dependencies
-                    import('./job_queue.js').then(jobQueueModule => {
-                        jobQueueModule.loadJobDetails(jobId);
-                        
-                        // Highlight this job in the list
-                        const jobItems = document.querySelectorAll('.job-item');
-                        jobItems.forEach(item => {
-                            item.classList.remove('active');
-                            if (item.dataset.jobId === jobId) {
-                                item.classList.add('active');
-                            }
-                        });
-                    });
-                };
-            } else {
-                // Hide the thumbnail if no segments are available yet
-                currentJobThumbnail.classList.add('d-none');
-            }
+            // Update UI based on job status
+            updateJobUI(data);
             
             // Check if job is completed or failed
             if (data.status === 'completed' || data.status === 'failed') {
                 clearInterval(statusInterval);
-                
-                if (data.status === 'completed') {
-                    progressStatus.textContent = 'Video generation completed!';
-                    
-                    // If we have a result video, show it
-                    if (data.result_video) {
-                        const resultContainer = document.createElement('div');
-                        resultContainer.className = 'mt-3';
-                        resultContainer.innerHTML = `
-                            <h4 class="fs-6">Result</h4>
-                            <div class="d-flex flex-column">
-                                <video id="resultVideo" src="${data.result_video}" controls class="img-fluid rounded mb-2"></video>
-                                <div class="btn-group">
-                                    <a href="${data.result_video}" download class="btn btn-primary">
-                                        <i class="bi bi-download"></i> Download
-                                    </a>
-                                    <button type="button" class="btn btn-outline-primary" onclick="window.openVideoViewerFn('${data.result_video}', '${data.result_video.split('/').pop()}')">
-                                        <i class="bi bi-fullscreen"></i> Fullscreen
-                                    </button>
-                                </div>
-                            </div>
-                        `;
-                        progressContainer.appendChild(resultContainer);
-                        
-                        // Define the openVideoViewer function globally for the button to use
-                        import('./outputs.js').then(outputsModule => {
-                            window.openVideoViewerFn = outputsModule.openVideoViewer;
-                        });
-                    }
-                    
-                    // Success message and offer to clear timeline
-                    showMessage('Video generation completed successfully!', 'success');
-                    
-                    // Clear the timeline after successful generation
-                    if (confirm('Generation completed! Would you like to clear the timeline for a new project?')) {
-                        // Clear timeline
-                        elements.timelineContainer.innerHTML = '';
-                        timeline.length = 0;
-                        updateTimelineStatus();
-                    }
-                    
-                } else {
-                    progressStatus.textContent = `Failed: ${data.message}`;
-                    showMessage(`Video generation failed: ${data.message}`, 'danger');
-                }
-                
-                // Re-enable the generate button
-                generateBtn.disabled = false;
-                
-                // Load the updated job list by importing the job queue module
-                import('./job_queue.js').then(jobQueueModule => {
-                    jobQueueModule.loadJobQueue();
-                });
-                
-                // Load the updated outputs by importing the outputs module
-                import('./outputs.js').then(outputsModule => {
-                    outputsModule.loadOutputs();
-                });
-                
-                return;
+                handleJobCompletion(data);
             }
-            
         } catch (error) {
             console.error('Error polling job status:', error);
             clearInterval(statusInterval);
@@ -950,6 +1095,25 @@ async function addItemToTimeline(fileObj) {
     
     elements.timelineContainer.appendChild(timelineItem);
     
+    // After adding the timelineItem to the container, check if it's the last item and update any checkboxes
+    const timelineItems = elements.timelineContainer.querySelectorAll('.timeline-item');
+    if (timelineItems.length > 0 && timelineItem === timelineItems[timelineItems.length - 1]) {
+        // Call updateTimelineStatus to update the UI with checkboxes, notes, etc.
+        updateTimelineStatus();
+        
+        // Find the checkbox if it was added by updateTimelineStatus and attach a listener
+        const checkbox = timelineItem.querySelector('.include-last-frame-checkbox');
+        if (checkbox) {
+            checkbox.addEventListener('change', (e) => {
+                const index = Array.from(elements.timelineContainer.children).indexOf(timelineItem);
+                if (index >= 0 && index < timeline.length) {
+                    // Save the checkbox state to the timeline array
+                    timeline[index].includeAsSegment = e.target.checked;
+                }
+            });
+        }
+    }
+    
     return timelineItem;
 }
 
@@ -1035,6 +1199,7 @@ function updateTimelineArray() {
         const img = item.querySelector('img');
         const promptText = item.querySelector('.prompt-text');
         const durationInput = item.querySelector('.duration-input');
+        const includeLastCheckbox = item.querySelector('.include-last-frame-checkbox');
         
         // Find matching item in original timeline
         const originalItem = timeline.find(t => {
@@ -1048,7 +1213,9 @@ function updateTimelineArray() {
                 prompt: promptText ? promptText.value : '',
                 duration: durationInput ? parseFloat(durationInput.value) : originalItem.duration,
                 // Explicitly include serverPath to ensure it's preserved
-                serverPath: originalItem.serverPath
+                serverPath: originalItem.serverPath,
+                // Save the checkbox state for the last item
+                includeAsSegment: includeLastCheckbox ? includeLastCheckbox.checked : originalItem.includeAsSegment
             });
         }
     });
@@ -1061,7 +1228,8 @@ function updateTimelineArray() {
     console.log('Updated timeline array:', timeline.map(item => ({
         name: item.file?.name,
         serverPath: item.serverPath,
-        duration: item.duration
+        duration: item.duration,
+        includeAsSegment: item.includeAsSegment
     })));
 }
 
@@ -1147,5 +1315,8 @@ export {
     deleteCurrentFrame,
     startGeneration,
     pollJobStatus,
-    uploadModal
+    uploadModal,
+    setupJobWebsocketConnection,
+    updateJobUI,
+    handleJobCompletion
 };

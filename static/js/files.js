@@ -109,7 +109,7 @@ function processSelectedFiles(files) {
     const filesArray = Array.from(files);
     
     // Process each file
-    filesArray.forEach(file => {
+    filesArray.forEach((file, index) => {
         // Only process image files
         if (!file.type.match('image.*')) {
             console.log('Skipping non-image file:', file.name);
@@ -130,6 +130,9 @@ function processSelectedFiles(files) {
                 duration: 3.0  // Default duration is 3.0 seconds
             });
             
+            // Check if this is the last file in the array
+            const isLastFile = index === filesArray.length - 1;
+            
             // Create thumbnail
             const thumbnailHtml = `
                 <div class="col-4 col-md-3 mb-3">
@@ -137,13 +140,14 @@ function processSelectedFiles(files) {
                         <img src="${imgSrc}" class="card-img-top" alt="${fileName}">
                         <div class="card-body p-2">
                             <p class="card-text small text-muted text-truncate">${fileName}</p>
-                            <div class="input-group input-group-sm">
+                            <div class="input-group input-group-sm ${isLastFile ? 'd-none' : ''}">
                                 <span class="input-group-text">Duration</span>
                                 <input type="number" class="form-control image-duration" 
                                     value="3.0" 
                                     min="0.1" max="10" step="0.1">
                                 <span class="input-group-text">s</span>
                             </div>
+                            ${isLastFile ? '<p class="small text-muted mt-1"><i class="bi bi-info-circle"></i> Last frame duration not used</p>' : ''}
                         </div>
                     </div>
                 </div>

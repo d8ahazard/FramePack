@@ -6,7 +6,11 @@ import {
     jobQueueElements, 
     timeline,
     formatTimestamp, 
-    showMessage 
+    showMessage,
+    connectJobWebsocket,
+    disconnectJobWebsocket,
+    addJobEventListener,
+    removeJobEventListener
 } from './common.js';
 
 // Add import for openVideoViewer used in loadJobDetails
@@ -14,18 +18,25 @@ import { openVideoViewer } from './outputs.js';
 
 // Initialize module variables
 let currentJobId = null;
+let jobListenerIndex = -1;
 
 // Module initialization function
 function initJobQueue() {
     console.log('Job Queue module initialized');
     
-    // Add event listeners
-    if (jobQueueElements.refreshJobsBtn) {
-        jobQueueElements.refreshJobsBtn.addEventListener('click', loadJobQueue);
-    }
+    // Remove refresh button event listener since we removed the button
+    // and now have websocket support
     
     // Initial load of job queue
     loadJobQueue();
+    
+    // Clean up websocket when leaving the page
+    window.addEventListener('beforeunload', () => {
+        if (jobListenerIndex >= 0) {
+            removeJobEventListener(jobListenerIndex);
+            disconnectJobWebsocket();
+        }
+    });
 }
 
 // Load the job queue UI
@@ -50,26 +61,6 @@ async function loadJobQueue() {
             `;
             return;
         }
-        
-        // Add management controls at the top
-        const managementControls = document.createElement('div');
-        managementControls.className = 'mb-3 d-flex justify-content-end';
-        
-        // Count completed jobs
-        const completedJobs = jobs.filter(job => job.status === 'completed');
-        if (completedJobs.length > 0) {
-            const clearCompletedBtn = document.createElement('button');
-            clearCompletedBtn.className = 'btn btn-sm btn-outline-danger';
-            clearCompletedBtn.innerHTML = '<i class="bi bi-trash"></i> Clear Completed Jobs';
-            clearCompletedBtn.onclick = () => {
-                if (confirm(`Are you sure you want to delete all ${completedJobs.length} completed jobs?`)) {
-                    clearCompletedJobs();
-                }
-            };
-            managementControls.appendChild(clearCompletedBtn);
-        }
-        
-        jobsContainer.appendChild(managementControls);
         
         // Sort jobs: running first, then queued, then completed/failed by timestamp (newest first)
         jobs.sort((a, b) => {
@@ -146,6 +137,25 @@ async function loadJobQueue() {
             
             jobsContainer.appendChild(jobItem);
         });
+        
+        // Count completed jobs and add clear button at the bottom if needed
+        const completedJobs = jobs.filter(job => job.status === 'completed');
+        if (completedJobs.length > 0) {
+            const clearCompletedContainer = document.createElement('div');
+            clearCompletedContainer.className = 'mt-3 text-center';
+            
+            const clearCompletedBtn = document.createElement('button');
+            clearCompletedBtn.className = 'btn btn-sm btn-outline-danger';
+            clearCompletedBtn.innerHTML = '<i class="bi bi-trash"></i> Clear Completed Jobs';
+            clearCompletedBtn.onclick = () => {
+                if (confirm(`Are you sure you want to delete all ${completedJobs.length} completed jobs?`)) {
+                    clearCompletedJobs();
+                }
+            };
+            
+            clearCompletedContainer.appendChild(clearCompletedBtn);
+            jobsContainer.appendChild(clearCompletedContainer);
+        }
         
     } catch (error) {
         console.error('Error loading job queue:', error);
@@ -237,6 +247,18 @@ async function clearCompletedJobs() {
 // Load job details
 async function loadJobDetails(jobId) {
     try {
+        // Disconnect from previous job's websocket if any
+        if (currentJobId && currentJobId !== jobId) {
+            disconnectJobWebsocket();
+            if (jobListenerIndex >= 0) {
+                removeJobEventListener(jobListenerIndex);
+                jobListenerIndex = -1;
+            }
+        }
+        
+        // Set current job ID
+        currentJobId = jobId;
+        
         const response = await fetch(`/api/job_status/${jobId}`);
         if (!response.ok) {
             throw new Error(`Failed to fetch job details: ${response.statusText}`);
@@ -244,191 +266,22 @@ async function loadJobDetails(jobId) {
         
         const jobData = await response.json();
         
-        // Clear previous content
-        const jobDetailContainer = document.getElementById('jobDetailContainer');
-        jobDetailContainer.innerHTML = '';
+        // Display job details
+        displayJobDetails(jobData);
         
-        const jobMediaContainer = document.getElementById('jobMediaContainer');
-        
-        // Basic job information card
-        const jobInfoCard = document.createElement('div');
-        jobInfoCard.className = 'card mb-3';
-        
-        // Determine the status badge class
-        let statusBadgeClass = 'bg-secondary';
-        if (jobData.status === 'completed') {
-            statusBadgeClass = 'bg-success';
-        } else if (jobData.status === 'failed') {
-            statusBadgeClass = 'bg-danger';
-        } else if (jobData.status === 'running') {
-            statusBadgeClass = 'bg-primary';
-        } else if (jobData.status === 'queued') {
-            statusBadgeClass = 'bg-warning';
-        }
-        
-        // Check if job has missing images
-        const hasInvalidImages = jobData.is_valid === false;
-        
-        // Display job name if available
-        const jobName = jobData.job_name ? 
-            `<p><strong>Name:</strong> ${jobData.job_name}</p>` : '';
-        
-        // Invalid images warning
-        const invalidImagesWarning = hasInvalidImages ? 
-            `<div class="alert alert-warning">
-                <i class="bi bi-exclamation-triangle me-2"></i>
-                This job is missing ${jobData.missing_images.length} image(s). You can reload 
-                the job to timeline but must fix the missing images before rerunning.
-            </div>` : '';
-        
-        jobInfoCard.innerHTML = `
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="card-title mb-0">Job Information</h5>
-                <span class="badge ${statusBadgeClass}">${jobData.status}</span>
-            </div>
-            <div class="card-body">
-                ${invalidImagesWarning}
-                <p><strong>Job ID:</strong> ${jobId}</p>
-                ${jobName}
-                <p><strong>Status:</strong> ${jobData.status.charAt(0).toUpperCase() + jobData.status.slice(1)}</p>
-                <p><strong>Progress:</strong> ${jobData.progress}%</p>
-                <p><strong>Message:</strong> ${jobData.message || 'No message'}</p>
-                <p><strong>Created:</strong> ${formatJobTimestamp(jobId)}</p>
-                ${jobData.result_video ? `<p><strong>Result:</strong> <a href="${jobData.result_video}" target="_blank">${jobData.result_video.split('/').pop()}</a></p>` : ''}
-                
-                ${jobData.status === 'running' || jobData.status === 'completed' ? 
-                    `<div class="progress mb-3">
-                        <div class="progress-bar" role="progressbar" style="width: ${jobData.progress}%" aria-valuenow="${jobData.progress}" aria-valuemin="0" aria-valuemax="100">${jobData.progress}%</div>
-                    </div>` : ''}
-            </div>
-        `;
-        
-        // Add the job info card
-        jobDetailContainer.appendChild(jobInfoCard);
-        
-        // Show video and latents if job is running or completed
-        if (jobData.status === 'running' || jobData.status === 'completed') {
-            jobMediaContainer.classList.remove('d-none');
-            
-            // Handle video preview
-            const videoContainer = document.createElement('div');
-            videoContainer.className = 'col-md-6';
-            videoContainer.innerHTML = `
-                <div class="card mb-3">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0 fs-6">Current Output</h5>
-                    </div>
-                    <div class="card-body text-center">
-                        ${jobData.result_video ? 
-                            `<video id="jobCurrentVideo" src="${jobData.result_video}" controls class="img-fluid rounded"></video>` :
-                            `<div class="text-muted py-5"><i class="bi bi-film me-2"></i>Video not available yet</div>`
-                        }
-                    </div>
-                </div>
-            `;
-            
-            // Handle latents preview
-            const latentsContainer = document.createElement('div');
-            latentsContainer.className = 'col-md-6';
-            
-            // Determine which image to show, with fallbacks
-            let latentImageSrc = '';
-            if (jobData.current_latents) {
-                latentImageSrc = jobData.current_latents;
-            } else if (jobData.segments && jobData.segments.length > 0) {
-                latentImageSrc = jobData.segments[0];
-            }
-            
-            latentsContainer.innerHTML = `
-                <div class="card mb-3">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0 fs-6">Current Latents</h5>
-                    </div>
-                    <div class="card-body text-center">
-                        ${latentImageSrc ? 
-                            `<img id="jobCurrentLatents" src="${latentImageSrc}" class="img-fluid rounded" alt="Current latents" title="Latent representation (864×64)">` :
-                            `<div class="text-muted py-5"><i class="bi bi-image me-2"></i>Latent image not available yet</div>`
-                        }
-                    </div>
-                    ${latentImageSrc ? `<div class="card-footer p-2 text-center">
-                        <small class="text-muted">Latent dimensions: 864×64 pixels</small>
-                    </div>` : ''}
-                </div>
-            `;
-            
-            // Clear existing content and add new containers
-            jobMediaContainer.innerHTML = '';
-            const rowContainer = document.createElement('div');
-            rowContainer.className = 'row';
-            rowContainer.appendChild(videoContainer);
-            rowContainer.appendChild(latentsContainer);
-            jobMediaContainer.appendChild(rowContainer);
-        } else {
-            jobMediaContainer.classList.add('d-none');
-        }
-        
-        // Add action buttons based on job status
-        const actionContainer = document.createElement('div');
-        actionContainer.className = 'mt-3 d-flex flex-wrap gap-2';
-        
-        // Cancel button if job is running or queued
+        // If job is active, connect to websocket for live updates
         if (jobData.status === 'running' || jobData.status === 'queued') {
-            const cancelBtn = document.createElement('button');
-            cancelBtn.className = 'btn btn-danger';
-            cancelBtn.innerHTML = '<i class="bi bi-x-circle"></i> Cancel Job';
-            cancelBtn.onclick = () => cancelJob(jobId);
-            actionContainer.appendChild(cancelBtn);
-        }
-        
-        // View and download buttons if job is completed
-        if (jobData.status === 'completed' && jobData.result_video) {
-            const viewBtn = document.createElement('button');
-            viewBtn.className = 'btn btn-primary';
-            viewBtn.innerHTML = '<i class="bi bi-play-circle"></i> View Video';
-            viewBtn.onclick = () => openVideoViewer(jobData.result_video, jobData.result_video.split('/').pop());
-            actionContainer.appendChild(viewBtn);
+            // Connect to websocket for live updates
+            connectJobWebsocket(jobId);
             
-            const downloadBtn = document.createElement('a');
-            downloadBtn.className = 'btn btn-outline-primary';
-            downloadBtn.href = jobData.result_video;
-            downloadBtn.download = jobData.result_video.split('/').pop();
-            downloadBtn.innerHTML = '<i class="bi bi-download"></i> Download Video';
-            actionContainer.appendChild(downloadBtn);
+            // Register listener for updates
+            jobListenerIndex = addJobEventListener((data) => {
+                if (data.job_id === jobId) {
+                    // Update the UI with new data
+                    displayJobDetails(data);
+                }
+            });
         }
-        
-        // Reload to timeline button for any job that has settings
-        if (jobData.job_settings) {
-            const reloadBtn = document.createElement('button');
-            reloadBtn.className = 'btn btn-outline-secondary';
-            reloadBtn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Load to Timeline';
-            reloadBtn.onclick = () => loadJobToTimeline(jobId);
-            actionContainer.appendChild(reloadBtn);
-        }
-        
-        // Rerun button for completed or failed jobs (only if images are valid)
-        if ((jobData.status === 'completed' || jobData.status === 'failed') && 
-            jobData.job_settings && jobData.is_valid !== false) {
-            const rerunBtn = document.createElement('button');
-            rerunBtn.className = 'btn btn-outline-success';
-            rerunBtn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Rerun Job';
-            rerunBtn.onclick = () => rerunJob(jobId);
-            actionContainer.appendChild(rerunBtn);
-        }
-        
-        // Delete button for any job
-        const deleteBtn = document.createElement('button');
-        deleteBtn.className = 'btn btn-outline-danger';
-        deleteBtn.innerHTML = '<i class="bi bi-trash"></i> Delete Job';
-        deleteBtn.onclick = () => {
-            if (confirm(`Are you sure you want to delete this job? This will remove all files related to ${jobId}.`)) {
-                deleteJob(jobId);
-            }
-        };
-        actionContainer.appendChild(deleteBtn);
-        
-        // Add the action container
-        jobDetailContainer.appendChild(actionContainer);
-        
     } catch (error) {
         console.error('Error loading job details:', error);
         document.getElementById('jobDetailContainer').innerHTML = `
@@ -438,6 +291,195 @@ async function loadJobDetails(jobId) {
         `;
         document.getElementById('jobMediaContainer').classList.add('d-none');
     }
+}
+
+// Display job details - separated from loadJobDetails for websocket updates
+function displayJobDetails(jobData) {
+    // Clear previous content
+    const jobDetailContainer = document.getElementById('jobDetailContainer');
+    jobDetailContainer.innerHTML = '';
+    
+    const jobMediaContainer = document.getElementById('jobMediaContainer');
+    
+    // Basic job information card
+    const jobInfoCard = document.createElement('div');
+    jobInfoCard.className = 'card mb-3';
+    
+    // Determine the status badge class
+    let statusBadgeClass = 'bg-secondary';
+    if (jobData.status === 'completed') {
+        statusBadgeClass = 'bg-success';
+    } else if (jobData.status === 'failed') {
+        statusBadgeClass = 'bg-danger';
+    } else if (jobData.status === 'running') {
+        statusBadgeClass = 'bg-primary';
+    } else if (jobData.status === 'queued') {
+        statusBadgeClass = 'bg-warning';
+    }
+    
+    // Check if job has missing images
+    const hasInvalidImages = jobData.is_valid === false;
+    
+    // Display job name if available
+    const jobName = jobData.job_name ? 
+        `<p><strong>Name:</strong> ${jobData.job_name}</p>` : '';
+    
+    // Invalid images warning
+    const invalidImagesWarning = hasInvalidImages ? 
+        `<div class="alert alert-warning">
+            <i class="bi bi-exclamation-triangle me-2"></i>
+            This job is missing ${jobData.missing_images.length} image(s). You can reload 
+            the job to timeline but must fix the missing images before rerunning.
+        </div>` : '';
+    
+    jobInfoCard.innerHTML = `
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="card-title mb-0">Job Information</h5>
+            <span class="badge ${statusBadgeClass}">${jobData.status}</span>
+        </div>
+        <div class="card-body">
+            ${invalidImagesWarning}
+            <p><strong>Job ID:</strong> ${jobData.job_id}</p>
+            ${jobName}
+            <p><strong>Status:</strong> ${jobData.status.charAt(0).toUpperCase() + jobData.status.slice(1)}</p>
+            <p><strong>Progress:</strong> ${jobData.progress}%</p>
+            <p><strong>Message:</strong> ${jobData.message || 'No message'}</p>
+            <p><strong>Created:</strong> ${formatJobTimestamp(jobData.job_id)}</p>
+            ${jobData.result_video ? `<p><strong>Result:</strong> <a href="${jobData.result_video}" target="_blank">${jobData.result_video.split('/').pop()}</a></p>` : ''}
+            
+            ${jobData.status === 'running' || jobData.status === 'completed' ? 
+                `<div class="progress mb-3">
+                    <div class="progress-bar" role="progressbar" style="width: ${jobData.progress}%" aria-valuenow="${jobData.progress}" aria-valuemin="0" aria-valuemax="100">${jobData.progress}%</div>
+                </div>` : ''}
+        </div>
+    `;
+    
+    // Add the job info card
+    jobDetailContainer.appendChild(jobInfoCard);
+    
+    // Show video and latents if job is running or completed
+    if (jobData.status === 'running' || jobData.status === 'completed') {
+        jobMediaContainer.classList.remove('d-none');
+        
+        // Handle video preview
+        const videoContainer = document.createElement('div');
+        videoContainer.className = 'col-md-6';
+        videoContainer.innerHTML = `
+            <div class="card mb-3">
+                <div class="card-header">
+                    <h5 class="card-title mb-0 fs-6">Current Output</h5>
+                </div>
+                <div class="card-body text-center">
+                    ${jobData.result_video ? 
+                        `<video id="jobCurrentVideo" src="${jobData.result_video}" controls class="img-fluid rounded"></video>` :
+                        `<div class="text-muted py-5"><i class="bi bi-film me-2"></i>Video not available yet</div>`
+                    }
+                </div>
+            </div>
+        `;
+        
+        // Handle latents preview
+        const latentsContainer = document.createElement('div');
+        latentsContainer.className = 'col-md-6';
+        
+        // Determine which image to show - use the latest segment to avoid duplicates
+        let latentImageSrc = '';
+        if (jobData.current_latents) {
+            latentImageSrc = jobData.current_latents;
+        } else if (jobData.segments && jobData.segments.length > 0) {
+            // Use the latest segment to avoid showing duplicates
+            latentImageSrc = jobData.segments[jobData.segments.length - 1];
+        }
+        
+        latentsContainer.innerHTML = `
+            <div class="card mb-3">
+                <div class="card-header">
+                    <h5 class="card-title mb-0 fs-6">Current Latents</h5>
+                </div>
+                <div class="card-body text-center">
+                    ${latentImageSrc ? 
+                        `<img id="jobCurrentLatents" src="${latentImageSrc}" class="img-fluid rounded" alt="Current latents" title="Latent representation (864×64)">` :
+                        `<div class="text-muted py-5"><i class="bi bi-image me-2"></i>Latent image not available yet</div>`
+                    }
+                </div>
+                ${latentImageSrc ? `<div class="card-footer p-2 text-center">
+                    <small class="text-muted">Latent dimensions: 864×64 pixels</small>
+                </div>` : ''}
+            </div>
+        `;
+        
+        // Clear existing content and add new containers
+        jobMediaContainer.innerHTML = '';
+        const rowContainer = document.createElement('div');
+        rowContainer.className = 'row';
+        rowContainer.appendChild(videoContainer);
+        rowContainer.appendChild(latentsContainer);
+        jobMediaContainer.appendChild(rowContainer);
+    } else {
+        jobMediaContainer.classList.add('d-none');
+    }
+    
+    // Add action buttons based on job status
+    const actionContainer = document.createElement('div');
+    actionContainer.className = 'mt-3 d-flex flex-wrap gap-2';
+    
+    // Cancel button if job is running or queued
+    if (jobData.status === 'running' || jobData.status === 'queued') {
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'btn btn-danger';
+        cancelBtn.innerHTML = '<i class="bi bi-x-circle"></i> Cancel Job';
+        cancelBtn.onclick = () => cancelJob(jobData.job_id);
+        actionContainer.appendChild(cancelBtn);
+    }
+    
+    // View and download buttons if job is completed
+    if (jobData.status === 'completed' && jobData.result_video) {
+        const viewBtn = document.createElement('button');
+        viewBtn.className = 'btn btn-primary';
+        viewBtn.innerHTML = '<i class="bi bi-play-circle"></i> View Video';
+        viewBtn.onclick = () => openVideoViewer(jobData.result_video, jobData.result_video.split('/').pop());
+        actionContainer.appendChild(viewBtn);
+        
+        const downloadBtn = document.createElement('a');
+        downloadBtn.className = 'btn btn-outline-primary';
+        downloadBtn.href = jobData.result_video;
+        downloadBtn.download = jobData.result_video.split('/').pop();
+        downloadBtn.innerHTML = '<i class="bi bi-download"></i> Download Video';
+        actionContainer.appendChild(downloadBtn);
+    }
+    
+    // Reload to timeline button for any job that has settings
+    if (jobData.job_settings) {
+        const reloadBtn = document.createElement('button');
+        reloadBtn.className = 'btn btn-outline-secondary';
+        reloadBtn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Load to Timeline';
+        reloadBtn.onclick = () => loadJobToTimeline(jobData.job_id);
+        actionContainer.appendChild(reloadBtn);
+    }
+    
+    // Rerun button for completed or failed jobs (only if images are valid)
+    if ((jobData.status === 'completed' || jobData.status === 'failed') && 
+        jobData.job_settings && jobData.is_valid !== false) {
+        const rerunBtn = document.createElement('button');
+        rerunBtn.className = 'btn btn-outline-success';
+        rerunBtn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Rerun Job';
+        rerunBtn.onclick = () => rerunJob(jobData.job_id);
+        actionContainer.appendChild(rerunBtn);
+    }
+    
+    // Delete button for any job
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'btn btn-outline-danger';
+    deleteBtn.innerHTML = '<i class="bi bi-trash"></i> Delete Job';
+    deleteBtn.onclick = () => {
+        if (confirm(`Are you sure you want to delete this job? This will remove all files related to ${jobData.job_id}.`)) {
+            deleteJob(jobData.job_id);
+        }
+    };
+    actionContainer.appendChild(deleteBtn);
+    
+    // Add the action container
+    jobDetailContainer.appendChild(actionContainer);
 }
 
 // Delete a job
@@ -601,9 +643,7 @@ async function loadJobToTimeline(jobId) {
         // Remove loading message
         loadingMessage.remove();
         
-        // Show success message
-        showMessage('Job loaded to timeline successfully', 'success');
-        
+        // Navigate to the editor tab
         // Validate images
         if (!jobData.is_valid) {
             showMessage(`Warning: ${jobData.missing_images.length} images are missing. You'll need to replace them before generating.`, 'warning');
@@ -681,6 +721,6 @@ export {
     formatJobTimestamp,
     clearCompletedJobs,
     deleteJob,
-    cancelJob
-    // More functions will be added as we implement them
+    cancelJob,
+    displayJobDetails
 };
