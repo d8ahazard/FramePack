@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FramePack - Video Generator</title>
+    <link rel="icon" href="/static/images/favicon.ico" type="image/x-icon">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.3/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <div class="container-fluid">
+        <header class="py-3 mb-3 border-bottom">
+            <div class="container-fluid d-flex align-items-center">
+                <h1 class="fs-4 mb-0 me-auto">FramePack</h1>
+                <span class="badge bg-primary ms-2">Video Generator</span>
+            </div>
+        </header>
+
+        <main class="container-fluid mb-5">
+            <ul class="nav nav-tabs mb-4" id="appTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="editor-tab" data-bs-toggle="tab" data-bs-target="#editor-tab-pane" type="button" role="tab" aria-controls="editor-tab-pane" aria-selected="true">
+                        <i class="bi bi-pencil-square me-1"></i> Editor
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="queue-tab" data-bs-toggle="tab" data-bs-target="#queue-tab-pane" type="button" role="tab" aria-controls="queue-tab-pane" aria-selected="false">
+                        <i class="bi bi-hourglass-split me-1"></i> Job Queue
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="output-tab" data-bs-toggle="tab" data-bs-target="#output-tab-pane" type="button" role="tab" aria-controls="output-tab-pane" aria-selected="false">
+                        <i class="bi bi-film me-1"></i> Outputs
+                    </button>
+                </li>
+            </ul>
+
+            <div class="tab-content" id="appTabsContent">
+                <!-- Editor Tab -->
+                <div class="tab-pane fade show active" id="editor-tab-pane" role="tabpanel" aria-labelledby="editor-tab" tabindex="0">
+                    <div class="row mb-4">
+                        <div class="col-md-8">
+                            <h2 class="fs-5 mb-3">Timeline</h2>
+                            <div class="d-flex mb-3">
+                                <button id="uploadImagesBtn" class="btn btn-primary me-2">
+                                    <i class="bi bi-upload"></i> Upload Images
+                                </button>
+                                <button id="generateVideoBtn" class="btn btn-success me-2">
+                                    <i class="bi bi-film"></i> Generate Video
+                                </button>
+                                <div class="dropdown me-2">
+                                    <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                        <i class="bi bi-sort-down"></i> Sort
+                                    </button>
+                                    <ul class="dropdown-menu">
+                                        <li><button class="dropdown-item" id="sortAscBtn">Sort Ascending</button></li>
+                                        <li><button class="dropdown-item" id="sortDescBtn">Sort Descending</button></li>
+                                    </ul>
+                                </div>
+                            </div>
+                            
+                            <!-- Timeline container -->
+                            <div id="timelineContainer" class="mb-4">
+                                <!-- Timeline items will be added here -->
+                                <div class="alert alert-info">
+                                    <i class="bi bi-info-circle me-2"></i> Upload images to start building your video timeline.
+                                </div>
+                            </div>
+                            
+                            <!-- Progress container (hidden by default) -->
+                            <div id="progressContainer" class="d-none mb-4">
+                                <h3 class="fs-5 mb-3">Processing</h3>
+                                <div class="progress mb-3">
+                                    <div id="progressBar" class="progress-bar" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+                                </div>
+                                <p id="progressStatus" class="text-muted">Initializing...</p>
+                                <div id="previewContainer" class="d-none mb-3">
+                                    <h4 class="fs-6">Preview</h4>
+                                    <img id="previewImage" src="" alt="Preview" class="img-fluid border rounded">
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-4">
+                            <h2 class="fs-5 mb-3">Settings</h2>
+                            <div class="card">
+                                <div class="card-body">
+                                    <form id="settingsForm">
+                                        <div class="mb-3">
+                                            <label for="frameRate" class="form-label">Frame Rate (fps)</label>
+                                            <input type="number" class="form-control" id="frameRate" min="1" max="60" value="30">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="frameTime" class="form-label">Frame Duration (seconds)</label>
+                                            <input type="number" class="form-control" id="frameTime" min="0.1" max="10" step="0.1" value="0.5">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="transitionTime" class="form-label">Transition Duration (seconds)</label>
+                                            <input type="number" class="form-control" id="transitionTime" min="0" max="5" step="0.1" value="0.2">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="outputWidth" class="form-label">Output Width</label>
+                                            <input type="number" class="form-control" id="outputWidth" min="320" max="3840" step="10" value="1920">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="outputHeight" class="form-label">Output Height</label>
+                                            <input type="number" class="form-control" id="outputHeight" min="240" max="2160" step="10" value="1080">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="outputFormat" class="form-label">Output Format</label>
+                                            <select class="form-select" id="outputFormat">
+                                                <option value="mp4">MP4 (H.264)</option>
+                                                <option value="webm">WebM (VP9)</option>
+                                                <option value="gif">GIF</option>
+                                            </select>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Job Queue Tab -->
+                <div class="tab-pane fade" id="queue-tab-pane" role="tabpanel" aria-labelledby="queue-tab" tabindex="0">
+                    <div class="row">
+                        <div class="col-md-4">
+                            <div class="d-flex justify-content-between align-items-center mb-3">
+                                <h2 class="fs-5 mb-0">Job Queue</h2>
+                                <button id="refreshJobsBtn" class="btn btn-sm btn-outline-secondary">
+                                    <i class="bi bi-arrow-clockwise"></i> Refresh
+                                </button>
+                            </div>
+                            
+                            <div id="jobsContainer" class="job-list">
+                                <!-- Jobs will be loaded here -->
+                                <div class="alert alert-info">
+                                    <i class="bi bi-info-circle"></i> Loading jobs...
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-8">
+                            <h2 class="fs-5 mb-3">Job Details</h2>
+                            <div id="jobDetailContainer">
+                                <div class="alert alert-secondary">
+                                    <i class="bi bi-info-circle"></i> Select a job to view details
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Outputs Tab -->
+                <div class="tab-pane fade" id="output-tab-pane" role="tabpanel" aria-labelledby="output-tab" tabindex="0">
+                    <div class="row mb-3">
+                        <div class="col">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <h2 class="fs-5 mb-0">Output Videos</h2>
+                                <button id="refreshOutputsBtn" class="btn btn-sm btn-outline-secondary" onclick="loadOutputs()">
+                                    <i class="bi bi-arrow-clockwise"></i> Refresh
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div id="outputsContainer" class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
+                        <!-- Output videos will be loaded here -->
+                        <div class="col">
+                            <div class="alert alert-info">
+                                <i class="bi bi-info-circle"></i> Loading output videos...
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Upload Images Modal -->
+    <div class="modal fade" id="uploadImagesModal" tabindex="-1" aria-labelledby="uploadImagesModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h1 class="modal-title fs-5" id="uploadImagesModalLabel">Upload Images</h1>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="uploadDropArea" class="upload-drop-area mb-3">
+                        <div class="upload-message">
+                            <i class="bi bi-cloud-arrow-up fs-1"></i>
+                            <p>Drag & drop images here or click to browse</p>
+                            <input type="file" id="fileInput" accept="image/*" multiple class="file-input">
+                        </div>
+                    </div>
+                    
+                    <div id="imageUploadContainer" class="row g-3">
+                        <!-- Uploaded images preview will be added here -->
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="addToTimelineBtn">Add to Timeline</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Frame Edit Modal -->
+    <div class="modal fade" id="frameEditModal" tabindex="-1" aria-labelledby="frameEditModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h1 class="modal-title fs-5" id="frameEditModalLabel">Edit Frame</h1>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="text-center mb-3">
+                        <img id="frameEditImage" src="" alt="Frame" class="img-fluid rounded">
+                    </div>
+                    
+                    <form>
+                        <div class="mb-3">
+                            <label for="frameDuration" class="form-label">Duration (seconds)</label>
+                            <input type="number" class="form-control" id="frameDuration" min="0.1" max="10" step="0.1" value="0.5">
+                        </div>
+                    </form>
+                    
+                    <div class="d-grid gap-2">
+                        <button type="button" class="btn btn-outline-primary" id="replaceImageBtn">
+                            <i class="bi bi-arrow-repeat"></i> Replace Image
+                        </button>
+                        <button type="button" class="btn btn-outline-danger" id="deleteFrameBtn">
+                            <i class="bi bi-trash"></i> Delete Frame
+                        </button>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="saveFrameBtn">Save Changes</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Video Viewer Modal -->
+    <div class="modal fade" id="videoViewerModal" tabindex="-1" aria-labelledby="videoViewerModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h1 class="modal-title fs-5" id="videoViewerModalLabel">Video Viewer</h1>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <video id="modalVideo" controls class="w-100 rounded"></video>
+                </div>
+                <div class="modal-footer">
+                    <a id="modalDownloadBtn" href="#" download class="btn btn-primary">
+                        <i class="bi bi-download"></i> Download
+                    </a>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/js/main.js"></script>
+</body>
+</html> 

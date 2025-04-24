@@ -2,6 +2,7 @@ hf_download/
 models/
 outputs/
 repo/
+uploads/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

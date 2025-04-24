@@ -6,14 +6,22 @@ import shutil
 import traceback
 import argparse
 import time
+import json
+import logging
+from typing import List, Dict, Any, Optional, Union
 
-import gradio as gr
 import torch
 import einops
 import numpy as np
 from huggingface_hub import snapshot_download
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+from pydantic import BaseModel
 
 from PIL import Image
 from diffusers import AutoencoderKLHunyuanVideo
@@ -51,10 +59,79 @@ from diffusers_helper.memory import (
     load_model_as_complete
 )
 from diffusers_helper.thread_utils import AsyncStream, async_run
-from diffusers_helper.gradio.progress_bar import make_progress_bar_css, make_progress_bar_html
 from diffusers_helper.clip_vision import hf_clip_vision_encode
 from diffusers_helper.bucket_tools import find_nearest_bucket
 
+# ----------------------------------------
+# Model classes and helpers
+# ----------------------------------------
+
+class JobStatus:
+    def __init__(self, job_id: str):
+        self.job_id = job_id
+        self.status = "pending"
+        self.progress = 0
+        self.message = "Initializing..."
+        self.preview_image = None
+        self.result_video = None
+        self.segments = []
+
+    def to_dict(self):
+        return {
+            "job_id": self.job_id,
+            "status": self.status,
+            "progress": self.progress,
+            "message": self.message,
+            "result_video": self.result_video,
+            "segments": self.segments
+        }
+
+class SegmentConfig(BaseModel):
+    image_path: str
+    prompt: str
+    duration: float
+
+class VideoRequest(BaseModel):
+    global_prompt: str
+    negative_prompt: str
+    segments: List[SegmentConfig]
+    seed: int = 31337
+    steps: int = 25
+    guidance_scale: float = 10.0
+    use_teacache: bool = True
+    enable_adaptive_memory: bool = True
+    resolution: int = 640
+    mp4_crf: int = 16
+    gpu_memory_preservation: float = 6.0
+
+class JobStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    progress: int
+    message: str
+    result_video: Optional[str] = None
+    segments: List[str] = []
+
+class ErrorResponse(BaseModel):
+    error: str
+
+class UploadResponse(BaseModel):
+    success: bool
+    filename: Optional[str] = None
+    path: Optional[str] = None
+    error: Optional[str] = None
+
+class GenerateResponse(BaseModel):
+    job_id: str
+
+# Global job tracking
+job_statuses = {}
+outputs_folder = './outputs/'
+os.makedirs(outputs_folder, exist_ok=True)
+    
+# ----------------------------------------
+# Model download & loading
+# ----------------------------------------
 
 def check_download_model(repo_id, subfolder=None, retries=3, use_auth_token=None):
     """
@@ -149,38 +226,6 @@ def preload_all_models(use_auth_token=None):
 
 
 # ----------------------------------------
-# Argument parsing / HF cache location
-# ----------------------------------------
-parser = argparse.ArgumentParser()
-parser.add_argument('--share', action='store_true')
-parser.add_argument("--server", type=str, default='0.0.0.0')
-parser.add_argument("--port", type=int, required=False)
-parser.add_argument("--inbrowser", action='store_true')
-parser.add_argument("--preload", action='store_true', help="Preload all models at startup")
-parser.add_argument("--hf_token", type=str, help="Hugging Face authentication token for private models")
-args = parser.parse_args()
-
-# Don't override HF_HOME if already set
-if 'HF_HOME' not in os.environ:
-    os.environ['HF_HOME'] = os.path.abspath(
-        os.path.realpath(os.path.join(os.path.dirname(__file__), './hf_download'))
-    )
-
-print(args)
-
-# Optional: preload all models at startup
-if args.preload:
-    model_paths = preload_all_models(use_auth_token=args.hf_token)
-    hunyuan_path = model_paths["hunyuan"]
-    flux_path = model_paths["flux"]
-    framepack_path = model_paths["framepack"]
-else:
-    # Download and get paths for model repositories
-    hunyuan_path = check_download_model("hunyuanvideo-community/HunyuanVideo", use_auth_token=args.hf_token)
-    flux_path = check_download_model("lllyasviel/flux_redux_bfl", use_auth_token=args.hf_token)
-    framepack_path = check_download_model("lllyasviel/FramePackI2V_HY", use_auth_token=args.hf_token)
-
-# ----------------------------------------
 # VRAM & model-loading setup
 # ----------------------------------------
 free_mem_gb = get_cuda_free_memory_gb(gpu)
@@ -201,6 +246,11 @@ tokenizer_2 = None
 feature_extractor = None
 
 models_loaded = False
+
+# Download and get paths for model repositories
+hunyuan_path = check_download_model("hunyuanvideo-community/HunyuanVideo")
+flux_path = check_download_model("lllyasviel/flux_redux_bfl")
+framepack_path = check_download_model("lllyasviel/FramePackI2V_HY")
 
 def load_models():
     global text_encoder, text_encoder_2, image_encoder, vae, transformer, tokenizer, tokenizer_2, feature_extractor, models_loaded
@@ -274,16 +324,13 @@ def load_models():
         for m in (text_encoder, text_encoder_2, image_encoder, vae, transformer):
             m.to(gpu)
 
-stream = AsyncStream()
-outputs_folder = './outputs/'
-os.makedirs(outputs_folder, exist_ok=True)
-
 
 # ----------------------------------------
 # Worker: single-segment generation
 # ----------------------------------------
 @torch.no_grad()
 def worker(
+    job_id,
     input_image,
     end_image,
     prompt,
@@ -303,9 +350,11 @@ def worker(
     segment_index=None,
     master_job_id=None
 ):
-    global adaptive_memory_management
+    global adaptive_memory_management, job_statuses
     adaptive_memory_management = enable_adaptive_memory
-
+    
+    job_status = job_statuses.get(job_id, JobStatus(job_id))
+    
     # how many latent sections
     total_latent_sections = int(
         max(round((total_second_length * 30) / (latent_window_size * 4)), 1)
@@ -316,7 +365,6 @@ def worker(
         job_id = master_job_id
         segment_number = segment_index + 1
     else:
-        job_id = generate_timestamp()
         segment_number = 1
 
     base_name = f"{job_id}_segment_{segment_number}"
@@ -324,10 +372,9 @@ def worker(
     temp_dir = os.path.join(outputs_folder, f"{base_name}_temp")
     os.makedirs(temp_dir, exist_ok=True)
 
-    stream.output_queue.push(
-        ('progress', (None, '', make_progress_bar_html(0, 'Starting ...')))
-    )
-
+    job_status.message = "Starting..."
+    job_status.progress = 0
+    
     try:
         # -------------------------
         # Memory management tiers
@@ -373,9 +420,8 @@ def worker(
         # -------------------------
         # Text encoding
         # -------------------------
-        stream.output_queue.push(
-            ('progress', (None, '', make_progress_bar_html(0, 'Text encoding ...')))
-        )
+        job_status.message = "Text encoding..."
+        job_status.progress = 5
 
         # We literally only need the TENC once, so just load and unload when done
         fake_diffusers_current_device(text_encoder, gpu)
@@ -409,9 +455,8 @@ def worker(
         # -------------------------
         # Image processing
         # -------------------------
-        stream.output_queue.push(
-            ('progress', (None, '', make_progress_bar_html(0, 'Image processing ...')))
-        )
+        job_status.message = "Image processing..."
+        job_status.progress = 10
 
         H, W, C = input_image.shape
         height, width = find_nearest_bucket(H, W, resolution=resolution)
@@ -423,9 +468,9 @@ def worker(
 
         has_end_image = end_image is not None
         if has_end_image:
-            stream.output_queue.push(
-                ('progress', (None, '', make_progress_bar_html(0, 'Processing end frame ...')))
-            )
+            job_status.message = "Processing end frame..."
+            job_status.progress = 15
+            
             end_np = resize_and_center_crop(end_image, width, height)
             Image.fromarray(end_np).save(os.path.join(outputs_folder, f"{job_id}_end.png"))
             end_pt = (
@@ -435,9 +480,8 @@ def worker(
         # -------------------------
         # VAE encoding
         # -------------------------
-        stream.output_queue.push(
-            ('progress', (None, '', make_progress_bar_html(0, 'VAE encoding ...')))
-        )
+        job_status.message = "VAE encoding..."
+        job_status.progress = 20
 
         if vae not in models_to_keep_in_memory:
             load_model_as_complete(vae, target_device=gpu)
@@ -449,10 +493,8 @@ def worker(
         # -------------------------
         # CLIP Vision encoding
         # -------------------------
-        stream.output_queue.push(
-            ('progress', (None, '', make_progress_bar_html(0, 'CLIP Vision encoding ...')))
-        )
-
+        job_status.message = "CLIP Vision encoding..."
+        job_status.progress = 25
         
         load_model_as_complete(image_encoder, target_device=gpu)
 
@@ -476,9 +518,8 @@ def worker(
         # -------------------------
         # Sampling
         # -------------------------
-        stream.output_queue.push(
-            ('progress', (None, '', make_progress_bar_html(0, 'Start sampling ...')))
-        )
+        job_status.message = "Start sampling..."
+        job_status.progress = 30
 
         rnd = torch.Generator("cpu").manual_seed(seed)
         num_frames = latent_window_size * 4 - 3
@@ -515,10 +556,6 @@ def worker(
             is_first = (pad == latent_paddings[0])
             pad_size = pad * latent_window_size
 
-            if stream.input_queue.top() == 'end':
-                stream.output_queue.push(('end', None))
-                return
-
             # build indices
             total_len = 1 + pad_size + latent_window_size + 1 + 2 + 16
             indices = torch.arange(0, total_len).unsqueeze(0)
@@ -541,11 +578,6 @@ def worker(
                 clean_post_latents = end_latent.to(history_latents)
                 clean_latents = torch.cat([clean_pre_latents, clean_post_latents], dim=2)
 
-            # ALWAYS KEEP TRANSFORMER ON GPU
-            # if not high_vram:
-            #     unload_complete_models()
-            #     move_model_to_device_with_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=gpu_memory_preservation)
-
             # re-init teaCache each loop
             if use_teacache:
                 transformer.initialize_teacache(enable_teacache=True, num_steps=steps)
@@ -556,15 +588,21 @@ def worker(
                 preview = vae_decode_fake(d['denoised'])
                 preview = (preview * 255.0).detach().cpu().numpy().clip(0, 255).astype(np.uint8)
                 preview = einops.rearrange(preview, 'b c t h w -> (b h) (t w) c')
+                
+                # Save preview as temp file
+                preview_path = os.path.join(temp_dir, "preview.jpg")
+                Image.fromarray(preview).save(preview_path)
+                
                 step = d['i'] + 1
                 pct = int(100.0 * step / steps)
-                desc = (
-                    f"Generated {max(0, (total_generated * 4 - 3))} frames, "
-                    f"{(max(0, (total_generated * 4 - 3)) / 30):.2f}s so far"
-                )
-                stream.output_queue.push(
-                    ('progress', (preview, desc, make_progress_bar_html(pct, f"Sampling {step}/{steps}")))
-                )
+                base_progress = 30
+                step_progress = int(70 * (pad / len(latent_paddings)) + (70 / len(latent_paddings)) * (step / steps))
+                total_progress = base_progress + step_progress
+                
+                job_status.progress = total_progress
+                job_status.message = f"Generated {max(0, (total_generated * 4 - 3))} frames, {(max(0, (total_generated * 4 - 3)) / 30):.2f}s so far"
+                job_status.preview_image = preview_path
+                
                 return
 
             generated = sample_hunyuan(
@@ -603,9 +641,6 @@ def worker(
             total_generated += generated.shape[2]
             history_latents = torch.cat([generated.to(history_latents), history_latents], dim=2)
 
-            # if not high_vram:
-            #     offload_model_from_device_for_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=8)
-
             load_model_as_complete(vae, target_device=gpu)
 
             # decode frames
@@ -623,13 +658,24 @@ def worker(
             # Unload VAE if not high VRAM
             if not high_vram:
                 unload_complete_models(vae)
-            stream.output_queue.push(('file', output_path))
-
+                
+            job_status.segments.append(output_path)
+            
             if is_last:
                 break
 
-    except Exception:
+        job_status.status = "completed"
+        job_status.progress = 100
+        job_status.message = "Generation completed"
+        job_status.result_video = output_path
+        
+        return output_path
+
+    except Exception as e:
+        job_status.status = "failed"
+        job_status.message = str(e)
         traceback.print_exc()
+        return None
     finally:
         if not high_vram and segment_index is None:
             unload_complete_models(
@@ -645,23 +691,17 @@ def worker(
         except Exception as e:
             print(f"Cleanup error: {e}")
 
-    stream.output_queue.push(('end', None))
-    return
-
 
 # ----------------------------------------
-# Worker: keyframe-driven multi-segment
+# Worker: multi-segment generation
 # ----------------------------------------
 @torch.no_grad()
-def worker_keyframe(
-    input_image,
-    end_image,
-    keyframes,
-    prompt,
+def worker_multi_segment(
+    job_id,
+    segments,
+    global_prompt,
     n_prompt,
     seed,
-    total_second_length,
-    latent_window_size,
     steps,
     cfg,
     gs,
@@ -670,102 +710,53 @@ def worker_keyframe(
     use_teacache,
     mp4_crf,
     enable_adaptive_memory,
-    resolution
+    resolution,
+    latent_window_size=9
 ):
-    global stream, adaptive_memory_management
-    adaptive_memory_management = enable_adaptive_memory
-
-    # sort keyframes
-    keyframe_data = []
-    for kf in keyframes or []:
-        fn = os.path.basename(kf)
-        m = re.search(r'_(\d+)\.', fn)
-        if m:
-            keyframe_data.append((int(m.group(1)), kf))
-        else:
-            print(f"Skipping invalid keyframe name: {fn}")
-    keyframe_data.sort(key=lambda x: x[0])
-    sorted_kfs = [p for _, p in keyframe_data]
-
-    if not sorted_kfs:
-        return worker(
-            input_image,
-            end_image,
-            prompt,
-            n_prompt,
-            seed,
-            total_second_length,
-            latent_window_size,
-            steps,
-            cfg, gs, rs,
-            gpu_memory_preservation,
-            use_teacache,
-            mp4_crf,
-            enable_adaptive_memory,
-            resolution
-        )
-
-    # load images
-    imgs = []
-    for p in sorted_kfs:
-        try:
-            with PIL.Image.open(p) as img:
-                imgs.append(np.array(img.convert('RGB')))
-        except Exception as e:
-            print(f"Error loading {p}: {e}")
-
-    if not imgs:
-        return worker(
-            input_image,
-            end_image,
-            prompt,
-            n_prompt,
-            seed,
-            total_second_length,
-            latent_window_size,
-            steps,
-            cfg, gs, rs,
-            gpu_memory_preservation,
-            use_teacache,
-            mp4_crf,
-            enable_adaptive_memory,
-            resolution
-        )
-
-    all_frames = [input_image] + imgs
-    if end_image is not None:
-        all_frames.append(end_image)
-
-    num_segments = len(all_frames) - 1
-    seconds_per_segment = round(total_second_length / num_segments, 2)
-
-    master_job_id = generate_timestamp()
+    global job_statuses
+    job_status = job_statuses.get(job_id, JobStatus(job_id))
+    job_status.message = "Starting multi-segment generation..."
+    job_status.progress = 0
+    job_statuses[job_id] = job_status
+    
+    if not segments:
+        job_status.status = "failed"
+        job_status.message = "No segments provided"
+        return None
+    
+    master_job_id = job_id
     master_temp = os.path.join(outputs_folder, f"{master_job_id}_temp")
     os.makedirs(master_temp, exist_ok=True)
 
     segment_paths = []
 
-    # process backwards
+    # Process segments in reverse order
+    num_segments = len(segments)
     for i in range(num_segments - 1, -1, -1):
         seg_no = num_segments - i
-        start_f = all_frames[i]
-        end_f = all_frames[i + 1]
-
-        stream.output_queue.push((
-            'progress', (
-                None, '',
-                make_progress_bar_html(
-                    0,
-                    f"Segment {seg_no}/{num_segments} (backwards)..."
-                )
-            )
-        ))
-
-        if stream.input_queue.top() == 'end':
-            stream.output_queue.push(('end', None))
-            return
-
-        # maybe clear cache
+        current_segment = segments[i]
+        
+        # Use individual segment prompts if provided, concatenate with global prompt
+        segment_prompt = current_segment.get('prompt', '').strip()
+        if segment_prompt:
+            # Concatenate with global prompt
+            combined_prompt = f"{global_prompt.strip()}, {segment_prompt}"
+        else:
+            combined_prompt = global_prompt
+            
+        # Get segment duration
+        segment_duration = current_segment.get('duration', 3.0)
+        
+        # Load start and end images
+        start_image = np.array(Image.open(current_segment['image_path']).convert('RGB'))
+        end_image = None
+        if i < num_segments - 1:
+            end_image = np.array(Image.open(segments[i+1]['image_path']).convert('RGB'))
+        
+        job_status.message = f"Processing segment {seg_no}/{num_segments}..."
+        job_status.progress = int((i / num_segments) * 100)
+        
+        # Clear cache if needed
         curr_free = get_cuda_free_memory_gb(gpu)
         if not high_vram and curr_free < 2.0:
             torch.cuda.empty_cache()
@@ -774,44 +765,54 @@ def worker_keyframe(
                     text_encoder, text_encoder_2, image_encoder, vae, transformer
                 )
 
-        # call worker for this segment
-        worker(
-            start_f,
-            end_f,
-            prompt,
-            n_prompt,
-            seed,
-            seconds_per_segment,
-            latent_window_size,
-            steps,
-            cfg, gs, rs,
-            gpu_memory_preservation,
-            use_teacache,
-            mp4_crf,
-            enable_adaptive_memory,
-            resolution,
+        # Generate this segment
+        segment_output = worker(
+            job_id=master_job_id,
+            input_image=start_image,
+            end_image=end_image,
+            prompt=combined_prompt,
+            n_prompt=n_prompt,
+            seed=seed,
+            total_second_length=segment_duration,
+            latent_window_size=latent_window_size,
+            steps=steps,
+            cfg=cfg,
+            gs=gs,
+            rs=rs,
+            gpu_memory_preservation=gpu_memory_preservation,
+            use_teacache=use_teacache,
+            mp4_crf=mp4_crf,
+            enable_adaptive_memory=enable_adaptive_memory,
+            resolution=resolution,
             segment_index=i,
             master_job_id=master_job_id
         )
+        
+        if segment_output:
+            segment_paths.append((seg_no, segment_output))
+        else:
+            job_status.status = "failed" 
+            job_status.message = f"Failed to generate segment {seg_no}"
+            return None
 
-        time.sleep(0.5)
-        seg_path = os.path.join(
-            outputs_folder,
-            f"{master_job_id}_segment_{seg_no}.mp4"
-        )
-        segment_paths.append((seg_no, seg_path))
-
-    # concat in correct order
+    # Concatenate all segments in order
     concat_txt = os.path.join(master_temp, "concat_list.txt")
     with open(concat_txt, 'w') as f:
         for seg_no, path in sorted(segment_paths, key=lambda x: x[0]):
-            f.write(f"file '{path}'\n")
+            # Ensure absolute path with proper escaping for FFmpeg
+            abs_path = os.path.abspath(path).replace('\\', '/')
+            f.write(f"file '{abs_path}'\n")
 
-    final_out = os.path.join(outputs_folder, f"{master_job_id}.mp4")
-    subprocess.run([
-        'ffmpeg', '-f', 'concat', '-safe', '0',
-        '-i', concat_txt, '-c', 'copy', final_out
-    ], check=True)
+    final_output = os.path.join(outputs_folder, f"{master_job_id}.mp4")
+    try:
+        subprocess.run([
+            'ffmpeg', '-f', 'concat', '-safe', '0',
+            '-i', concat_txt, '-c', 'copy', final_output
+        ], check=True)
+    except Exception as e:
+        job_status.status = "failed"
+        job_status.message = f"Failed to concatenate segments: {str(e)}"
+        return None
 
     if not high_vram:
         unload_complete_models(
@@ -822,324 +823,324 @@ def worker_keyframe(
     except Exception as e:
         print(f"Cleanup error: {e}")
 
-    stream.output_queue.push(('file', final_out))
-    stream.output_queue.push(('end', None))
-    return
-
+    job_status.status = "completed"
+    job_status.progress = 100
+    job_status.message = "Video generation completed!"
+    job_status.result_video = final_output
+    
+    return final_output
 
 # ----------------------------------------
-# Process wrapper & UI hookup
+# FastAPI app setup
 # ----------------------------------------
-# input_image,
-#         end_image,
-#         keyframes,
-#         prompt,
-#         n_prompt,
-#         seed,
-#         total_second_length,
-#         latent_window_size,
-#         steps,
-#         cfg, gs, rs,
-#         gpu_memory_preservation,
-#         use_teacache,
-#         mp4_crf,
-#         enable_adaptive_memory,
-#         resolution
-def process(
-    input_image,
-    end_image,
-    keyframes,
-    prompt,
-    n_prompt,
-    seed,
-    total_second_length,
-    latent_window_size,
-    steps,
-    cfg,
-    gs,
-    rs,
-    gpu_memory_preservation,
-    use_teacache,
-    mp4_crf,
-    enable_adaptive_memory,
-    resolution
+app = FastAPI(
+    title="FramePack API",
+    description="API for image to video generation using FramePack",
+    version="1.0.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json"
+)
+
+# Configure logging to suppress job status logs
+class EndpointFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (record.getMessage().find("GET /api/job_status/") >= 0)
+
+# Apply the filter to the uvicorn access logger
+logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
+
+# CORS middleware setup
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Add a middleware to include response headers
+@app.middleware("http")
+async def add_response_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return response
+
+# Mount static files directory
+app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
+# Templates setup
+templates = Jinja2Templates(directory="templates")
+
+# Upload folder for images
+upload_folder = './uploads/'
+os.makedirs(upload_folder, exist_ok=True)
+
+# Create folders for static files if they don't exist
+os.makedirs("static/images", exist_ok=True)
+
+# ----------------------------------------
+# API Routes
+# ----------------------------------------
+
+@app.get("/favicon.ico")
+async def favicon():
+    """Serve the favicon"""
+    return FileResponse("static/images/favicon.ico")
+
+@app.get("/")
+async def root(request: Request):
+    return templates.TemplateResponse(
+        "index.html", 
+        {"request": request}
+    )
+
+@app.get("/api")
+async def api_docs_redirect():
+    """Redirect to API documentation"""
+    return RedirectResponse(url="/api/docs")
+
+@app.post("/api/upload_image", response_model=UploadResponse)
+async def upload_image(file: UploadFile = File(...)):
+    """
+    Upload an image file to the server
+    
+    Returns:
+        success: Whether the upload was successful
+        filename: The filename on the server
+        path: The path to the file on the server
+    """
+    # Get file content hash to check for duplicates
+    file_content = await file.read()
+    file_hash = hash(file_content)
+    
+    # Return file pointer to start for later use
+    await file.seek(0)
+    
+    # Check if we already have this file or one with the same name
+    original_filename = file.filename
+    base_name, ext = os.path.splitext(original_filename)
+    
+    # First check if exact same file (by hash) exists
+    for existing_file in os.listdir(upload_folder):
+        existing_path = os.path.join(upload_folder, existing_file)
+        if os.path.isfile(existing_path):
+            with open(existing_path, "rb") as f:
+                existing_content = f.read()
+                if hash(existing_content) == file_hash:
+                    # Same file content - reuse it
+                    return UploadResponse(
+                        success=True,
+                        filename=existing_file,
+                        path=existing_path
+                    )
+    
+    # Generate a new unique filename
+    timestamp = generate_timestamp()
+    filename = f"{timestamp}_{original_filename}"
+    file_path = os.path.join(upload_folder, filename)
+    
+    # Save the uploaded file
+    with open(file_path, "wb") as f:
+        f.write(file_content)
+    
+    return UploadResponse(
+        success=True,
+        filename=filename,
+        path=file_path
+    )
+
+@app.post("/api/generate_video", response_model=GenerateResponse)
+async def generate_video(
+    background_tasks: BackgroundTasks,
+    request_data: VideoRequest
 ):
-    global stream
-    assert input_image is not None, 'No input image!'
+    """
+    Generate a video from a series of images with prompts
+    
+    Args:
+        request_data: VideoRequest object containing all generation parameters
+    
+    Returns:
+        job_id: A unique identifier for the job
+    """
+    job_id = generate_timestamp()
+    job_status = JobStatus(job_id)
+    job_statuses[job_id] = job_status
+    
+    # Process segments
+    segments = []
+    for segment in request_data.segments:
+        segments.append({
+            "image_path": segment.image_path,
+            "prompt": segment.prompt,
+            "duration": segment.duration
+        })
+    
+    # Start generation in background
+    background_tasks.add_task(
+        worker_multi_segment,
+        job_id=job_id,
+        segments=segments,
+        global_prompt=request_data.global_prompt,
+        n_prompt=request_data.negative_prompt,
+        seed=request_data.seed,
+        steps=request_data.steps,
+        cfg=1.0,  # Fixed parameter
+        gs=request_data.guidance_scale,
+        rs=0.0,   # Fixed parameter
+        gpu_memory_preservation=request_data.gpu_memory_preservation,
+        use_teacache=request_data.use_teacache,
+        mp4_crf=request_data.mp4_crf,
+        enable_adaptive_memory=request_data.enable_adaptive_memory,
+        resolution=request_data.resolution
+    )
+    
+    return GenerateResponse(job_id=job_id)
 
-    yield None, None, '', '', gr.update(interactive=False), gr.update(interactive=True)
-    load_models()
-    stream = AsyncStream()
+@app.get("/api/job_status/{job_id}", response_model=Union[JobStatusResponse, ErrorResponse])
+async def get_job_status(job_id: str):
+    """
+    Get the status of a video generation job
+    
+    Args:
+        job_id: The unique job identifier
+    
+    Returns:
+        The job status information
+    """
+    if job_id not in job_statuses:
+        return ErrorResponse(error="Job not found")
+    
+    status = job_statuses[job_id]
+    return JobStatusResponse(**status.to_dict())
 
-    if keyframes and len(keyframes) > 0:
-        async_run(
-            worker_keyframe,
-            input_image,
-            end_image,
-            keyframes,
-            prompt,
-            n_prompt,
-            seed,
-            total_second_length,
-            latent_window_size,
-            steps,
-            cfg, gs, rs,
-            gpu_memory_preservation,
-            use_teacache,
-            mp4_crf,
-            enable_adaptive_memory,
-            resolution
-        )
-    else:
-        async_run(
-            worker,
-            input_image,
-            end_image,
-            prompt,
-            n_prompt,
-            seed,
-            total_second_length,
-            latent_window_size,
-            steps,
-            cfg, gs, rs,
-            gpu_memory_preservation,
-            use_teacache,
-            mp4_crf,
-            enable_adaptive_memory,
-            resolution
-        )
-
-    current_video = None
-    while True:
-        flag, data = stream.output_queue.next()
-        if flag == 'file':
-            current_video = data
-            yield current_video, gr.update(), gr.update(), gr.update(), gr.update(interactive=False), gr.update(interactive=True)
-        elif flag == 'progress':
-            preview, desc, html = data
-            yield gr.update(), gr.update(visible=True, value=preview), desc, html, gr.update(interactive=False), gr.update(interactive=True)
-        elif flag == 'end':
-            yield current_video, gr.update(visible=False), gr.update(), '', gr.update(interactive=True), gr.update(interactive=False)
-            break
-
-
-def end_process():
-    stream.input_queue.push('end')
-
-
-# ----------------------------------------
-# Gradio layout
-# ----------------------------------------
-quick_prompts = [
-    'The girl dances gracefully, with clear movements, full of charm.',
-    'A character doing some simple body movements.',
-]
-quick_prompts = [[x] for x in quick_prompts]
-
-css = make_progress_bar_css()
-block = gr.Blocks(css=css)
-
-with block:
-    gr.Markdown('# FramePack')
-    with gr.Row():
-        with gr.Column():
-            with gr.Row():
-                input_image = gr.Image(
-                    sources='upload',
-                    type="numpy",
-                    label="Start Image",
-                    height=320
-                )
-                end_image = gr.Image(
-                    sources='upload',
-                    type="numpy",
-                    label="End Image (Optional)",
-                    height=320
-                )
-            keyframes = gr.File(
-                label="Keyframes (Optional)",
-                file_count="multiple",
-                file_types=["image"],
-                height=50
-            )
-            gr.Markdown(
-                "*Keyframe images should be named with _n suffix where n is the frame order (0, 1, 2...). Files will be sorted by this number.*",
-                elem_id="keyframe-info"
-            )
-            resolution = gr.Slider(
-                label="Resolution",
-                minimum=240,
-                maximum=720,
-                value=640,
-                step=16
-            )
-            prompt = gr.Textbox(label="Prompt", value='')
-            example_quick_prompts = gr.Dataset(
-                samples=quick_prompts,
-                label='Quick List',
-                samples_per_page=1000,
-                components=[prompt]
-            )
-            example_quick_prompts.click(
-                lambda x: x[0],
-                inputs=[example_quick_prompts],
-                outputs=prompt,
-                show_progress=False,
-                queue=False
-            )
-
-            with gr.Row():
-                start_button = gr.Button(value="Start Generation")
-                end_button = gr.Button(value="End Generation", interactive=False)
-
-            with gr.Group():
-                with gr.Row():
-                    use_teacache = gr.Checkbox(
-                        label='Use TeaCache',
-                        value=True,
-                        info='Faster speed, but slightly lower detail.'
-                    )
-                    enable_adaptive_memory = gr.Checkbox(
-                        label='Enable Adaptive Memory Management',
-                        value=True,
-                        info='Better for long videos on limited VRAM.'
-                    )
-
-                n_prompt = gr.Textbox(
-                    label="Negative Prompt",
-                    value="",
-                    visible=False
-                )
-                seed = gr.Number(label="Seed", value=31337, precision=0)
-
-                total_second_length = gr.Slider(
-                    label="Total Video Length (Seconds)",
-                    minimum=1,
-                    maximum=600,
-                    value=5,
-                    step=0.1
-                )
-                latent_window_size = gr.Slider(
-                    label="Latent Window Size",
-                    minimum=1,
-                    maximum=33,
-                    value=9,
-                    step=1,
-                    visible=False
-                )
-                steps = gr.Slider(
-                    label="Steps",
-                    minimum=1,
-                    maximum=100,
-                    value=25,
-                    step=1
-                )
-                cfg = gr.Slider(
-                    label="CFG Scale",
-                    minimum=1.0,
-                    maximum=32.0,
-                    value=1.0,
-                    step=0.01,
-                    visible=False
-                )
-                gs = gr.Slider(
-                    label="Distilled CFG Scale",
-                    minimum=1.0,
-                    maximum=32.0,
-                    value=10.0,
-                    step=0.01
-                )
-                rs = gr.Slider(
-                    label="CFG Re-Scale",
-                    minimum=0.0,
-                    maximum=1.0,
-                    value=0.0,
-                    step=0.01,
-                    visible=False
-                )
-                gpu_memory_preservation = gr.Slider(
-                    label="GPU Inference Preserved Memory (GB)",
-                    minimum=6,
-                    maximum=128,
-                    value=6,
-                    step=0.1
-                )
-                mp4_crf = gr.Slider(
-                    label="MP4 Compression",
-                    minimum=0,
-                    maximum=100,
-                    value=16,
-                    step=1,
-                    info="Lower = higher quality; use 16 if you see black frames."
-                )
-
-        with gr.Column():            
-            progress_bar = gr.HTML('', elem_classes='no-generating-animation')
-            progress_desc = gr.Markdown('', elem_classes='no-generating-animation')
-            preview_image = gr.Image(
-                label="Next Latents",
-                height=200,
-                visible=False
-            )
-            result_video = gr.Video(
-                label="Finished Frames",
-                autoplay=True,
-                show_share_button=False,
-                height=512,
-                loop=True
-            )
-            gr.Markdown(
-                'Note: ending actions are generated before start ones due to reverse sampling.'
-            )
-            
-
-    gr.HTML(
-        '<div style="text-align:center;margin-top:20px;">'
-        'Share results on '
-        '<a href="https://x.com/search?q=framepack&f=live" target="_blank">'
-        'FramePack Twitter Thread</a></div>'
+@app.get("/api/result_video/{job_id}")
+async def get_result_video(job_id: str):
+    """
+    Get the video file for a completed job
+    
+    Args:
+        job_id: The unique job identifier
+    
+    Returns:
+        The video file
+    """
+    if job_id not in job_statuses or not job_statuses[job_id].result_video:
+        return ErrorResponse(error="Video not found")
+    
+    video_path = job_statuses[job_id].result_video
+    return FileResponse(
+        path=video_path, 
+        filename=f"{job_id}.mp4", 
+        media_type="video/mp4"
     )
 
-    inputs = [
-        input_image,
-        end_image,
-        keyframes,
-        prompt,
-        n_prompt,
-        seed,
-        total_second_length,
-        latent_window_size,
-        steps,
-        cfg, gs, rs,
-        gpu_memory_preservation,
-        use_teacache,
-        mp4_crf,
-        enable_adaptive_memory,
-        resolution
-    ]
-    start_button.click(
-        fn=process,
-        inputs=inputs,
-        outputs=[
-            result_video,
-            preview_image,
-            progress_desc,
-            progress_bar,
-            start_button,
-            end_button
-        ]
-    )
-    end_button.click(fn=end_process)
+@app.get("/api/list_jobs", response_model=List[JobStatusResponse])
+async def list_jobs():
+    """
+    List all active jobs
+    
+    Returns:
+        A list of all active job statuses
+    """
+    return [JobStatusResponse(**status.to_dict()) for status in job_statuses.values()]
 
-block.queue()
+@app.get("/api/list_outputs")
+async def list_outputs():
+    """
+    List all generated output videos
+    
+    Returns:
+        A list of all output videos with metadata
+    """
+    outputs = []
+    try:
+        for filename in os.listdir(outputs_folder):
+            if filename.endswith('.mp4'):
+                file_path = os.path.join(outputs_folder, filename)
+                # Skip temp directories and check if it's a file
+                if not os.path.isfile(file_path) or '_temp' in filename:
+                    continue
+                    
+                # Get file stats
+                stats = os.stat(file_path)
+                timestamp = stats.st_mtime
+                
+                # Create output entry
+                output = {
+                    "name": filename,
+                    "path": f"/outputs/{filename}",
+                    "timestamp": timestamp,
+                    "size": stats.st_size
+                }
+                outputs.append(output)
+        
+        # Sort by timestamp (newest first)
+        outputs.sort(key=lambda x: x["timestamp"], reverse=True)
+        
+    except Exception as e:
+        print(f"Error listing outputs: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    return outputs
 
-# Create FastAPI app and mount Gradio
-main_app = FastAPI()
-gr.mount_gradio_app(main_app, block, path="")
+@app.delete("/api/job/{job_id}", response_model=Union[dict, ErrorResponse])
+async def delete_job(job_id: str):
+    """
+    Delete a job and its associated files
+    
+    Args:
+        job_id: The unique job identifier
+    
+    Returns:
+        Success message or error
+    """
+    if job_id not in job_statuses:
+        return ErrorResponse(error="Job not found")
+    
+    status = job_statuses[job_id]
+    
+    # Delete result video if it exists
+    if status.result_video and os.path.exists(status.result_video):
+        try:
+            os.remove(status.result_video)
+        except Exception as e:
+            print(f"Failed to delete video file: {e}")
+    
+    # Delete segment videos if they exist
+    for segment in status.segments:
+        if os.path.exists(segment):
+            try:
+                os.remove(segment)
+            except Exception as e:
+                print(f"Failed to delete segment file: {e}")
+    
+    # Remove job from statuses
+    del job_statuses[job_id]
+    
+    return {"success": True, "message": f"Job {job_id} deleted"}
 
+# Run the application
 if __name__ == "__main__":
-    print(f"Server running on http://{args.server}:{args.port}")
-    # Run with uvicorn server
-    config = uvicorn.Config(main_app, host=args.server, port=args.port)
-    server = uvicorn.Server(config)
-    server.run()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", type=str, default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--preload", action="store_true", help="Preload all models at startup")
+    parser.add_argument("--hf_token", type=str, help="Hugging Face authentication token")
+    args = parser.parse_args()
+    
+    # Preload models if requested
+    if args.preload:
+        model_paths = preload_all_models(use_auth_token=args.hf_token)
+    
+    # Load models
+    load_models()
+    
+    # Start the server
+    uvicorn.run(app, host=args.host, port=args.port) 

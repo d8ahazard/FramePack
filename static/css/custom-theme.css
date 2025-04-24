@@ -1,0 +1,285 @@
+/* Custom theme colors for FramePack */
+:root {
+  /* Neutrals */
+  --neutral-lightest: #F2F2F2;
+  --neutral-lighter: #D8D8D8;
+  --neutral-light: #B2B2B2;
+  --neutral: #7F7F7F;
+  --neutral-dark: #4C4C4C;
+  --neutral-darker: #191919;
+  --neutral-darkest: #000000;
+  
+  /* Text */
+  --text-primary: #F2F2F2;
+  
+  /* Main palette */
+  --steel-pink: #c750ce;
+  --steel-pink-100: #f4dcf5;
+  --steel-pink-200: #e9b9eb;
+  --steel-pink-300: #de96e1;
+  --steel-pink-400: #d273d8;
+  --steel-pink-500: #c750ce;
+  --steel-pink-600: #ac32b2;
+  --steel-pink-700: #812686;
+  --steel-pink-800: #561959;
+  --steel-pink-900: #2b0d2d;
+  
+  --amethyst: #9968df;
+  --amethyst-100: #ebe1f9;
+  --amethyst-200: #d6c2f2;
+  --amethyst-300: #c2a4ec;
+  --amethyst-400: #ae86e5;
+  --amethyst-500: #9968df;
+  --amethyst-600: #7532d3;
+  --amethyst-700: #5722a2;
+  --amethyst-800: #3a176c;
+  --amethyst-900: #1d0b36;
+  
+  --vista-blue: #a3a7f5;
+  --vista-blue-100: #ededfd;
+  --vista-blue-200: #dadcfb;
+  --vista-blue-300: #c8caf9;
+  --vista-blue-400: #b6b9f7;
+  --vista-blue-500: #a3a7f5;
+  --vista-blue-600: #5a61ed;
+  --vista-blue-700: #1822dc;
+  --vista-blue-800: #101793;
+  --vista-blue-900: #080b49;
+  
+  --tropical-indigo: #9880db;
+  --tropical-indigo-100: #eae6f8;
+  --tropical-indigo-200: #d6ccf1;
+  --tropical-indigo-300: #c1b3e9;
+  --tropical-indigo-400: #ad99e2;
+  --tropical-indigo-500: #9880db;
+  --tropical-indigo-600: #6c4acc;
+  --tropical-indigo-700: #4d2ea2;
+  --tropical-indigo-800: #331f6c;
+  --tropical-indigo-900: #1a0f36;
+  
+  --french-mauve: #d681da;
+  --french-mauve-100: #f7e6f8;
+  --french-mauve-200: #efccf0;
+  --french-mauve-300: #e6b3e9;
+  --french-mauve-400: #de9ae2;
+  --french-mauve-500: #d681da;
+  --french-mauve-600: #c44bcb;
+  --french-mauve-700: #9c2fa1;
+  --french-mauve-800: #681f6c;
+  --french-mauve-900: #341036;
+  
+  /* Additional palettes */
+  --purple: #a855f7;
+  --purple-lightest: #faf5ff;
+  --purple-lighter: #f3e8ff;
+  --purple-light: #d8b4fe;
+  --purple-dark: #7e22ce;
+  --purple-darker: #581c87;
+  --purple-darkest: #3b0764;
+  
+  --pink: #ec4899;
+  --pink-lightest: #fdf2f8;
+  --pink-lighter: #fce7f3;
+  --pink-light: #f9a8d4;
+  --pink-dark: #be185d;
+  --pink-darker: #9d174d;
+  --pink-darkest: #831843;
+  
+  --burnt-orange: #ff7740;
+  --burnt-orange-50: #fff3ec;
+  --burnt-orange-100: #ffe5d9;
+  --burnt-orange-200: #ffc9b3;
+  --burnt-orange-300: #ffad8c;
+  --burnt-orange-400: #ff9266;
+  --burnt-orange-500: #ff7740;
+  --burnt-orange-600: #e66a39;
+  --burnt-orange-700: #cc5c33;
+  --burnt-orange-800: #b34f2c;
+  --burnt-orange-900: #8a3c20;
+  
+  /* Blues */
+  --blue-lightest: #F5F5FD;
+  --blue-lighter: #E9EAFC;
+  --blue-light: #B1B4F7;
+  --blue: #8A8EF2;
+  --blue-dark: #6E73D1;
+  --blue-darker: #373969;
+  --blue-darkest: #292B4E;
+  
+  /* Cucumber palette (renamed from the original steel-pink) */
+  --cucumber-lightest: #f4dcf5;
+  --cucumber-lighter: #e9b9eb;
+  --cucumber-light: #de96e1;
+  --cucumber: #d273d8;
+  --cucumber-dark: #c750ce;
+  --cucumber-darker: #ac32b2;
+  --cucumber-darkest: #812686;
+  
+  /* Bootstrap overrides */
+  --bs-primary: var(--amethyst);
+  --bs-secondary: var(--tropical-indigo);
+  --bs-success: var(--vista-blue);
+  --bs-info: var(--blue);
+  --bs-warning: var(--burnt-orange);
+  --bs-danger: var(--french-mauve);
+  --bs-dark: var(--neutral-darker);
+  --bs-light: var(--neutral-lightest);
+}
+
+/* Theme the app */
+body {
+  background-color: var(--neutral-darker);
+  color: var(--text-primary);
+}
+
+.bg-dark {
+  background-color: var(--neutral-darkest) !important;
+}
+
+.bg-primary {
+  background-color: var(--amethyst) !important;
+}
+
+.bg-secondary {
+  background-color: var(--tropical-indigo) !important;
+}
+
+.bg-success {
+  background-color: var(--cucumber) !important;
+}
+
+.bg-info {
+  background-color: var(--vista-blue) !important;
+}
+
+.bg-warning {
+  background-color: var(--burnt-orange) !important;
+}
+
+.card {
+  background-color: var(--neutral-darker);
+  border-color: var(--neutral-dark);
+}
+
+.card-header {
+  border-bottom-color: var(--neutral-dark);
+}
+
+.btn-primary {
+  background-color: var(--amethyst);
+  border-color: var(--amethyst-600);
+}
+
+.btn-primary:hover {
+  background-color: var(--amethyst-600);
+  border-color: var(--amethyst-700);
+}
+
+.btn-success {
+  background-color: var(--cucumber);
+  border-color: var(--cucumber-600);
+}
+
+.btn-success:hover {
+  background-color: var(--cucumber-600);
+  border-color: var(--cucumber-700);
+}
+
+.btn-secondary {
+  background-color: var(--tropical-indigo);
+  border-color: var(--tropical-indigo-600);
+}
+
+.btn-secondary:hover {
+  background-color: var(--tropical-indigo-600);
+  border-color: var(--tropical-indigo-700);
+}
+
+.btn-danger {
+  background-color: var(--french-mauve);
+  border-color: var(--french-mauve-600);
+}
+
+.btn-danger:hover {
+  background-color: var(--french-mauve-600);
+  border-color: var(--french-mauve-700);
+}
+
+.btn-outline-primary {
+  color: var(--amethyst);
+  border-color: var(--amethyst);
+}
+
+.btn-outline-primary:hover {
+  background-color: var(--amethyst);
+  border-color: var(--amethyst);
+}
+
+.btn-outline-danger {
+  color: var(--french-mauve);
+  border-color: var(--french-mauve);
+}
+
+.btn-outline-danger:hover {
+  background-color: var(--french-mauve);
+  border-color: var(--french-mauve);
+}
+
+.alert-info {
+  background-color: var(--vista-blue-100);
+  border-color: var(--vista-blue-200);
+  color: var(--vista-blue-900);
+}
+
+.alert-secondary {
+  background-color: var(--neutral-dark);
+  border-color: var(--neutral-dark);
+  color: var(--neutral-lightest);
+}
+
+.alert-primary {
+  background-color: var(--amethyst-100);
+  border-color: var(--amethyst-200);
+  color: var(--amethyst-900);
+}
+
+.progress-bar {
+  background-color: var(--amethyst);
+}
+
+/* Form controls */
+.form-control, .form-select {
+  background-color: var(--neutral-dark);
+  border-color: var(--neutral);
+  color: var(--text-primary);
+}
+
+.form-control:focus, .form-select:focus {
+  background-color: var(--neutral-dark);
+  border-color: var(--amethyst);
+  color: var(--text-primary);
+  box-shadow: 0 0 0 0.25rem rgba(153, 104, 223, 0.25);
+}
+
+.form-control::placeholder {
+  color: var(--neutral-light);
+}
+
+/* Timeline customization */
+.timeline-container {
+  background-color: var(--neutral-darker);
+}
+
+.timeline-item {
+  background-color: var(--neutral-dark);
+  border-color: var(--neutral);
+}
+
+.timeline-item:hover {
+  background-color: var(--neutral-dark);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3), 0 0 0 2px var(--amethyst-400);
+}
+
+.timeline-arrow {
+  color: var(--amethyst);
+} 
