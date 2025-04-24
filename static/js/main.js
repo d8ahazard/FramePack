@@ -154,8 +154,6 @@ function initElements() {
     // Form inputs
     elements.globalPrompt = document.getElementById('globalPrompt');
     elements.negativePrompt = document.getElementById('negativePrompt');
-    elements.frameRate = document.getElementById('frameRate');
-    elements.frameTime = document.getElementById('frameTime');
     elements.resolution = document.getElementById('resolution');
     elements.steps = document.getElementById('steps');
     elements.guidanceScale = document.getElementById('guidanceScale');
@@ -821,7 +819,7 @@ function processSelectedFiles(files) {
                 file: file,
                 src: imgSrc,
                 name: fileName,
-                duration: elements.frameTime ? parseFloat(elements.frameTime.value) : 0.5
+                duration: 3.0  // Default duration is 3.0 seconds
             });
             
             // Create thumbnail
@@ -834,7 +832,7 @@ function processSelectedFiles(files) {
                             <div class="input-group input-group-sm">
                                 <span class="input-group-text">Duration</span>
                                 <input type="number" class="form-control image-duration" 
-                                    value="${elements.frameTime ? parseFloat(elements.frameTime.value) : 0.5}" 
+                                    value="3.0" 
                                     min="0.1" max="10" step="0.1">
                                 <span class="input-group-text">s</span>
                             </div>
@@ -909,9 +907,6 @@ function handleAddToTimeline() {
                 ? '1 image added to timeline' 
                 : `${count} images added to timeline`;
             
-            // Simple alert for now - could be replaced with a nicer toast notification
-            alert(message);
-            
             // Reset selected files
             selectedFiles = [];
             
@@ -981,30 +976,54 @@ function uploadFileToServer(file) {
 // Function to add an item to the timeline
 function addItemToTimeline(fileObj) {
     // Remove the main dropzone if this is the first item
-    if (timeline.length === 0) {
-        const mainDropZone = elements.timelineContainer.querySelector('.timeline-dropzone');
-        if (mainDropZone) {
-            mainDropZone.remove();
-        }
+    const mainDropZone = elements.timelineContainer.querySelector('.timeline-dropzone');
+    if (mainDropZone) {
+        mainDropZone.remove();
     }
     
     const timelineItem = document.createElement('div');
-    timelineItem.className = 'card mb-3 timeline-item';
+    timelineItem.className = 'timeline-item card mb-3';
     timelineItem.draggable = true;
     
-    const frameDuration = fileObj.duration || (elements.frameTime ? parseFloat(elements.frameTime.value) : 0.5);
+    // Get the display source and server path
+    let displaySrc = '';
+    let serverPath = '';
     
-    // Create a displayable image URL
-    // If the server path is a full path like C:\path\to\uploads\hash_image.jpg
-    // We need to extract just the filename for display
-    let displaySrc = fileObj.src;
-    const serverPath = fileObj.serverPath || '';
-    const fileName = serverPath.split(/[\/\\]/).pop();
-    
-    // If we have a filename from the server path, use that to create a web-accessible URL
-    if (fileName) {
-        displaySrc = `/uploads/${fileName}`;
+    if (fileObj.serverPath) {
+        // We already have a server path from a previous upload
+        serverPath = fileObj.serverPath;
+        displaySrc = fileObj.src || URL.createObjectURL(fileObj.file);
+    } else if (fileObj.file) {
+        // We have a file but no server path yet - upload it
+        uploadFileToServer(fileObj.file).then(response => {
+            if (response.success) {
+                // Update the timeline item with the new server path
+                const imgElement = timelineItem.querySelector('img');
+                if (imgElement) {
+                    imgElement.title = response.path;
+                }
+                
+                // Update the timeline array
+                const index = Array.from(elements.timelineContainer.children).indexOf(timelineItem);
+                if (index >= 0 && index < timeline.length) {
+                    timeline[index].serverPath = response.path;
+                }
+                
+                console.log(`File uploaded: ${response.filename}, server path: ${response.path}`);
+            } else {
+                console.error('Failed to upload file:', response.error);
+                showMessage(`Failed to upload file: ${response.error}`, 'error');
+            }
+        }).catch(error => {
+            console.error('Error uploading file:', error);
+            showMessage(`Error uploading file: ${error.message}`, 'error');
+        });
+        
+        displaySrc = URL.createObjectURL(fileObj.file);
     }
+    
+    // Default duration for new frames is 3.0 seconds
+    const frameDuration = fileObj.duration || 3.0;
     
     timelineItem.innerHTML = `
         <div class="card-body">
@@ -1411,6 +1430,43 @@ function updateTimelineStatus() {
             
             // Append the secondary drop zone after the timeline container
             elements.timelineContainer.after(secondaryDropZone);
+        }
+        
+        // Add note to the last item that its duration is not used
+        const timelineItems = elements.timelineContainer.querySelectorAll('.timeline-item');
+        const lastIndex = timelineItems.length - 1;
+        
+        // First remove any previous notes from all items
+        timelineItems.forEach((item, idx) => {
+            const existingNote = item.querySelector('.duration-note');
+            if (existingNote) {
+                existingNote.remove();
+            }
+            
+            // Re-enable the duration input for all items
+            const durationInput = item.querySelector('.duration-input');
+            if (durationInput) {
+                durationInput.disabled = false;
+            }
+        });
+        
+        // Add note to the last item
+        if (lastIndex >= 0) {
+            const lastItem = timelineItems[lastIndex];
+            const durationGroup = lastItem.querySelector('.input-group');
+            
+            if (durationGroup) {
+                const note = document.createElement('div');
+                note.className = 'duration-note small text-muted mt-1';
+                note.innerHTML = '<i class="bi bi-info-circle"></i> Duration not used for last frame';
+                durationGroup.after(note);
+                
+                // Optional: Disable the duration input for the last item
+                const durationInput = lastItem.querySelector('.duration-input');
+                if (durationInput) {
+                    durationInput.disabled = true;
+                }
+            }
         }
     }
 }
