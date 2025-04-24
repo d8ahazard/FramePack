@@ -1324,7 +1324,8 @@ function saveFrameChanges() {
 function updateTimelineStatus() {
     // Enable/disable generate button based on timeline
     if (elements.generateVideoBtn) {
-        elements.generateVideoBtn.disabled = timeline.length < 1;
+        // Need at least 2 frames to generate a video
+        elements.generateVideoBtn.disabled = timeline.length < 2;
     }
     
     // Show message when timeline is empty
@@ -1333,8 +1334,8 @@ function updateTimelineStatus() {
             <div class="timeline-dropzone">
                 <div class="text-center py-5">
                     <i class="bi bi-images fs-1 mb-3"></i>
-                    <h5>Drop Images Here</h5>
-                    <p class="text-muted">Drag and drop images here to add them to your timeline</p>
+                    <h5>Add Images to Timeline</h5>
+                    <p class="text-muted">Upload at least two images to create transitions between frames</p>
                     <button class="btn btn-primary mt-3" id="dropzoneUploadBtn">
                         <i class="bi bi-upload me-1"></i> Browse for Images
                     </button>
@@ -1429,28 +1430,40 @@ function startGeneration() {
     elements.progressStatus.textContent = 'Preparing generation request...';
     
     // Collect segments data
-    const segments = timeline.map((item, index) => {
+    // Create N-1 segments for N frames, since we need pairs of frames to create transitions
+    const segments = [];
+    
+    // Only process up to the second-to-last frame as segment starts
+    for (let i = 0; i < timeline.length - 1; i++) {
+        const currentFrame = timeline[i];
         const promptInput = Array.from(elements.timelineContainer.children)
-            .find((_, i) => i === index)
+            .find((_, idx) => idx === i)
             ?.querySelector('.prompt-text');
         
         // Use the full server path directly
-        const imagePath = item.serverPath;
+        const imagePath = currentFrame.serverPath;
         if (!imagePath) {
-            console.error(`No server path found for image at index ${index}:`, item);
-            alert(`Error: Missing server path for image ${index + 1}. Please try re-uploading.`);
-            return null;
+            console.error(`No server path found for image at index ${i}:`, currentFrame);
+            alert(`Error: Missing server path for image ${i + 1}. Please try re-uploading.`);
+            return;
         }
         
         // Log each path for debugging
-        console.log(`Segment ${index + 1} path: ${imagePath}`);
+        console.log(`Segment ${i + 1} path: ${imagePath}`);
         
-        return {
+        segments.push({
             image_path: imagePath,
             prompt: promptInput ? promptInput.value : '',
-            duration: item.duration
-        };
-    }).filter(segment => segment !== null);
+            duration: currentFrame.duration
+        });
+    }
+    
+    // Special case: If only one frame, we can't create a segment
+    if (timeline.length === 1) {
+        alert('Please add at least two images to create a video. A single image cannot be animated.');
+        elements.progressContainer.classList.add('d-none');
+        return;
+    }
     
     if (segments.length === 0) {
         // Reset progress UI
