@@ -866,7 +866,7 @@ function processSelectedFiles(files) {
     // The upload modal will be shown by the caller
 }
 
-// Function to add images to timeline
+// Function to handle adding to timeline
 function handleAddToTimeline() {
     if (selectedFiles.length === 0) {
         alert('Please select at least one image to add to the timeline.');
@@ -875,38 +875,107 @@ function handleAddToTimeline() {
     
     console.log(`Adding ${selectedFiles.length} files to timeline`);
     
-    // For each selected file, add to timeline
-    selectedFiles.forEach((fileObj, index) => {
-        console.log(`Adding file ${index + 1}/${selectedFiles.length}: ${fileObj.name}`);
-        addItemToTimeline(fileObj);
-    });
-    
-    // Close modal and clean up
-    uploadModal.hide();
-    
-    // Show confirmation toast or message
-    const count = selectedFiles.length;
-    const message = count === 1 
-        ? '1 image added to timeline' 
-        : `${count} images added to timeline`;
-    
-    // Simple alert for now - could be replaced with a nicer toast notification
-    alert(message);
-    
-    // Reset selected files
-    selectedFiles = [];
-    
-    // Make sure timeline UI is updated
-    updateTimelineStatus();
-    
-    // Remove any existing secondary drop zone to let updateTimelineStatus create it new
-    const existingDropZone = document.getElementById('secondaryDropZone');
-    if (existingDropZone) {
-        existingDropZone.remove();
+    // Show loading indicator
+    const addToTimelineBtn = document.getElementById('addToTimelineBtn');
+    if (addToTimelineBtn) {
+        addToTimelineBtn.disabled = true;
+        addToTimelineBtn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i> Uploading...';
     }
     
-    // Call updateTimelineStatus again to ensure the secondary drop zone is created
-    updateTimelineStatus();
+    // First, upload all files to the server
+    const uploadPromises = selectedFiles.map(fileObj => uploadFileToServer(fileObj.file));
+    
+    Promise.all(uploadPromises)
+        .then(serverPaths => {
+            console.log('All files uploaded successfully', serverPaths);
+            
+            // Add each file to the timeline with its server path
+            selectedFiles.forEach((fileObj, index) => {
+                if (serverPaths[index]) {
+                    // Use the server path instead of local file reference
+                    // This is the EXACT path returned from the server
+                    fileObj.serverPath = serverPaths[index];
+                    console.log(`Adding file ${index + 1}/${selectedFiles.length}: ${fileObj.name} (${serverPaths[index]})`);
+                    addItemToTimeline(fileObj);
+                }
+            });
+            
+            // Close modal and clean up
+            uploadModal.hide();
+            
+            // Show confirmation toast or message
+            const count = selectedFiles.length;
+            const message = count === 1 
+                ? '1 image added to timeline' 
+                : `${count} images added to timeline`;
+            
+            // Simple alert for now - could be replaced with a nicer toast notification
+            alert(message);
+            
+            // Reset selected files
+            selectedFiles = [];
+            
+            // Make sure timeline UI is updated
+            updateTimelineStatus();
+            
+            // Remove any existing secondary drop zone to let updateTimelineStatus create it new
+            const existingDropZone = document.getElementById('secondaryDropZone');
+            if (existingDropZone) {
+                existingDropZone.remove();
+            }
+            
+            // Call updateTimelineStatus again to ensure the secondary drop zone is created
+            updateTimelineStatus();
+        })
+        .catch(error => {
+            console.error('Error uploading files:', error);
+            alert('Error uploading files: ' + error.message);
+        })
+        .finally(() => {
+            // Reset the button state
+            if (addToTimelineBtn) {
+                addToTimelineBtn.disabled = false;
+                addToTimelineBtn.innerHTML = 'Add to Timeline';
+            }
+        });
+}
+
+// Function to upload a file to the server
+function uploadFileToServer(file) {
+    return new Promise((resolve, reject) => {
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        fetch('/api/upload_image', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Failed to upload file');
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (data.success) {
+                // Use the full server path returned from the API
+                const serverPath = data.path;
+                
+                if (!serverPath) {
+                    throw new Error('No valid file path returned from server');
+                }
+                
+                console.log(`File uploaded: ${serverPath}`);
+                resolve(serverPath);
+            } else {
+                reject(new Error(data.error || 'Unknown error uploading file'));
+            }
+        })
+        .catch(error => {
+            console.error('Error uploading file:', error);
+            reject(error);
+        });
+    });
 }
 
 // Function to add an item to the timeline
@@ -925,12 +994,24 @@ function addItemToTimeline(fileObj) {
     
     const frameDuration = fileObj.duration || (elements.frameTime ? parseFloat(elements.frameTime.value) : 0.5);
     
+    // Create a displayable image URL
+    // If the server path is a full path like C:\path\to\uploads\hash_image.jpg
+    // We need to extract just the filename for display
+    let displaySrc = fileObj.src;
+    const serverPath = fileObj.serverPath || '';
+    const fileName = serverPath.split(/[\/\\]/).pop();
+    
+    // If we have a filename from the server path, use that to create a web-accessible URL
+    if (fileName) {
+        displaySrc = `/uploads/${fileName}`;
+    }
+    
     timelineItem.innerHTML = `
         <div class="card-body">
             <div class="row">
                 <div class="col-md-4 mb-3 mb-md-0">
                     <div class="drag-handle"><i class="bi bi-grip-vertical"></i></div>
-                    <img src="${fileObj.src}" class="img-fluid rounded" alt="${fileObj.name}">
+                    <img src="${displaySrc}" class="img-fluid rounded" alt="${fileObj.name}" title="${serverPath}">
                     <div class="input-group input-group-sm mt-2">
                         <span class="input-group-text">Duration</span>
                         <input type="number" class="form-control duration-input" value="${frameDuration}" min="0.1" max="10" step="0.1">
@@ -996,8 +1077,9 @@ function addItemToTimeline(fileObj) {
     timelineItem.addEventListener('dragend', handleDragEnd);
     
     timeline.push({
-        src: fileObj.src,
+        src: displaySrc,
         file: fileObj.file,
+        serverPath: serverPath,
         duration: frameDuration,
         prompt: ''
     });
@@ -1088,17 +1170,26 @@ function updateTimelineArray() {
         });
         
         if (originalItem) {
-            // Update with current values
+            // CRITICAL: Make sure we preserve the serverPath property
             newTimeline.push({
                 ...originalItem,
                 prompt: promptText ? promptText.value : '',
-                duration: durationInput ? parseFloat(durationInput.value) : originalItem.duration
+                duration: durationInput ? parseFloat(durationInput.value) : originalItem.duration,
+                // Explicitly include serverPath to ensure it's preserved
+                serverPath: originalItem.serverPath
             });
         }
     });
     
     // Replace timeline with new ordered array
     timeline = newTimeline;
+    
+    // Log for debugging
+    console.log('Updated timeline array:', timeline.map(item => ({
+        name: item.file?.name,
+        serverPath: item.serverPath,
+        duration: item.duration
+    })));
 }
 
 // Add timeline drop zone for drag & drop from desktop
@@ -1338,17 +1429,34 @@ function startGeneration() {
     elements.progressStatus.textContent = 'Preparing generation request...';
     
     // Collect segments data
-    const segments = timeline.map(item => {
+    const segments = timeline.map((item, index) => {
         const promptInput = Array.from(elements.timelineContainer.children)
-            .find((_, i) => i === timeline.indexOf(item))
+            .find((_, i) => i === index)
             ?.querySelector('.prompt-text');
         
+        // Use the full server path directly
+        const imagePath = item.serverPath;
+        if (!imagePath) {
+            console.error(`No server path found for image at index ${index}:`, item);
+            alert(`Error: Missing server path for image ${index + 1}. Please try re-uploading.`);
+            return null;
+        }
+        
+        // Log each path for debugging
+        console.log(`Segment ${index + 1} path: ${imagePath}`);
+        
         return {
-            image_path: item.file.path || item.file.name,
+            image_path: imagePath,
             prompt: promptInput ? promptInput.value : '',
             duration: item.duration
         };
-    });
+    }).filter(segment => segment !== null);
+    
+    if (segments.length === 0) {
+        // Reset progress UI
+        elements.progressContainer.classList.add('d-none');
+        return;
+    }
     
     // Create request payload with all form settings
     const payload = {
@@ -1365,6 +1473,8 @@ function startGeneration() {
         gpu_memory_preservation: 6.0
     };
     
+    console.log('Sending generation request with payload:', JSON.stringify(payload, null, 2));
+    
     // Make API call
     fetch('/api/generate_video', {
         method: 'POST',
@@ -1375,7 +1485,9 @@ function startGeneration() {
     })
     .then(response => {
         if (!response.ok) {
-            throw new Error('Failed to start generation');
+            return response.text().then(text => {
+                throw new Error(`Failed to start generation: ${text}`);
+            });
         }
         return response.json();
     })

@@ -8,6 +8,7 @@ import argparse
 import time
 import json
 import logging
+import hashlib
 from typing import List, Dict, Any, Optional, Union
 
 import torch
@@ -143,6 +144,8 @@ async def add_response_headers(request: Request, call_next):
 # Mount static files directory
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
+
+# Keep this for backward compatibility but it's no longer primary access method
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 app.mount("/thumbnails", StaticFiles(directory=thumbnails_folder), name="thumbnails")
 
@@ -405,6 +408,29 @@ class UploadResponse(BaseModel):
 
 class GenerateResponse(BaseModel):
     job_id: str
+
+# ----------------------------------------
+# Utility functions
+# ----------------------------------------
+
+def resolve_upload_path(path):
+    """
+    Resolves path to a valid file path in the uploads directory.
+    
+    Args:
+        path: A full server path to an uploaded file
+             
+    Returns:
+        tuple: (resolved_path, exists) where resolved_path is the full filesystem path
+               and exists is a boolean indicating if the file exists
+    """
+    if not path:
+        return None, False
+    
+    # Just check if the provided path exists directly
+    exists = os.path.isfile(path)
+    
+    return path, exists
 
 # ----------------------------------------
 # Worker: single-segment generation
@@ -828,14 +854,37 @@ def worker_multi_segment(
         # Get segment duration
         segment_duration = current_segment.get('duration', 3.0)
         
-        # Load start and end images
-        start_image = np.array(Image.open(current_segment['image_path']).convert('RGB'))
-        end_image = None
-        if i < num_segments - 1:
-            end_image = np.array(Image.open(segments[i+1]['image_path']).convert('RGB'))
+        try:
+            # Get the image path directly from the segment
+            image_path = current_segment['image_path']
+            
+            if not os.path.exists(image_path):
+                raise FileNotFoundError(f"Image file not found: {image_path}")
+                
+            # Load start image
+            print(f"Loading image from: {image_path}")
+            start_image = np.array(Image.open(image_path).convert('RGB'))
+            
+            # Load end image if not the last segment
+            end_image = None
+            if i < num_segments - 1:
+                end_image_path = segments[i+1]['image_path']
+                
+                if not os.path.exists(end_image_path):
+                    raise FileNotFoundError(f"End image file not found: {end_image_path}")
+                    
+                print(f"Loading end image from: {end_image_path}")
+                end_image = np.array(Image.open(end_image_path).convert('RGB'))
+        
+        except Exception as e:
+            error_msg = f"Error loading image for segment {seg_no}: {str(e)}"
+            print(error_msg)
+            job_status.status = "failed"
+            job_status.message = error_msg
+            return None
         
         job_status.message = f"Processing segment {seg_no}/{num_segments}..."
-        job_status.progress = int((i / num_segments) * 100)
+        job_status.progress = int(((num_segments - i) / num_segments) * 100)
         
         # Clear cache if needed
         curr_free = get_cuda_free_memory_gb(gpu)
@@ -940,47 +989,49 @@ async def upload_image(file: UploadFile = File(...)):
     Returns:
         success: Whether the upload was successful
         filename: The filename on the server
-        path: The path to the file on the server
+        path: The full server path to the file
     """
-    # Get file content hash to check for duplicates
-    file_content = await file.read()
-    file_hash = hash(file_content)
-    
-    # Return file pointer to start for later use
-    await file.seek(0)
-    
-    # Check if we already have this file or one with the same name
-    original_filename = file.filename
-    base_name, ext = os.path.splitext(original_filename)
-    
-    # First check if exact same file (by hash) exists
-    for existing_file in os.listdir(upload_folder):
-        existing_path = os.path.join(upload_folder, existing_file)
-        if os.path.isfile(existing_path):
-            with open(existing_path, "rb") as f:
-                existing_content = f.read()
-                if hash(existing_content) == file_hash:
-                    # Same file content - reuse it
-                    return UploadResponse(
-                        success=True,
-                        filename=existing_file,
-                        path=existing_path
-                    )
-    
-    # Generate a new unique filename
-    timestamp = generate_timestamp()
-    filename = f"{timestamp}_{original_filename}"
-    file_path = os.path.join(upload_folder, filename)
-    
-    # Save the uploaded file
-    with open(file_path, "wb") as f:
-        f.write(file_content)
-    
-    return UploadResponse(
-        success=True,
-        filename=filename,
-        path=file_path
-    )
+    try:
+        # Get file content hash to ensure uniqueness
+        file_content = await file.read()
+        
+        # Create a hash of the file content
+        file_hash = hashlib.md5(file_content).hexdigest()
+        
+        # Return file pointer to start for later use
+        await file.seek(0)
+        
+        # Get original filename and extension
+        original_filename = file.filename
+        base_name, ext = os.path.splitext(original_filename)
+        
+        # Create a new filename with the hash
+        filename = f"{file_hash}_{original_filename}"
+        file_path = os.path.join(upload_folder, filename)
+        
+        # Check if a file with this hash already exists
+        if os.path.exists(file_path):
+            print(f"File with hash {file_hash} already exists, reusing existing file")
+        else:
+            # Save the uploaded file
+            with open(file_path, "wb") as f:
+                f.write(file_content)
+            print(f"File uploaded successfully: {file_path}")
+        
+        # Return the full server path
+        return UploadResponse(
+            success=True,
+            filename=filename,
+            path=file_path  # Return the full server path
+        )
+    except Exception as e:
+        print(f"Error uploading file: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return UploadResponse(
+            success=False,
+            error=f"Upload failed: {str(e)}"
+        )
 
 @app.post("/api/generate_video", response_model=GenerateResponse)
 async def generate_video(
@@ -1000,9 +1051,27 @@ async def generate_video(
     job_status = JobStatus(job_id)
     job_statuses[job_id] = job_status
     
+    # Log the request for debugging
+    print(f"Video generation request received:")
+    print(f"  Global prompt: {request_data.global_prompt[:50]}..." if len(request_data.global_prompt) > 50 else f"  Global prompt: {request_data.global_prompt}")
+    print(f"  Negative prompt: {request_data.negative_prompt[:50]}..." if len(request_data.negative_prompt) > 50 else f"  Negative prompt: {request_data.negative_prompt}")
+    print(f"  Number of segments: {len(request_data.segments)}")
+    print(f"  Resolution: {request_data.resolution}")
+    
     # Process segments
     segments = []
-    for segment in request_data.segments:
+    for i, segment in enumerate(request_data.segments):
+        # Verify that the image path exists
+        if not os.path.exists(segment.image_path):
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Image file not found for segment {i+1}: {segment.image_path}"}
+            )
+            
+        print(f"  Segment {i+1}: image_path={segment.image_path}")
+        print(f"    Prompt: {segment.prompt[:50]}..." if len(segment.prompt) > 50 else f"    Prompt: {segment.prompt}")
+        print(f"    Duration: {segment.duration}s")
+        
         segments.append({
             "image_path": segment.image_path,
             "prompt": segment.prompt,
