@@ -1050,6 +1050,8 @@ async def generate_video(
     job_id = generate_timestamp()
     job_status = JobStatus(job_id)
     job_statuses[job_id] = job_status
+    # Load models
+    load_models()
     
     # Log the request for debugging
     print(f"Video generation request received:")
@@ -1303,8 +1305,6 @@ if __name__ == "__main__":
     if args.preload:
         model_paths = preload_all_models(use_auth_token=args.hf_token)
     
-    # Load models
-    load_models()
     
     # Start the server
     uvicorn.run(app, host=args.host, port=args.port) 

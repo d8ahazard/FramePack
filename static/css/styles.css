@@ -755,4 +755,37 @@ header h3 {
     width: 100% !important;
     max-width: 100% !important;
     margin: 0 !important;
+}
+
+/* Video Viewer Modal adjustments */
+#videoViewerModal .modal-body {
+    max-height: calc(100vh - 150px); /* Account for header and footer */
+    overflow: hidden;
+}
+
+#modalVideo {
+    max-height: calc(100vh - 170px); /* Slightly smaller than modal-body to account for padding */
+    max-width: 100%;
+    width: auto;
+    height: auto;
+    margin: 0 auto;
+    display: block;
+}
+
+/* Center vertical videos */
+#videoViewerModal .modal-dialog {
+    display: flex;
+    align-items: center;
+    min-height: calc(100% - 1rem);
+}
+
+/* Responsive adjustments for smaller screens */
+@media (max-width: 768px) {
+    #videoViewerModal .modal-body {
+        max-height: calc(100vh - 120px);
+    }
+    
+    #modalVideo {
+        max-height: calc(100vh - 140px);
+    }
 } 

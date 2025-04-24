@@ -672,14 +672,37 @@ async function loadOutputs() {
 
 // Open video viewer modal
 function openVideoViewer(videoPath, videoName) {
-    elements.modalVideo.src = videoPath;
-    document.getElementById('videoViewerModalLabel').textContent = videoName;
-    elements.modalDownloadBtn.href = videoPath;
-    elements.modalDownloadBtn.download = videoName;
+    const modal = document.getElementById('videoViewerModal');
+    const video = document.getElementById('modalVideo');
+    const downloadBtn = document.getElementById('modalDownloadBtn');
+    const modalTitle = document.getElementById('videoViewerModalLabel');
     
-    // Show the modal
-    const videoViewerModal = new bootstrap.Modal(document.getElementById('videoViewerModal'));
-    videoViewerModal.show();
+    video.src = videoPath;
+    video.load();
+    modalTitle.textContent = videoName || 'Video Viewer';
+    downloadBtn.href = videoPath;
+    downloadBtn.download = videoName || 'video';
+    
+    // Handle fullscreen button click
+    document.getElementById('fullscreenBtn').addEventListener('click', function() {
+        if (video.requestFullscreen) {
+            video.requestFullscreen();
+        } else if (video.webkitRequestFullscreen) { /* Safari */
+            video.webkitRequestFullscreen();
+        } else if (video.msRequestFullscreen) { /* IE11 */
+            video.msRequestFullscreen();
+        }
+    });
+    
+    // Reset the video when the modal is hidden
+    modal.addEventListener('hidden.bs.modal', function() {
+        video.pause();
+        video.currentTime = 0;
+        video.src = '';
+    }, { once: true });
+    
+    const modalInstance = new bootstrap.Modal(modal);
+    modalInstance.show();
 }
 
 // Format job timestamp for display
@@ -732,6 +755,10 @@ document.addEventListener('DOMContentLoaded', function() {
         .job-list {
             max-height: 70vh;
             overflow-y: auto;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            padding: 10px;
+            margin-bottom: 15px;
         }
         .job-item {
             padding: 12px;
