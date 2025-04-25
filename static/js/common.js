@@ -218,8 +218,23 @@ function enforceHorizontalLayout() {
 // Check if image path exists
 async function checkImageExists(imagePath) {
     try {
-        const response = await fetch(imagePath, { method: 'HEAD' });
-        return response.ok;
+        // If the path is a file:// URL or absolute path, we can't fetch it directly
+        if (imagePath.startsWith('file://') || imagePath.match(/^[A-Z]:\\/)) {
+            // For local paths, we need to check if they exist through the server
+            // Use the server API to check if the file exists
+            const encodedPath = encodeURIComponent(imagePath);
+            const response = await fetch(`/api/check_file_exists?path=${encodedPath}`);
+            const data = await response.json();
+            return data.exists;
+        } else if (imagePath.startsWith('/uploads/') || imagePath.startsWith('/static/')) {
+            // For server paths, we can check with a HEAD request
+            const response = await fetch(imagePath, { method: 'HEAD' });
+            return response.ok;
+        } else {
+            // For other URLs, attempt regular fetch
+            const response = await fetch(imagePath, { method: 'HEAD' });
+            return response.ok;
+        }
     } catch (error) {
         console.error('Error checking image:', error);
         return false;

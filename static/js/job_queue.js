@@ -35,6 +35,9 @@ function initJobQueue() {
             disconnectJobWebsocket();
         }
     });
+    
+    // Export loadJobQueue for access from other modules
+    window.loadJobQueue = loadJobQueue;
 }
 
 // Load the job queue UI
@@ -835,101 +838,167 @@ async function loadJobToTimeline(jobId) {
                 return;
             }
         }
-        
+
         // Show loading indicator
         const jobDetailContainer = document.getElementById('jobDetailContainer');
         const loadingMessage = document.createElement('div');
         loadingMessage.className = 'alert alert-info mt-3';
         loadingMessage.innerHTML = '<i class="bi bi-hourglass"></i> Loading job to timeline...';
         jobDetailContainer.appendChild(loadingMessage);
-        
+
         // Fetch job data
         const response = await fetch(`/api/reload_job/${jobId}`, {
             method: 'POST'
         });
-        
+
         if (!response.ok) {
             throw new Error(`Failed to load job data: ${response.statusText}`);
         }
-        
+
         const jobData = await response.json();
+        console.log("Loading JobData:", jobData);
+
+                // Get the job settings - just use whatever structure is there
+                const settings = (jobData.job_settings && typeof jobData.job_settings === 'object') ? 
+                    (jobData.job_settings.framepack || jobData.job_settings) : 
+                    {};
+                console.log("Got job settings:", settings);
+                
+                // Use segments from the framepack settings first, then job data, or empty array as fallback
+                const segments = settings.segments || jobData.segments || [];
+                console.log("Got segments from settings:", segments);
         
-        if (!jobData.settings || !jobData.settings.segments) {
-            throw new Error('Invalid job data: missing segments');
-        }
-        
-        // Clear current timeline
+        // Step 1: Clear the timeline
         elements.timelineContainer.innerHTML = '';
         timeline.length = 0; // Clear array while keeping reference
         
-        // Set form values
+        // Step 2: Set form values from settings
         if (elements.globalPrompt) {
-            elements.globalPrompt.value = jobData.settings.global_prompt || '';
+            elements.globalPrompt.value = settings.global_prompt || '';
         }
         
         if (elements.negativePrompt) {
-            elements.negativePrompt.value = jobData.settings.negative_prompt || '';
+            elements.negativePrompt.value = settings.negative_prompt || '';
         }
         
         if (elements.steps) {
-            elements.steps.value = jobData.settings.steps || 25;
+            elements.steps.value = settings.steps || 25;
         }
         
         if (elements.guidanceScale) {
-            elements.guidanceScale.value = jobData.settings.guidance_scale || 10.0;
+            elements.guidanceScale.value = settings.guidance_scale || 10.0;
         }
         
         if (elements.resolution) {
-            elements.resolution.value = jobData.settings.resolution || 640;
+            elements.resolution.value = settings.resolution || 640;
         }
         
         if (elements.useTeacache) {
-            elements.useTeacache.checked = jobData.settings.use_teacache !== false;
+            elements.useTeacache.checked = settings.use_teacache !== false;
         }
         
         if (elements.enableAdaptiveMemory) {
-            elements.enableAdaptiveMemory.checked = jobData.settings.enable_adaptive_memory !== false;
+            elements.enableAdaptiveMemory.checked = settings.enable_adaptive_memory !== false;
         }
         
-        // Import addItemToTimeline from the editor module
-        // Since this creates a circular dependency, we'll use a dynamic import
+        // Step 3: Add segments to timeline
         const editorModule = await import('./editor.js');
         
-        // Add each segment to timeline
-        for (const segment of jobData.settings.segments) {
-            // Create a file object representation
-            const fileObj = {
-                serverPath: segment.image_path,
-                duration: segment.duration || 3.0,
-                prompt: segment.prompt || '',
-                name: segment.image_path.split('/').pop() // Extract filename
-            };
-            
-            // Create a dummy source for display
-            fileObj.src = segment.image_path;
-            
-            // Add to timeline
-            await editorModule.addItemToTimeline(fileObj);
+        // Maps for segment configurations from settings if they exist
+        const segmentConfigs = new Map();
+        
+        // Try to get segment configurations if they exist
+        if (settings.segments && Array.isArray(settings.segments)) {
+            console.log(`Processing ${settings.segments.length} segments from job settings`);
+            settings.segments.forEach((seg, index) => {
+                if (seg && seg.image_path) {
+                    segmentConfigs.set(seg.image_path, {
+                        prompt: seg.prompt || '',
+                        duration: seg.duration || 3.0
+                    });
+                    console.log(`Segment ${index + 1}: ${seg.image_path} (prompt: "${seg.prompt?.substring(0, 30)}${seg.prompt?.length > 30 ? '...' : ''}", duration: ${seg.duration}s)`);
+                } else {
+                    console.warn(`Segment ${index + 1} has invalid or missing image_path:`, seg);
+                }
+            });
+        } else {
+            console.warn("No segments array found in job settings or invalid format:", settings);
         }
         
-        // Update timeline status
-        editorModule.updateTimelineStatus();
+        // Add each segment to the timeline - use whatever we have
+        console.log(`Adding ${segments.length} segments to timeline`);
+        let successCount = 0;
         
+        for (const segment of segments) {
+            try {
+                // Handle both string segments and object segments
+                const segmentPath = typeof segment === 'object' ? segment.image_path : segment;
+                
+                if (!segmentPath) {
+                    console.warn("Invalid segment (missing path):", segment);
+                    continue;
+                }
+                
+                // Get config for this segment if it exists
+                const config = segmentConfigs.get(segmentPath) || {};
+                
+                // Log segment being processed
+                console.log(`Processing segment: ${segmentPath}`);
+            
+            // Create a file object representation with proper path handling for browser security
+            // Use the serve_file API endpoint to load the image instead of direct file path
+            const fileName = segmentPath.split('\\').pop().split('/').pop(); // Extract filename (works for both / and \ paths)
+            
+            // Create URL to load the image through server API instead of direct file path
+            const imageUrl = `/api/serve_file?path=${encodeURIComponent(segmentPath)}`;
+            
+            const fileObj = {
+                serverPath: segmentPath,
+                name: fileName,
+                src: imageUrl, // Use server API to serve the file
+                prompt: config.prompt || '',
+                duration: config.duration || 3.0
+            };
+            
+            console.log(`Adding segment to timeline: ${fileName} from ${imageUrl}`);
+            
+                // Add to timeline
+                await editorModule.addItemToTimeline(fileObj);
+                successCount++;
+            } catch (error) {
+                console.error(`Error adding segment to timeline:`, error);
+                // Continue with next segment
+            }
+        }
+        
+        // Step 4: Update UI and finish
+        editorModule.updateTimelineStatus();
+
         // Switch to editor tab
         const editorTab = document.getElementById('editor-tab');
         if (editorTab) {
             bootstrap.Tab.getOrCreateInstance(editorTab).show();
         }
-        
+
         // Remove loading message
         loadingMessage.remove();
-        
-        // Navigate to the editor tab
-        // Validate images
-        if (!jobData.is_valid) {
-            showMessage(`Warning: ${jobData.missing_images.length} images are missing. You'll need to replace them before generating.`, 'warning');
+
+        // Provide feedback based on how many segments were loaded
+        if (successCount === 0 && segments.length > 0) {
+            showMessage(`Failed to load any segments to the timeline. Check console for details.`, 'error');
+        } else if (successCount < segments.length) {
+            showMessage(`Loaded ${successCount} of ${segments.length} segments to the timeline.`, 'warning');
+        } else if (segments.length > 0) {
+            showMessage(`Successfully loaded ${segments.length} segments to the timeline.`, 'success');
+        } else {
+            showMessage(`Job loaded but no segments were found.`, 'warning');
         }
         
+        // Show warning for missing images
+        if (jobData.is_valid === false && jobData.missing_images && jobData.missing_images.length > 0) {
+            showMessage(`Warning: ${jobData.missing_images.length} images are missing. You'll need to replace them before generating.`, 'warning');
+        }
+
     } catch (error) {
         console.error('Error loading job to timeline:', error);
         showMessage(`Failed to load job: ${error.message}`, 'error');
@@ -943,35 +1012,61 @@ async function rerunJob(jobId) {
         if (!confirm('Are you sure you want to rerun this job?')) {
             return;
         }
-        
+
         // Show loading indicator
         const jobDetailContainer = document.getElementById('jobDetailContainer');
         const loadingMessage = document.createElement('div');
         loadingMessage.className = 'alert alert-info mt-3';
         loadingMessage.innerHTML = '<i class="bi bi-hourglass"></i> Starting job rerun...';
         jobDetailContainer.appendChild(loadingMessage);
-        
+
+        // Get current job data first to check if we need to update the structure
+        const jobResponse = await fetch(`/api/job/${jobId}`);
+        if (jobResponse.ok) {
+            const jobData = await jobResponse.json();
+
+            // Check if we need to update the job to use ModuleJobSettings format
+            if (jobData.job_settings && !jobData.job_settings.module_type && !jobData.job_settings.settings) {
+                console.log('Converting job to ModuleJobSettings format before rerunning');
+
+                // Update the job to use ModuleJobSettings format
+                await fetch(`/api/save_job/${jobId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        ...jobData,
+                        job_settings: {
+                            module_type: "framepack",
+                            settings: jobData.job_settings
+                        }
+                    })
+                });
+            }
+        }
+
         // Call rerun API
         const response = await fetch(`/api/rerun_job/${jobId}`, {
             method: 'POST'
         });
-        
+
         if (!response.ok) {
             const errorData = await response.json();
             throw new Error(errorData.error || 'Failed to rerun job');
         }
-        
+
         const result = await response.json();
-        
+
         // Remove loading message
         loadingMessage.remove();
-        
+
         // Show success and switch to the new job
         showMessage('Job restarted successfully!', 'success');
-        
+
         // Refresh job queue
         await loadJobQueue();
-        
+
         // Select the new job
         const jobItems = document.querySelectorAll('.job-item');
         jobItems.forEach(item => {
@@ -982,10 +1077,10 @@ async function rerunJob(jobId) {
                 item.scrollIntoView({ behavior: 'smooth' });
             }
         });
-        
+
         // Load details of the new job
         loadJobDetails(result.job_id);
-        
+
     } catch (error) {
         console.error('Error rerunning job:', error);
         showMessage(`Failed to rerun job: ${error.message}`, 'error');
@@ -995,24 +1090,55 @@ async function rerunJob(jobId) {
 // Queue a job (without running it immediately)
 async function requeueJob(jobId) {
     try {
+        // First get the current job data
+        const jobResponse = await fetch(`/api/job/${jobId}`);
+        if (!jobResponse.ok) {
+            throw new Error('Failed to fetch job data');
+        }
+
+        const jobData = await jobResponse.json();
+
+        // Ensure job settings has the proper ModuleJobSettings structure before queuing
+        if (jobData.job_settings && !jobData.job_settings.module_type && !jobData.job_settings.settings) {
+            // Update job with proper ModuleJobSettings structure
+            const updateResponse = await fetch(`/api/save_job/${jobId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    ...jobData,
+                    job_settings: {
+                        module_type: "framepack",
+                        settings: jobData.job_settings
+                    }
+                })
+            });
+
+            if (!updateResponse.ok) {
+                console.warn('Failed to update job to new ModuleJobSettings format');
+            }
+        }
+
+        // Queue the job
         const response = await fetch(`/api/requeue_job/${jobId}`, {
             method: 'POST'
         });
-        
+
         if (!response.ok) {
             const errorData = await response.json();
             throw new Error(errorData.error || 'Failed to queue job');
         }
-        
+
         const result = await response.json();
-        
+
         if (result.success) {
             // Refresh the job queue
             loadJobQueue();
-            
+
             // Show success message
             showMessage(`Job queued at position ${result.queue_position}`, 'success');
-            
+
             // Load details for the queued job
             loadJobDetails(jobId).then(r => {}).catch(e => {
                 console.error('Error loading job details:', e);
@@ -1021,7 +1147,7 @@ async function requeueJob(jobId) {
         } else {
             throw new Error(result.error || 'Failed to queue job');
         }
-        
+
     } catch (error) {
         console.error('Error queueing job:', error);
         showMessage(`Failed to queue job: ${error.message}`, 'error');
@@ -1032,7 +1158,7 @@ async function requeueJob(jobId) {
 function addQueueStyles() {
     // Check if style is already added
     if (document.getElementById('queueStyles')) return;
-    
+
     const style = document.createElement('style');
     style.id = 'queueStyles';
     style.textContent = `

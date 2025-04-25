@@ -1,12 +1,18 @@
 import hashlib
+import hashlib
+import logging
 import os
-from typing import Union
+from typing import List, Union
 
+from fastapi import HTTPException
 from fastapi import UploadFile, File
 from starlette.responses import JSONResponse, FileResponse
 
-from datatypes.datatypes import ErrorResponse, DeleteVideoRequest, UploadResponse
+from datatypes.datatypes import ErrorResponse, DeleteVideoRequest, UploadResponse, FileExistsResponse, \
+    PathsExistResponse
 from handlers.path import output_path, thumbnail_path, upload_path
+
+logger = logging.getLogger(__name__)
 
 
 def generate_thumbnail(video_path):
@@ -37,9 +43,112 @@ def generate_thumbnail(video_path):
 
 
 def register_api_endpoints(app):
-    # Create our list_outputs endpoint
-
+    """Register file handling API endpoints"""
     api_tag = __name__.split(".")[-1].title().replace("_", " ")
+
+    @app.get("/api/check_file_exists", response_model=FileExistsResponse, tags=[api_tag])
+    async def check_file_exists(path: str):
+        """
+        Check if a file exists on the server
+        
+        Args:
+            path: The file path to check
+            
+        Returns:
+            A dictionary with exists: True/False and the normalized path
+        """
+        # Clean the path to prevent directory traversal attacks
+        clean_path = os.path.normpath(path)
+
+        # If path starts with file:// protocol, remove it
+        if clean_path.startswith('file://'):
+            clean_path = clean_path[7:]
+
+        # Check if the file exists
+        exists = os.path.exists(clean_path) and os.path.isfile(clean_path)
+
+        return FileExistsResponse(exists=exists, path=clean_path)
+
+    @app.post("/api/check_multiple_files", response_model=PathsExistResponse, tags=[api_tag])
+    async def check_multiple_files(paths: List[str]):
+        """
+        Check if multiple files exist on the server
+        
+        Args:
+            paths: List of file paths to check
+            
+        Returns:
+            List of results with exists: True/False for each path
+        """
+        results = []
+
+        for path in paths:
+            # Clean the path to prevent directory traversal attacks
+            clean_path = os.path.normpath(path)
+
+            # If path starts with file:// protocol, remove it
+            if clean_path.startswith('file://'):
+                clean_path = clean_path[7:]
+
+            # Check if the file exists
+            exists = os.path.exists(clean_path) and os.path.isfile(clean_path)
+
+            results.append(FileExistsResponse(exists=exists, path=clean_path))
+
+        return PathsExistResponse(results=results)
+
+    @app.get("/api/serve_file", tags=[api_tag])
+    async def serve_file(path: str, download: bool = False):
+        """
+        Serve a file from the server with proper headers
+        
+        Args:
+            path: The file path to serve
+            download: Whether to serve as an attachment (download)
+            
+        Returns:
+            File response
+        """
+        # Clean the path to prevent directory traversal attacks
+        clean_path = os.path.normpath(path)
+
+        # If path starts with file:// protocol, remove it
+        if clean_path.startswith('file://'):
+            clean_path = clean_path[7:]
+
+        # Check if the file exists
+        if not os.path.exists(clean_path) or not os.path.isfile(clean_path):
+            raise HTTPException(status_code=404, detail="File not found")
+
+        # Get filename from path
+        filename = os.path.basename(clean_path)
+
+        # Determine media type based on extension
+        _, ext = os.path.splitext(filename)
+        ext = ext.lower()
+
+        media_types = {
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp',
+            '.mp4': 'video/mp4',
+            '.webm': 'video/webm',
+            '.mp3': 'audio/mpeg',
+            '.wav': 'audio/wav',
+            '.json': 'application/json',
+            '.txt': 'text/plain',
+        }
+
+        media_type = media_types.get(ext, 'application/octet-stream')
+
+        return FileResponse(
+            path=clean_path,
+            filename=filename,
+            media_type=media_type,
+            content_disposition_type="attachment" if download else "inline"
+        )
 
     @app.get("/api/list_outputs", tags=[api_tag])
     async def list_outputs():
@@ -241,4 +350,3 @@ def register_api_endpoints(app):
                 status_code=500,
                 content={"error": f"Failed to generate thumbnail: {str(e)}"}
             )
-

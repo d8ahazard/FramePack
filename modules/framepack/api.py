@@ -1,12 +1,13 @@
 import os
 
-from fastapi import BackgroundTasks
+from fastapi import BackgroundTasks, Body
 from starlette.responses import JSONResponse
 
-from datatypes.datatypes import GenerateResponse, VideoRequest, JobStatus
+from datatypes.datatypes import GenerateResponse, VideoRequest, JobStatus, SaveJobRequest
 from modules.framepack.diffusers_helper.utils import generate_timestamp
 from modules.framepack.module import load_models
 from handlers.job_queue import add_to_queue, save_job_data, job_statuses
+from handlers.path import job_path
 
 
 def register_api_endpoints(app):
@@ -30,8 +31,9 @@ def register_api_endpoints(app):
         job_id = generate_timestamp()
         job_status = JobStatus(job_id, request_data.job_name)
 
-        # Store original job settings for later use
-        job_settings = request_data.dict()
+        # Store original job settings for later use as a dictionary with module name as key
+        module_settings = request_data.dict()
+        job_settings = {"framepack": module_settings}
         job_status.set_job_settings(job_settings)
 
         # Save job to in-memory cache

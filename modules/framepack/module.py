@@ -791,7 +791,9 @@ def worker_multi_segment(
                 # Check if this is the last frame and include_last_frame is False
                 # In this case, we want to generate a segment for the last frame
                 # If include_last_frame is False, we need to handle it differently
-                include_last_frame = job_status.job_settings.get('include_last_frame',
+                # Get framepack settings from job_settings dictionary
+                framepack_settings = job_status.job_settings.get('framepack', {})
+                include_last_frame = framepack_settings.get('include_last_frame',
                                                                  False) if job_status.job_settings else False
                 if i == num_segments - 1 and not include_last_frame:
                     # For the last frame without an end frame (with include_last_frame=False),

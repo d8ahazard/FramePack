@@ -3,6 +3,8 @@ models/
 outputs/
 repo/
 uploads/
+thumbnails/
+jobs/
 .cache/
 
 # Byte-compiled / optimized / DLL files

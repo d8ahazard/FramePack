@@ -1,5 +1,4 @@
 import argparse
-import hashlib
 import importlib
 import json
 import logging
@@ -7,19 +6,18 @@ import os
 import time
 
 import uvicorn
-from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
 import modules
-from datatypes.datatypes import UploadResponse, ConnectionManager, EndpointFilter
+from datatypes.datatypes import ConnectionManager, EndpointFilter
 from handlers.job_queue import job_statuses
 from handlers.model import preload_all_models
 from handlers.path import thumbnail_path, upload_path, output_path
-
 
 logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 

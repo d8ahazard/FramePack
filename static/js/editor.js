@@ -13,6 +13,10 @@ import {
     removeJobEventListener
 } from './common.js';
 
+import {
+    loadJobQueue
+} from './job_queue.js';
+
 let keepCurrentImage = false;
 let currentEditIndex = -1;
 
@@ -45,54 +49,6 @@ function closeUploadModal() {
 }
 
 // Module initialization function
-function initFiles() {
-    console.log('Files module initialized');
-    
-    // Initialize upload modal
-    const uploadModalElement = document.getElementById('uploadImagesModal');
-    if (uploadModalElement) {
-        uploadModal = new bootstrap.Modal(uploadModalElement);
-    }
-    
-    // Add event listeners
-    if (elements.fileInput) {
-        elements.fileInput.addEventListener('change', handleFileSelect);
-        // Add click event listener to prevent propagation
-        elements.fileInput.addEventListener('click', (e) => {
-            e.stopPropagation();
-        });
-    }
-    
-    // Upload drop area events
-    if (elements.uploadDropArea) {
-        elements.uploadDropArea.addEventListener('dragover', handleDragOver);
-        elements.uploadDropArea.addEventListener('dragleave', handleDragLeave);
-        elements.uploadDropArea.addEventListener('drop', handleFileDrop);
-        elements.uploadDropArea.addEventListener('click', triggerFileInput);
-    }
-    
-    // Create a module object with all the exported functions and variables
-    const filesModule = {
-        handleDragOver,
-        handleDragLeave,
-        handleFileDrop,
-        handleFileSelect,
-        triggerFileInput,
-        processSelectedFiles,
-        getSelectedFiles,
-        hasSelectedFiles,
-        uploadFileToServer,
-        showUploadModal,
-        closeUploadModal,
-        clearSelectedFiles
-    };
-    
-    // Store the module globally for easier access from other modules
-    window.filesModule = filesModule;
-    
-    // Return all functions and variables that editor.js needs
-    return filesModule;
-}
 
 // Function to clear the selectedFiles array
 function clearSelectedFiles() {
@@ -357,6 +313,28 @@ function initEditor() {
     if (sortDescBtn) {
         sortDescBtn.addEventListener('click', () => sortTimeline('desc'));
     }
+
+    console.log('Files module initialized');
+
+    // Initialize upload modal
+    // Add event listeners
+    if (elements.fileInput) {
+        elements.fileInput.addEventListener('change', handleFileSelect);
+        // Add click event listener to prevent propagation
+        elements.fileInput.addEventListener('click', (e) => {
+            e.stopPropagation();
+        });
+    }
+
+    // Upload drop area events
+    if (elements.uploadDropArea) {
+        elements.uploadDropArea.addEventListener('dragover', handleDragOver);
+        elements.uploadDropArea.addEventListener('dragleave', handleDragLeave);
+        elements.uploadDropArea.addEventListener('drop', handleFileDrop);
+        elements.uploadDropArea.addEventListener('click', triggerFileInput);
+    }
+
+
 }
 
 // Initialize event listeners for the editor module
@@ -632,6 +610,7 @@ function updateTimelineStatus() {
             const lastItem = timelineItems[lastIndex];
             const durationSection = lastItem.querySelector('.timeline-item-duration');
             
+            
             if (durationSection) {
                 // First check if there's already a checkbox
                 let includeLastFrameCheckbox = lastItem.querySelector('.include-last-frame-checkbox');
@@ -715,9 +694,63 @@ function updateTimelineStatus() {
     enforceHorizontalLayout();
 }
 
-// Function to sort timeline - placeholder to be defined later
+// Function to sort timeline by filename
 function sortTimeline(direction) {
-    console.log('sortTimeline will be implemented');
+    if (timeline.length <= 1) {
+        // Nothing to sort if there's only one item or none
+        return;
+    }
+    
+    console.log(`Sorting timeline ${direction}`);
+    
+    // First get all elements
+    const items = Array.from(elements.timelineContainer.querySelectorAll('.timeline-item'));
+    
+    // Get the current order of items
+    const originalOrder = items.map(item => {
+        const img = item.querySelector('img');
+        return img ? img.title || img.alt : '';
+    });
+    
+    // Sort the timeline array by filename
+    timeline.sort((a, b) => {
+        const aName = a.serverPath ? a.serverPath.split('/').pop() : a.name;
+        const bName = b.serverPath ? b.serverPath.split('/').pop() : b.name;
+        
+        if (direction === 'asc') {
+            return aName.localeCompare(bName);
+        } else {
+            return bName.localeCompare(aName);
+        }
+    });
+    
+    // Clear the timeline container
+    elements.timelineContainer.innerHTML = '';
+    
+    // Re-add items in sorted order
+    for (const item of timeline) {
+        // Create a file object for addItemToTimeline
+        const fileObj = {
+            src: item.src,
+            file: item.file,
+            serverPath: item.serverPath,
+            duration: item.duration,
+            prompt: item.prompt,
+            name: item.name || (item.serverPath ? item.serverPath.split('/').pop() : ''),
+            valid: item.valid
+        };
+        
+        addItemToTimeline(fileObj);
+    }
+    
+    // Update the status of the timeline
+    updateTimelineStatus();
+    
+    // Log the sorted order
+    console.log('Timeline sorted successfully');
+    
+    // Show a message to the user
+    showMessage(`Timeline sorted ${direction === 'asc' ? 'ascending' : 'descending'} by filename`, 'success');
 }
 
 // Function to start generation
@@ -743,6 +776,15 @@ function startGeneration() {
     
     // Use common function to prepare the job payload
     const payload = prepareJobPayload();
+    
+    // For the /api/generate_video endpoint, we actually want the settings directly
+    // The backend will handle wrapping it in ModuleJobSettings format
+    
+    // Ensure job_settings has the proper ModuleJobSettings structure
+    if (!payload.job_settings.module_type) {
+        console.warn('Job settings missing module_type, adding default framepack module type');
+        payload.job_settings = prepareModuleJobSettings(payload.job_settings);
+    }
     
     console.log('Sending generation request with payload:', JSON.stringify(payload, null, 2));
     
@@ -797,6 +839,15 @@ function startGeneration() {
     });
 }
 
+// Helper function to convert job settings to ModuleJobSettings format
+function prepareModuleJobSettings(settings) {
+    // Create a dictionary with module name as key and settings as value
+    // Always use "framepack" as the module name
+    return {
+        "framepack": settings
+    };
+}
+
 // Function to save job without starting generation or clearing timeline
 function saveJob() {
     if (timeline.length === 0) {
@@ -811,15 +862,37 @@ function saveJob() {
         return;
     }
     
-    // Use common function to prepare the job payload
-    const payload = prepareJobPayload();
-    // Add flag to indicate this is a saved job, not for immediate processing
-    payload.saved_only = true;
+    // Generate a job ID if not provided
+    const timestamp = Math.floor(Date.now() / 1000);
+    const jobId = `${timestamp}_${Math.floor(Math.random() * 1000)}`;
+    
+    // Use common function to prepare the job settings
+    const jobSettings = prepareJobPayload();
+    
+    // Prepare the segment paths for the status object
+    const segmentPaths = timeline.map(item => item.serverPath);
+    
+    // Create a SaveJobRequest structure matching the backend requirements
+    const payload = {
+        job_id: jobId,
+        job_name: jobSettings.job_name,
+        status: "saved",
+        progress: 0,
+        message: "Job saved",
+        result_video: "",
+        segments: segmentPaths,
+        is_valid: true,
+        missing_images: [],
+        job_settings: prepareModuleJobSettings(jobSettings),
+        queue_position: -1,
+        created_timestamp: timestamp
+    };
     
     console.log('Saving job with payload:', JSON.stringify(payload, null, 2));
+    showMessage('Saving job...', 'info');
     
-    // Make API call to save job
-    fetch('/api/save_job', {
+    // Make API call to save job at /api/save_job/{job_id}
+    fetch(`/api/save_job/${jobId}`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json'
@@ -829,7 +902,13 @@ function saveJob() {
     .then(response => {
         if (!response.ok) {
             return response.text().then(text => {
-                throw new Error(`Failed to save job: ${text}`);
+                try {
+                    // Try to parse the error as JSON
+                    const errorObj = JSON.parse(text);
+                    throw new Error(`Failed to save job: ${JSON.stringify(errorObj)}`);
+                } catch (e) {
+                    throw new Error(`Failed to save job: ${text}`);
+                }
             });
         }
         return response.json();
@@ -838,15 +917,10 @@ function saveJob() {
         console.log('Job saved:', data);
         
         // Show success message
-        showMessage('Job saved successfully!', 'success');
+        showMessage('Job saved successfully! Job ID: ' + jobId, 'success');
         
-        // Refresh the job queue
+        // Try to refresh the job queue, but handle if the function isn't available
         loadJobQueue();
-        
-        // Notify via WebSocket if supported
-        if (window.WebSocket) {
-            // Optional: could add a specific notification for saved jobs
-        }
     })
     .catch(error => {
         console.error('Error saving job:', error);
@@ -882,7 +956,7 @@ function prepareJobPayload() {
         });
     } else {
         // Process multiple images: Create transitions between each pair of frames
-        for (let i = 0; i < timeline.length - 1; i++) {
+        for (let i = 0; i < timeline.length; i++) {
             const currentFrame = timeline[i];
             const promptInput = Array.from(elements.timelineContainer.children)
                 .find((_, idx) => idx === i)
@@ -929,16 +1003,7 @@ function prepareJobPayload() {
         
         // Log the last frame for debugging
         console.log(`Last frame path: ${lastFrame.serverPath}`);
-        
-        // If include last frame is checked, add it as a segment
-        if (includeLastFrame) {
-            console.log(`Including last frame as a segment with duration: ${lastFrame.duration}`);
-            segments.push({
-                image_path: lastFrame.serverPath,
-                prompt: lastPromptInput ? lastPromptInput.value : '',
-                duration: lastFrame.duration || 3.0
-            });
-        }
+
     }
     
     if (segments.length === 0) {
@@ -948,8 +1013,13 @@ function prepareJobPayload() {
     // Generate a simple job name based on first image filename and timestamp
     const currentDate = new Date();
     const timestamp = currentDate.toISOString().slice(0, 16).replace('T', ' ');
-    const firstImageName = segments[0].image_path.split('/').pop().split('.')[0];
-    const jobName = `${firstImageName} - ${timestamp}`;
+    let firstImageName = timestamp;
+    if (segments[0].image_path.indexOf('/') !== -1) {
+        firstImageName = segments[0].image_path.split('/').pop().split('.')[0];
+    } else {
+        firstImageName = segments[0].image_path.split('\\').pop().split('.')[0];
+    }
+    const jobName = `${firstImageName}_${timestamp}`;
     
     // Create request payload with all form settings
     const payload = {
@@ -1259,15 +1329,6 @@ function handleAddToTimeline() {
                 
                 // Make sure timeline UI is updated
                 updateTimelineStatus();
-                
-                // Remove any existing secondary drop zone to let updateTimelineStatus create it new
-                const existingDropZone = document.getElementById('secondaryDropZone');
-                if (existingDropZone) {
-                    existingDropZone.remove();
-                }
-                
-                // Call updateTimelineStatus again to ensure the secondary drop zone is created
-                updateTimelineStatus();
             }
             
             // Reset selected files
@@ -1299,8 +1360,9 @@ function handleAddToTimeline() {
 
 // Function to add an item to the timeline
 async function addItemToTimeline(fileObj) {
-    // Remove the main dropzone if this is the first item
-    const mainDropZone = elements.timelineContainer.querySelector('.timeline-item');
+    // Remove the main dropzone if this is the first item and it's actually a dropzone
+    // We identify actual dropzones to avoid removing real frames
+    const mainDropZone = elements.timelineContainer.querySelector('.timeline-item.dropzone-item');
     if (mainDropZone) {
         mainDropZone.remove();
     }

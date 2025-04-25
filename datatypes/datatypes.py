@@ -40,11 +40,19 @@ class ConnectionManager:
             for conn in disconnected:
                 self.disconnect(conn, job_id)
 
+
 class ModuleJobSettings(ABC):
+    """Base class for module-specific job settings"""
     pass
 
-ModuleJobSettings.register(BaseModel)
 
+class FileExistsResponse(BaseModel):
+    exists: bool
+    path: Optional[str] = None
+
+
+class PathsExistResponse(BaseModel):
+    results: List[FileExistsResponse]
 
 
 class SaveJobRequest(BaseModel):
@@ -58,10 +66,49 @@ class SaveJobRequest(BaseModel):
     current_latents: Optional[str] = None
     is_valid: bool
     missing_images: List[str]
-    job_settings: Optional[dict] = None
+    job_settings: Optional[dict] = None  # Dictionary containing all job settings including segment configurations
     queue_position: int
     created_timestamp: int
 
+    def ensure_segments_in_job_settings(self):
+        """
+        Ensure that segments data is properly included in job_settings.
+        This helps prevent issues when loading jobs to the timeline.
+        """
+        if not self.job_settings:
+            return False
+
+            # Check the format of job_settings
+            if isinstance(self.job_settings, dict):
+                # Handle the new dictionary structure with module name as key
+                if any(isinstance(v, dict) for v in self.job_settings.values()):
+                    # New format - find the module settings (e.g., 'framepack')
+                    module_name = next(iter(self.job_settings.keys()))
+                    module_settings = self.job_settings.get(module_name, {})
+
+                    # Check if segments are in the module settings
+                    if "segments" not in module_settings or not isinstance(module_settings["segments"], list):
+                        return False
+
+                    # Ensure we have the right number of segments
+                    if len(self.segments) != len(module_settings["segments"]):
+                        return False
+
+                    return True
+                else:
+                    # Legacy format - direct settings object
+                    # Check if segments are in job_settings
+                    if "segments" not in self.job_settings or not isinstance(self.job_settings["segments"], list):
+                        return False
+
+                    # Ensure we have the right number of segments
+                    if len(self.segments) != len(self.job_settings["segments"]):
+                        return False
+
+                    return True
+
+            return False
+        return None
 
 
 class DeleteJobRequest(BaseModel):
@@ -119,8 +166,27 @@ class JobStatus:
         }
 
     def set_job_settings(self, settings):
-        """Store the original job settings"""
+        """Store the original job settings as a dictionary with module name as key"""
         self.job_settings = settings
+
+        # For backward compatibility, check if settings has a direct segments field
+        if settings and isinstance(settings, dict):
+            # Check if it's already in the new format (dictionary with module names as keys)
+            if any(isinstance(v, dict) for v in settings.values()):
+                # It's already in the new format
+                for module_name, module_settings in settings.items():
+                    if isinstance(module_settings, dict) and "segments" in module_settings and isinstance(
+                            module_settings["segments"], list):
+                        # If we have segments in the stored settings, make sure they match
+                        if len(self.segments) > 0 and len(module_settings["segments"]) != len(self.segments):
+                            print(
+                                f"Warning: Job has {len(self.segments)} segments but {module_name} settings has {len(module_settings['segments'])} segments")
+            else:
+                # Old format - segments at top level
+                if "segments" in settings and isinstance(settings["segments"], list):
+                    if len(self.segments) > 0 and len(settings["segments"]) != len(self.segments):
+                        print(
+                            f"Warning: Job has {len(self.segments)} segments but settings has {len(settings['segments'])} segments")
 
 
 class JobStatusResponse(BaseModel):

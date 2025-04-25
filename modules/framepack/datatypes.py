@@ -1,3 +1,5 @@
+from typing import Dict, List, Any
+
 from datatypes.datatypes import ModuleJobSettings
 
 
@@ -13,4 +15,5 @@ class FramePackJobSettings(ModuleJobSettings):
     resolution: int
     seed: int
     steps: int
+    segments: List[Dict[str, Any]]
     use_teacache: bool

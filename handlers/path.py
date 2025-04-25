@@ -1,6 +1,7 @@
 import os
 
-app_path = os.path.dirname(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "app.py")))
+# Use infer.py as the reference file instead of app.py
+app_path = os.path.dirname(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "infer.py")))
 model_path = os.path.join(app_path, "models")
 output_path = os.path.join(app_path, "outputs")
 cache_path = os.path.join(app_path, ".cache")
