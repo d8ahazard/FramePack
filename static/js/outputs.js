@@ -3,8 +3,7 @@
 
 import { 
     elements, 
-    formatTimestamp, 
-    showMessage 
+    formatTimestamp
 } from './common.js';
 
 // Initialize module variables
@@ -26,7 +25,16 @@ function initOutputs() {
     }
     
     // Initial load of outputs
-    loadOutputs();
+    loadOutputs().catch(error => {
+        console.error('Error loading outputs:', error);
+        elements.outputsContainer.innerHTML = `
+            <div class="col">
+                <div class="alert alert-danger">
+                    <i class="bi bi-exclamation-triangle"></i> Failed to load outputs: ${error.message}
+                </div>
+            </div>
+        `;
+    });
 }
 
 // Load outputs for the outputs tab

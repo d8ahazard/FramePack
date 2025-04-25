@@ -1,0 +1,244 @@
+import hashlib
+import os
+from typing import Union
+
+from fastapi import UploadFile, File
+from starlette.responses import JSONResponse, FileResponse
+
+from datatypes.datatypes import ErrorResponse, DeleteVideoRequest, UploadResponse
+from handlers.path import output_path, thumbnail_path, upload_path
+
+
+def generate_thumbnail(video_path):
+    """
+    Generate a thumbnail for the given video file.
+
+    Args:
+        video_path: Path to the video file.
+
+    Returns:
+        Path to the generated thumbnail image.
+    """
+    # Placeholder for actual thumbnail generation logic
+    # For example, using ffmpeg or any other library
+    thumbnail_file = os.path.join(thumbnail_path, f"{os.path.basename(video_path)}.jpg")
+    if not os.path.exists(thumbnail_file):
+        try:
+            # Run ffmpeg
+            os.system(f"ffmpeg -i {video_path} -ss 00:00:01.000 -vframes 1 {thumbnail_file}")
+        except Exception as e:
+            print(f"Error generating thumbnail: {e}")
+            return None
+    # Check if thumbnail generation was successful
+    if not os.path.exists(thumbnail_file):
+        print(f"Thumbnail generation failed for {video_path}")
+        return None
+    return thumbnail_file
+
+
+def register_api_endpoints(app):
+    # Create our list_outputs endpoint
+
+    api_tag = __name__.split(".")[-1].title().replace("_", " ")
+
+    @app.get("/api/list_outputs", tags=[api_tag])
+    async def list_outputs():
+        """
+        List all generated output videos
+        
+        Returns:
+            A list of all output videos with metadata
+        """
+        outputs = []
+        try:
+            for filename in os.listdir(output_path):
+                if filename.endswith('.mp4'):
+                    file_path = os.path.join(output_path, filename)
+                    # Skip temp directories and check if it's a file
+                    if not os.path.isfile(file_path) or '_temp' in filename:
+                        continue
+
+                    # Get file stats
+                    stats = os.stat(file_path)
+                    timestamp = stats.st_mtime
+
+                    # Generate thumbnail
+                    thumbnail_path = generate_thumbnail(file_path)
+                    thumbnail_url = f"/thumbnails/{os.path.basename(thumbnail_path)}" if thumbnail_path else None
+
+                    # Create output entry
+                    output = {
+                        "name": filename,
+                        "path": f"/outputs/{filename}",
+                        "timestamp": timestamp,
+                        "size": stats.st_size,
+                        "thumbnail": thumbnail_url
+                    }
+                    outputs.append(output)
+
+            # Sort by timestamp (newest first)
+            outputs.sort(key=lambda x: x["timestamp"], reverse=True)
+
+        except Exception as e:
+            print(f"Error listing outputs: {e}")
+            import traceback
+            traceback.print_exc()
+
+        return outputs
+
+    @app.post("/api/delete_video", response_model=Union[dict, ErrorResponse], tags=[api_tag])
+    async def delete_video(request: DeleteVideoRequest):
+        """
+        Delete an output video file
+
+        Args:
+            request: DeleteVideoRequest containing the video path
+
+        Returns:
+            Success message or error
+        """
+        try:
+            # Normalize video path
+            video_path = request.video_path
+
+            # If path starts with /outputs/, remove that prefix and join with output_path
+            if video_path.startswith('/outputs/'):
+                video_path = os.path.join(output_path, video_path[9:])  # Remove '/outputs/' prefix
+            # If path doesn't start with the outputs folder, join it
+            elif not video_path.startswith(output_path):
+                video_path = os.path.join(output_path, video_path)
+
+            # Get the basename for logging and response
+            video_basename = os.path.basename(video_path)
+
+            # Print info for debugging
+            print(f"Attempting to delete video: {video_path}")
+
+            # Check if file exists
+            if not os.path.exists(video_path):
+                print(f"Video file not found: {video_path}")
+                return ErrorResponse(error=f"Video file not found: {video_basename}")
+
+            # Delete associated thumbnail if it exists
+            try:
+                video_hash = hash(video_basename + str(os.path.getmtime(video_path)))
+                thumbnail_name = f"{video_hash}.jpg"
+                thumbnail_file = os.path.join(thumbnail_path, thumbnail_name)
+
+                if os.path.exists(thumbnail_file):
+                    os.remove(thumbnail_file)
+                    print(f"Deleted thumbnail: {thumbnail_file}")
+            except Exception as e:
+                print(f"Error deleting thumbnail: {e}")
+                # Continue with video deletion even if thumbnail deletion fails
+
+            # Delete the video file
+            os.remove(video_path)
+            print(f"Successfully deleted video: {video_path}")
+
+            return {
+                "success": True,
+                "message": f"Video {video_basename} deleted successfully"
+            }
+
+        except Exception as e:
+            print(f"Error deleting video: {e}")
+            return ErrorResponse(error=f"Failed to delete video: {str(e)}")
+
+    @app.post("/api/upload_image", response_model=UploadResponse, tags=[api_tag])
+    async def upload_image(file: UploadFile = File(...)):
+        """
+        Upload an image file to the server
+
+        Returns:
+            success: Whether the upload was successful
+            filename: The filename on the server
+            path: The full server path to the file
+        """
+        try:
+            # Get file content hash to ensure uniqueness
+            file_content = await file.read()
+
+            # Create a hash of the file content
+            file_hash = hashlib.md5(file_content).hexdigest()
+
+            # Return file pointer to start for later use
+            await file.seek(0)
+
+            # Get original filename and extension
+            original_filename = file.filename
+            base_name, ext = os.path.splitext(original_filename)
+
+            # Create a new filename with the hash
+            filename = f"{file_hash}_{original_filename}"
+            file_path = os.path.join(upload_path, filename)
+
+            # Check if a file with this hash already exists
+            if os.path.exists(file_path):
+                print(f"File with hash {file_hash} already exists, reusing existing file")
+            else:
+                # Save the uploaded file
+                with open(file_path, "wb") as f:
+                    f.write(file_content)
+                print(f"File uploaded successfully: {file_path}")
+
+            # Return the full server path
+            return UploadResponse(
+                success=True,
+                filename=filename,
+                path=file_path  # Return the full server path
+            )
+        except Exception as e:
+            print(f"Error uploading file: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return UploadResponse(
+                success=False,
+                error=f"Upload failed: {str(e)}"
+            )
+
+    @app.get("/api/video_thumbnail", tags=[api_tag])
+    async def get_video_thumbnail(video: str):
+        """
+        Generate and return a thumbnail for a video file
+
+        Args:
+            video: Path to the video file
+
+        Returns:
+            The thumbnail image
+        """
+        try:
+            # Ensure the path is inside the outputs folder for security
+            if video.startswith('/outputs/'):
+                video_path = os.path.join(output_path, os.path.basename(video))
+            elif not video.startswith(output_path):
+                video_path = os.path.join(output_path, video)
+            else:
+                video_path = video
+
+            # Check if file exists
+            if not os.path.exists(video_path):
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": f"Video file not found: {os.path.basename(video_path)}"}
+                )
+
+            # Generate thumbnail
+            thumbnail_file = generate_thumbnail(video_path)
+
+            if thumbnail_file and os.path.exists(thumbnail_file):
+                return FileResponse(thumbnail_file)
+            else:
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": "Failed to generate thumbnail"}
+                )
+
+        except Exception as e:
+            print(f"Error generating thumbnail: {e}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Failed to generate thumbnail: {str(e)}"}
+            )
+

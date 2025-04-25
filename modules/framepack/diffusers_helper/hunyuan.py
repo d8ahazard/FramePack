@@ -1,7 +1,6 @@
 import torch
 
 from diffusers.pipelines.hunyuan_video.pipeline_hunyuan_video import DEFAULT_PROMPT_TEMPLATE
-from diffusers_helper.utils import crop_or_pad_yield_mask
 from diffusers import AutoencoderKLHunyuanVideo
 
 
@@ -82,7 +81,8 @@ def vae_decode_fake(latents):
 
     latent_rgb_factors_bias = [0.0259, -0.0192, -0.0761]
 
-    weight = torch.tensor(latent_rgb_factors, device=latents.device, dtype=latents.dtype).transpose(0, 1)[:, :, None, None, None]
+    weight = torch.tensor(latent_rgb_factors, device=latents.device, dtype=latents.dtype).transpose(0, 1)[:, :, None,
+             None, None]
     bias = torch.tensor(latent_rgb_factors_bias, device=latents.device, dtype=latents.dtype)
 
     images = torch.nn.functional.conv3d(latents, weight, bias=bias, stride=1, padding=0, dilation=1, groups=1)
@@ -93,7 +93,7 @@ def vae_decode_fake(latents):
 
 @torch.no_grad()
 def vae_decode(latents, vae: AutoencoderKLHunyuanVideo, image_mode=False):
-    #print(f"Decoding latents with shape: {latents.shape}")
+    # print(f"Decoding latents with shape: {latents.shape}")
     latents = latents / vae.config.scaling_factor
 
     if not image_mode:

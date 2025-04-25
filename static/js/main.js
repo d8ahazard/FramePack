@@ -69,8 +69,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initialize UI elements
     initElements();
     
-    // Initialize each module
     initEditor();
+    
+    // Then initialize other modules
     initJobQueue();
     initOutputs();
     

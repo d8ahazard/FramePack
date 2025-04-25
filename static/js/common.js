@@ -2,25 +2,23 @@
 
 // Global variables
 const timeline = [];
-let currentJobId = null;
-let statusCheckInterval = null;
-let uploadModal = null;
-let errorModal = null;
-let editItemModal = null;
-let videoViewerModal = null;
+
+
+
+
+
+
 
 // WebSocket handling
 let jobSocket = null;
 const jobEventListeners = [];
 
 // Variables for edit mode
-let editElements = {};
-let isEditingMode = false;
-let keepCurrentImage = false;
-let currentEditIndex = -1;
+
+
 
 // Variables for batch upload
-let currentEditId = null;
+
 
 // DOM elements shared across modules
 const elements = {
@@ -33,7 +31,6 @@ const elements = {
     guidanceInput: null,
     guidanceValue: null,
     resolutionInput: null,
-    useTeacache: null,
     enableAdaptive: null,
     durationInput: null,
     
@@ -68,7 +65,6 @@ const elements = {
     uploadImagesBtn: null,
     generateVideoBtn: null,
     saveJobBtn: null,
-    timelineContainer: null,
     progressContainer: null,
     progressStatus: null,
     previewContainer: null,
@@ -120,11 +116,10 @@ const progressElements = {
 };
 
 // Initialize current image related elements
-let currentImageContainer = null;
-let currentImage = null;
-let keepImageBtn = null;
-let replaceImageBtn = null;
-let imageUploadContainer = null;
+
+
+
+
 
 // DOM elements for job queue tab
 const jobQueueElements = {
@@ -312,8 +307,6 @@ export {
     elements,
     jobQueueElements,
     progressElements,
-    currentEditIndex,
-    keepCurrentImage,
     formatTimestamp,
     showMessage,
     initElements,

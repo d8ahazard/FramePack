@@ -4,8 +4,6 @@
 import { 
     timeline, 
     elements, 
-    currentEditIndex, 
-    keepCurrentImage, 
     showMessage, 
     enforceHorizontalLayout, 
     checkImageExists,
@@ -15,27 +13,317 @@ import {
     removeJobEventListener
 } from './common.js';
 
-import {
-    handleFileSelect,
-    handleDragOver,
-    handleDragLeave,
-    handleFileDrop,
-    triggerFileInput,
-    processSelectedFiles,
-    uploadFileToServer,
-    showUploadModal,
-    selectedFiles,
-    clearSelectedFiles
-} from './files.js';
-
-import {
-    loadJobQueue
-} from './job_queue.js';
+let keepCurrentImage = false;
+let currentEditIndex = -1;
 
 // Initialize module variables
-let uploadModal = null;
 let editItemModal = null;
 let dragSrcEl = null;
+// Don't import from editor.js to prevent circular dependency
+let uploadModal = null;
+
+// Initialize module variables
+let selectedFiles = [];
+
+// Getter function for selectedFiles to always return the current value
+function getSelectedFiles() {
+    return selectedFiles;
+}
+
+// Function to check if there are selected files
+function hasSelectedFiles() {
+    return selectedFiles && selectedFiles.length > 0;
+}
+
+// Function to safely close the upload modal
+function closeUploadModal() {
+    if (uploadModal) {
+        uploadModal.hide();
+        return true;
+    }
+    return false;
+}
+
+// Module initialization function
+function initFiles() {
+    console.log('Files module initialized');
+    
+    // Initialize upload modal
+    const uploadModalElement = document.getElementById('uploadImagesModal');
+    if (uploadModalElement) {
+        uploadModal = new bootstrap.Modal(uploadModalElement);
+    }
+    
+    // Add event listeners
+    if (elements.fileInput) {
+        elements.fileInput.addEventListener('change', handleFileSelect);
+        // Add click event listener to prevent propagation
+        elements.fileInput.addEventListener('click', (e) => {
+            e.stopPropagation();
+        });
+    }
+    
+    // Upload drop area events
+    if (elements.uploadDropArea) {
+        elements.uploadDropArea.addEventListener('dragover', handleDragOver);
+        elements.uploadDropArea.addEventListener('dragleave', handleDragLeave);
+        elements.uploadDropArea.addEventListener('drop', handleFileDrop);
+        elements.uploadDropArea.addEventListener('click', triggerFileInput);
+    }
+    
+    // Create a module object with all the exported functions and variables
+    const filesModule = {
+        handleDragOver,
+        handleDragLeave,
+        handleFileDrop,
+        handleFileSelect,
+        triggerFileInput,
+        processSelectedFiles,
+        getSelectedFiles,
+        hasSelectedFiles,
+        uploadFileToServer,
+        showUploadModal,
+        closeUploadModal,
+        clearSelectedFiles
+    };
+    
+    // Store the module globally for easier access from other modules
+    window.filesModule = filesModule;
+    
+    // Return all functions and variables that editor.js needs
+    return filesModule;
+}
+
+// Function to clear the selectedFiles array
+function clearSelectedFiles() {
+    selectedFiles.length = 0;
+}
+
+// Function to handle drag over event
+function handleDragOver(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    elements.uploadDropArea.classList.add('active');
+}
+
+// Function to handle drag leave event
+function handleDragLeave(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    elements.uploadDropArea.classList.remove('active');
+}
+
+// Function to handle file selection from input
+function handleFileSelect(e) {
+    const files = e.target.files;
+    processSelectedFiles(files);
+}
+
+// Function to handle file drop event
+function handleFileDrop(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    elements.uploadDropArea.classList.remove('active');
+    
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+        console.log(`Dropped ${files.length} files onto upload area`);
+        
+        // Clear previous files if we're not in edit mode
+        if (!keepCurrentImage) {
+            selectedFiles = [];
+        }
+        
+        // Process the files
+        processSelectedFiles(files);
+        
+        // Show the upload modal to review the dropped files
+        if (uploadModal && !uploadModal._isShown) {
+            uploadModal.show();
+        }
+    }
+}
+
+// Function to trigger file input click
+function triggerFileInput() {
+    elements.fileInput.click();
+}
+
+// Function to process selected files
+function processSelectedFiles(files) {
+    if (!files.length) return;
+    
+    // Clear previous uploads if keeping current image is not enabled
+    if (!keepCurrentImage) {
+        elements.imageUploadContainer.innerHTML = '';
+        selectedFiles = [];
+    }
+    
+    // Convert FileList to Array to ensure proper iteration
+    const filesArray = Array.from(files);
+    
+    // Process each file
+    filesArray.forEach((file, index) => {
+        // Only process image files
+        if (!file.type.match('image.*')) {
+            console.log('Skipping non-image file:', file.name);
+            return;
+        }
+        
+        const reader = new FileReader();
+        
+        reader.onload = (e) => {
+            const imgSrc = e.target.result;
+            const fileName = file.name;
+            
+            // Add to selected files array
+            selectedFiles.push({
+                file: file,
+                src: imgSrc,
+                name: fileName,
+                duration: 3.0  // Default duration is 3.0 seconds
+            });
+            
+            // Create thumbnail (don't apply special styling yet)
+            const thumbnailHtml = `
+                <div class="col-4 col-md-3 mb-3" data-file-index="${selectedFiles.length - 1}">
+                    <div class="card">
+                        <img src="${imgSrc}" class="card-img-top" alt="${fileName}">
+                        <div class="card-body p-2">
+                            <p class="card-text small text-muted text-truncate">${fileName}</p>
+                            <div class="input-group input-group-sm duration-input-container">
+                                <span class="input-group-text">Duration</span>
+                                <input type="number" class="form-control image-duration" 
+                                    value="3.0" 
+                                    min="0.1" max="10" step="0.1">
+                                <span class="input-group-text">s</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            elements.imageUploadContainer.insertAdjacentHTML('beforeend', thumbnailHtml);
+            
+            // Add change event to duration inputs
+            const newInput = elements.imageUploadContainer.querySelector(`[data-file-index="${selectedFiles.length - 1}"] .image-duration`);
+            if (newInput) {
+                newInput.addEventListener('change', (e) => {
+                    const fileIndex = parseInt(e.target.closest('[data-file-index]').getAttribute('data-file-index'));
+                    if (fileIndex >= 0 && fileIndex < selectedFiles.length) {
+                        selectedFiles[fileIndex].duration = parseFloat(e.target.value);
+                    }
+                });
+            }
+            
+            console.log(`Processed file: ${fileName}, total files: ${selectedFiles.length}`);
+            
+            // Check if this was the last file of the batch we're processing
+            const isLastBatchFile = index === filesArray.length - 1;
+            
+            // If this was the last file in the batch, update all thumbnails
+            if (isLastBatchFile) {
+                setTimeout(updateLastFileDisplay, 0);
+            }
+        };
+        
+        reader.readAsDataURL(file);
+    });
+    
+    // The upload modal will be shown by the caller
+}
+
+// Function to update the display for the last file
+function updateLastFileDisplay() {
+    const allThumbnails = elements.imageUploadContainer.querySelectorAll('[data-file-index]');
+    if (allThumbnails.length === 0) return;
+    
+    // Reset all thumbnails first
+    allThumbnails.forEach(thumbnail => {
+        const durationContainer = thumbnail.querySelector('.duration-input-container');
+        const warningMsg = thumbnail.querySelector('.last-frame-warning');
+        
+        // Remove any existing warning messages
+        if (warningMsg) {
+            warningMsg.remove();
+        }
+        
+        // Show all duration inputs
+        if (durationContainer) {
+            durationContainer.classList.remove('d-none');
+        }
+    });
+    
+    // Then mark only the last one
+    const lastThumbnail = allThumbnails[allThumbnails.length - 1];
+    if (lastThumbnail) {
+        const durationContainer = lastThumbnail.querySelector('.duration-input-container');
+        if (durationContainer) {
+            durationContainer.classList.add('d-none');
+        }
+        
+        const cardBody = lastThumbnail.querySelector('.card-body');
+        if (cardBody) {
+            cardBody.insertAdjacentHTML('beforeend', 
+                '<p class="small text-muted mt-1 last-frame-warning"><i class="bi bi-info-circle"></i> Last frame duration not used</p>'
+            );
+        }
+    }
+}
+
+// Function to upload a file to the server
+function uploadFileToServer(file) {
+    return new Promise((resolve, reject) => {
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        fetch('/api/upload_image', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Failed to upload file');
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (data.success) {
+                // Use the full server path returned from the API
+                const serverPath = data.path;
+                
+                if (!serverPath) {
+                    throw new Error('No valid file path returned from server');
+                }
+                
+                console.log(`File uploaded: ${serverPath}`);
+                resolve(serverPath);
+            } else {
+                reject(new Error(data.error || 'Unknown error uploading file'));
+            }
+        })
+        .catch(error => {
+            console.error('Error uploading file:', error);
+            reject(error);
+        });
+    });
+}
+
+// Function to show upload modal
+function showUploadModal() {
+    // Clear previous uploads
+    if (elements.imageUploadContainer) {
+        elements.imageUploadContainer.innerHTML = '';
+    }
+    selectedFiles = [];
+    
+    // Show the modal
+    if (uploadModal) {
+        uploadModal.show();
+    }
+}
+
+
 
 // Module initialization function
 function initEditor() {
@@ -51,7 +339,7 @@ function initEditor() {
     if (frameEditModalElement) {
         editItemModal = new bootstrap.Modal(frameEditModalElement);
     }
-    
+        
     // Initialize event listeners
     initEventListeners();
     
@@ -73,10 +361,11 @@ function initEditor() {
 
 // Initialize event listeners for the editor module
 function initEventListeners() {
+    
     // Button click events
     if (elements.uploadImagesBtn) {
         console.log('uploadImagesBtn clicked');
-        elements.uploadImagesBtn.addEventListener('click', showUploadModal);
+        elements.uploadImagesBtn.addEventListener('click', showUploadModal || (() => {}));
     }
     
     if (elements.generateVideoBtn) {
@@ -92,7 +381,7 @@ function initEventListeners() {
     }
     
     // File input change event
-    if (elements.fileInput) {
+    if (elements.fileInput && handleFileSelect) {
         console.log('fileInput change event');
         elements.fileInput.addEventListener('change', handleFileSelect);
         // Add click event listener to prevent propagation
@@ -104,10 +393,10 @@ function initEventListeners() {
     // Upload drop area events
     if (elements.uploadDropArea) {
         console.log('uploadDropArea events');
-        elements.uploadDropArea.addEventListener('dragover', handleDragOver);
-        elements.uploadDropArea.addEventListener('dragleave', handleDragLeave);
-        elements.uploadDropArea.addEventListener('drop', handleFileDrop);
-        elements.uploadDropArea.addEventListener('click', triggerFileInput);
+        if (handleDragOver) elements.uploadDropArea.addEventListener('dragover', handleDragOver);
+        if (handleDragLeave) elements.uploadDropArea.addEventListener('dragleave', handleDragLeave);
+        if (handleFileDrop) elements.uploadDropArea.addEventListener('drop', handleFileDrop);
+        if (triggerFileInput) elements.uploadDropArea.addEventListener('click', triggerFileInput);
     }
     
     // Add to timeline button
@@ -116,7 +405,7 @@ function initEventListeners() {
     }
     
     // Frame edit modal events
-    if (elements.replaceImageBtn) {
+    if (elements.replaceImageBtn && triggerFileInput) {
         elements.replaceImageBtn.addEventListener('click', triggerFileInput);
     }
     
@@ -140,7 +429,7 @@ function initEventListeners() {
             clearBtn.addEventListener('click', clearTimeline);
             
             // Insert before the generate button
-            generateBtn.parentNode.insertBefore(clearBtn, generateBtn);
+            generateBtn.parentNode.appendChild(clearBtn);
         }
     }
 }
@@ -198,9 +487,8 @@ function initTimelineDropZone() {
         // Handle files dropped directly from the desktop
         if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
             // Instead of processing immediately, show the upload modal first
-            // Fix typeError: assignment to constant.
-            clearSelectedFiles(); // Clear any previously selected files
-            processSelectedFiles(e.dataTransfer.files);
+            if (clearSelectedFiles) clearSelectedFiles(); // Clear any previously selected files
+            if (processSelectedFiles) processSelectedFiles(e.dataTransfer.files);
             
             // Show the upload modal to allow user to confirm/adjust before adding to timeline
             if (uploadModal) {
@@ -566,10 +854,11 @@ function saveJob() {
     });
 }
 
-// Common function to prepare job payload from timeline
+// Function to prepare job payload from timeline
 function prepareJobPayload() {
     // Collect segments data
     const segments = [];
+    let includeLastFrame = false;
     
     // For a single image, we need special handling to create a self-transition
     if (timeline.length === 1) {
@@ -624,7 +913,7 @@ function prepareJobPayload() {
             ?.querySelector('.prompt-text');
             
         // Check if the includeAsSegment property exists, fall back to the checkbox if not
-        let includeLastFrame = lastFrame.includeAsSegment;
+        includeLastFrame = lastFrame.includeAsSegment;
         if (includeLastFrame === undefined) {
             const includeLastFrameCheckbox = Array.from(elements.timelineContainer.children)
                 .find((_, idx) => idx === lastIndex)
@@ -676,7 +965,7 @@ function prepareJobPayload() {
         resolution: elements.resolution ? parseInt(elements.resolution.value) : 640,
         mp4_crf: 16,
         gpu_memory_preservation: 6.0,
-        include_last_frame: includeLastFrame
+        include_last_frame: includeLastFrame || false
     };
     
     return payload;
@@ -684,26 +973,33 @@ function prepareJobPayload() {
 
 // Function to connect to job websocket and handle updates
 function setupJobWebsocketConnection(jobId) {
-    const socket = connectJobWebsocket(jobId);
-    
-    // Register a handler for job updates
-    const listenerIndex = addJobEventListener(handleJobUpdate);
-    
-    // Process job updates from websocket
-    function handleJobUpdate(data) {
-        if (!data || data.job_id !== jobId) return;
+    try {
+        const socket = connectJobWebsocket(jobId);
         
-        updateJobUI(data);
+        // Register a handler for job updates
+        const listenerIndex = addJobEventListener(handleJobUpdate);
         
-        // If job is complete or failed, clean up
-        if (data.status === 'completed' || data.status === 'failed') {
-            disconnectJobWebsocket();
-            removeJobEventListener(listenerIndex);
-            handleJobCompletion(data);
+        // Process job updates from websocket
+        function handleJobUpdate(data) {
+            if (!data || data.job_id !== jobId) return;
+            
+            updateJobUI(data);
+            
+            // If job is complete or failed, clean up
+            if (data.status === 'completed' || data.status === 'failed') {
+                disconnectJobWebsocket();
+                removeJobEventListener(listenerIndex);
+                handleJobCompletion(data);
+            }
         }
+        
+        return socket;
+    } catch (error) {
+        console.error("Error connecting to job websocket:", error);
+        // Fall back to polling
+        pollJobStatus(jobId);
+        return null;
     }
-    
-    return socket;
 }
 
 // Update the job UI based on status data
@@ -876,12 +1172,22 @@ function clearTimeline() {
 
 // Function to handle adding to timeline
 function handleAddToTimeline() {
-    if (selectedFiles.length === 0) {
+    // Get selected files using the getter function
+    let files = [];
+    
+    // Try various ways to get the files, in order of preference
+    if (getSelectedFiles) {
+        files = getSelectedFiles();
+    } else if (window.filesModule && window.filesModule.getSelectedFiles) {
+        files = window.filesModule.getSelectedFiles();
+    }
+    
+    if (!files || files.length === 0) {
         alert('Please select at least one image to add to the timeline.');
         return;
     }
     
-    console.log(`Adding ${selectedFiles.length} files to timeline`);
+    console.log(`Adding ${files.length} files to timeline`);
     
     // Show loading indicator
     const addToTimelineBtn = document.getElementById('addToTimelineBtn');
@@ -891,7 +1197,7 @@ function handleAddToTimeline() {
     }
     
     // First, upload all files to the server
-    const uploadPromises = selectedFiles.map(fileObj => uploadFileToServer(fileObj.file));
+    const uploadPromises = files.map(fileObj => uploadFileToServer(fileObj.file));
     
     Promise.all(uploadPromises)
         .then(serverPaths => {
@@ -907,14 +1213,14 @@ function handleAddToTimeline() {
                         // Update the timeline array
                         if (timeline[currentEditIndex]) {
                             timeline[currentEditIndex].serverPath = serverPaths[0];
-                            timeline[currentEditIndex].src = selectedFiles[0].src;
-                            timeline[currentEditIndex].file = selectedFiles[0].file;
+                            timeline[currentEditIndex].src = files[0].src;
+                            timeline[currentEditIndex].file = files[0].file;
                             timeline[currentEditIndex].valid = true; // Mark as valid since it's new
                             
                             // Update the DOM
                             const imgElement = timelineItems[currentEditIndex].querySelector('img');
                             if (imgElement) {
-                                imgElement.src = selectedFiles[0].src;
+                                imgElement.src = files[0].src;
                                 imgElement.title = serverPaths[0];
                                 imgElement.classList.remove('invalid-image');
                             }
@@ -932,7 +1238,6 @@ function handleAddToTimeline() {
                             }
                             
                             console.log(`Replaced image at index ${currentEditIndex} with ${serverPaths[0]}`);
-                            showMessage('Image replaced successfully', 'success');
                         }
                     }
                 }
@@ -942,21 +1247,15 @@ function handleAddToTimeline() {
                 currentEditIndex = -1;
             } else {
                 // Normal mode - add each file to the timeline with its server path
-                selectedFiles.forEach((fileObj, index) => {
+                files.forEach((fileObj, index) => {
                     if (serverPaths[index]) {
                         // Use the server path instead of local file reference
                         // This is the EXACT path returned from the server
                         fileObj.serverPath = serverPaths[index];
-                        console.log(`Adding file ${index + 1}/${selectedFiles.length}: ${fileObj.name} (${serverPaths[index]})`);
+                        console.log(`Adding file ${index + 1}/${files.length}: ${fileObj.name} (${serverPaths[index]})`);
                         addItemToTimeline(fileObj);
                     }
                 });
-                
-                // Show confirmation toast or message
-                const count = selectedFiles.length;
-                const message = count === 1 
-                    ? '1 image added to timeline' 
-                    : `${count} images added to timeline`;
                 
                 // Make sure timeline UI is updated
                 updateTimelineStatus();
@@ -972,10 +1271,14 @@ function handleAddToTimeline() {
             }
             
             // Reset selected files
-            clearSelectedFiles();
+            if (clearSelectedFiles) {
+                clearSelectedFiles();
+            } else if (window.filesModule && window.filesModule.clearSelectedFiles) {
+                window.filesModule.clearSelectedFiles();
+            }
             
-            // Close modal
-            uploadModal.hide();
+            // Close the upload modal 
+            closeUploadModal();
         })
         .catch(error => {
             console.error('Error uploading files:', error);

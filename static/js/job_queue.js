@@ -3,9 +3,7 @@
 
 import { 
     elements, 
-    jobQueueElements, 
     timeline,
-    formatTimestamp, 
     showMessage,
     connectJobWebsocket,
     disconnectJobWebsocket,
@@ -24,8 +22,8 @@ let jobListenerIndex = -1;
 function initJobQueue() {
     console.log('Job Queue module initialized');
     
-    // Remove refresh button event listener since we removed the button
-    // and now have websocket support
+    // Add queue styles
+    addQueueStyles();
     
     // Initial load of job queue
     loadJobQueue();
@@ -62,84 +60,127 @@ async function loadJobQueue() {
             return;
         }
         
-        // Sort jobs: running first, then queued, then completed/failed by timestamp (newest first)
+        // Sort jobs: running first, then queued by position, then saved, then completed/failed/cancelled by timestamp (newest first)
         jobs.sort((a, b) => {
             // First, prioritize by status
-            const statusOrder = { 'running': 0, 'queued': 1, 'completed': 2, 'failed': 3 };
-            const statusDiff = statusOrder[a.status] - statusOrder[b.status];
+            const statusOrder = { 'running': 0, 'queued': 1, 'saved': 2, 'completed': 3, 'failed': 4, 'cancelled': 5 };
+            const statusDiff = (statusOrder[a.status] || 99) - (statusOrder[b.status] || 99);
             
             if (statusDiff !== 0) return statusDiff;
             
-            // If same status, sort by timestamp (extracted from job_id)
-            const aTime = parseInt(a.job_id.split('-')[0]);
-            const bTime = parseInt(b.job_id.split('-')[0]);
+            // For queued jobs, sort by queue_position
+            if (a.status === 'queued' && b.status === 'queued') {
+                return a.queue_position - b.queue_position;
+            }
+            
+            // For others, sort by timestamp (extracted from job_id or created_timestamp if available)
+            const aTime = a.created_timestamp || parseInt(a.job_id.split('-')[0]);
+            const bTime = b.created_timestamp || parseInt(b.job_id.split('-')[0]);
             return bTime - aTime; // Newest first
         });
         
-        // Add each job to the container
-        jobs.forEach(job => {
-            const jobItem = document.createElement('div');
-            jobItem.className = `job-item ${job.status}`;
-            jobItem.dataset.jobId = job.job_id;
+        // Group jobs by status
+        const runningJobs = jobs.filter(job => job.status === 'running');
+        const queuedJobs = jobs.filter(job => job.status === 'queued');
+        const savedJobs = jobs.filter(job => job.status === 'saved');
+        const completedJobs = jobs.filter(job => job.status === 'completed');
+        const failedJobs = jobs.filter(job => job.status === 'failed');
+        const cancelledJobs = jobs.filter(job => job.status === 'cancelled');
+        
+        // Create section for running jobs
+        if (runningJobs.length > 0) {
+            const runningSection = document.createElement('div');
+            runningSection.className = 'mb-3';
+            runningSection.innerHTML = `<h6 class="fw-bold">Running</h6>`;
             
-            // Determine the status badge class
-            let statusBadgeClass = 'bg-secondary';
-            if (job.status === 'completed') {
-                statusBadgeClass = 'bg-success';
-            } else if (job.status === 'failed') {
-                statusBadgeClass = 'bg-danger';
-            } else if (job.status === 'running') {
-                statusBadgeClass = 'bg-primary';
-            } else if (job.status === 'queued') {
-                statusBadgeClass = 'bg-warning';
-            }
-            
-            // Job title/name display
-            const jobTitle = job.job_name || formatJobTimestamp(job.job_id);
-            
-            // Check if job has missing images
-            const hasInvalidImages = job.is_valid === false;
-            const invalidBadge = hasInvalidImages ? 
-                `<span class="badge bg-danger ms-2">Missing Images</span>` : '';
-            
-            jobItem.innerHTML = `
-                <div class="d-flex justify-content-between align-items-center">
-                    <div>
-                        <div class="fw-bold">${jobTitle}</div>
-                        <div class="text-muted small">ID: ${job.job_id}</div>
-                    </div>
-                    <div>
-                        <span class="badge ${statusBadgeClass}">${job.status}</span>
-                        ${invalidBadge}
-                    </div>
-                </div>
-                <div class="mt-2">
-                    <div class="text-muted small">${job.message || 'No message'}</div>
-                </div>
-                ${job.status === 'running' ? `
-                <div class="progress mt-2" style="height: 5px;">
-                    <div class="progress-bar" role="progressbar" style="width: ${job.progress}%" aria-valuenow="${job.progress}" aria-valuemin="0" aria-valuemax="100"></div>
-                </div>` : ''}
-            `;
-            
-            jobItem.addEventListener('click', () => {
-                // Remove active class from all job items
-                document.querySelectorAll('.job-item').forEach(item => {
-                    item.classList.remove('active');
-                });
-                
-                // Add active class to the clicked job item
-                jobItem.classList.add('active');
-                
-                // Load the job details
-                loadJobDetails(job.job_id);
+            runningJobs.forEach(job => {
+                const jobItem = createJobItem(job);
+                runningSection.appendChild(jobItem);
             });
             
-            jobsContainer.appendChild(jobItem);
-        });
+            jobsContainer.appendChild(runningSection);
+        }
+        
+        // Create section for queued jobs with drag-and-drop support
+        if (queuedJobs.length > 0) {
+            const queuedSection = document.createElement('div');
+            queuedSection.className = 'mb-3';
+            queuedSection.innerHTML = `
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="fw-bold mb-0">Queued</h6>
+                    <button id="runAllQueued" class="btn btn-sm btn-primary">
+                        <i class="bi bi-play-fill"></i> Run All
+                    </button>
+                </div>
+            `;
+            
+            const queueList = document.createElement('div');
+            queueList.id = 'queuedJobsList';
+            queueList.className = 'queue-list';
+            
+            // Make the queue list sortable
+            queuedJobs.forEach(job => {
+                const jobItem = createJobItem(job);
+                jobItem.classList.add('draggable');
+                jobItem.dataset.queuePosition = job.queue_position;
+                queueList.appendChild(jobItem);
+            });
+            
+            queuedSection.appendChild(queueList);
+            jobsContainer.appendChild(queuedSection);
+            
+            // Initialize drag and drop functionality
+            initDragAndDrop();
+            
+            // Run all button event listener
+            document.getElementById('runAllQueued').addEventListener('click', () => {
+                if (confirm(`Run all ${queuedJobs.length} queued jobs?`)) {
+                    processQueue();
+                }
+            });
+        }
+        
+        // Other job sections (completed, failed, cancelled)
+        if (savedJobs.length > 0) {
+            const savedSection = document.createElement('div');
+            savedSection.className = 'mb-3';
+            savedSection.innerHTML = `<h6 class="fw-bold">Saved</h6>`;
+            
+            savedJobs.forEach(job => {
+                const jobItem = createJobItem(job);
+                savedSection.appendChild(jobItem);
+            });
+            
+            jobsContainer.appendChild(savedSection);
+        }
+        
+        if (completedJobs.length > 0) {
+            const completedSection = document.createElement('div');
+            completedSection.className = 'mb-3';
+            completedSection.innerHTML = `<h6 class="fw-bold">Completed</h6>`;
+            
+            completedJobs.forEach(job => {
+                const jobItem = createJobItem(job);
+                completedSection.appendChild(jobItem);
+            });
+            
+            jobsContainer.appendChild(completedSection);
+        }
+        
+        if (failedJobs.length > 0 || cancelledJobs.length > 0) {
+            const failedSection = document.createElement('div');
+            failedSection.className = 'mb-3';
+            failedSection.innerHTML = `<h6 class="fw-bold">Failed/Cancelled</h6>`;
+            
+            [...failedJobs, ...cancelledJobs].forEach(job => {
+                const jobItem = createJobItem(job);
+                failedSection.appendChild(jobItem);
+            });
+            
+            jobsContainer.appendChild(failedSection);
+        }
         
         // Count completed jobs and add clear button at the bottom if needed
-        const completedJobs = jobs.filter(job => job.status === 'completed');
         if (completedJobs.length > 0) {
             const clearCompletedContainer = document.createElement('div');
             clearCompletedContainer.className = 'mt-3 text-center';
@@ -157,6 +198,24 @@ async function loadJobQueue() {
             jobsContainer.appendChild(clearCompletedContainer);
         }
         
+        // Cancel all button if there are running or queued jobs
+        if (runningJobs.length > 0 || queuedJobs.length > 0) {
+            const cancelAllContainer = document.createElement('div');
+            cancelAllContainer.className = 'mt-3 text-center';
+            
+            const cancelAllBtn = document.createElement('button');
+            cancelAllBtn.className = 'btn btn-sm btn-danger';
+            cancelAllBtn.innerHTML = '<i class="bi bi-x-circle"></i> Cancel All Jobs';
+            cancelAllBtn.onclick = () => {
+                if (confirm(`Are you sure you want to cancel all running and queued jobs?`)) {
+                    cancelAllJobs();
+                }
+            };
+            
+            cancelAllContainer.appendChild(cancelAllBtn);
+            jobsContainer.appendChild(cancelAllContainer);
+        }
+        
     } catch (error) {
         console.error('Error loading job queue:', error);
         document.getElementById('jobsContainer').innerHTML = `
@@ -165,6 +224,77 @@ async function loadJobQueue() {
             </div>
         `;
     }
+}
+
+// Helper function to create job items
+function createJobItem(job) {
+    const jobItem = document.createElement('div');
+    jobItem.className = `job-item ${job.status}`;
+    jobItem.dataset.jobId = job.job_id;
+    
+    // Determine the status badge class
+    let statusBadgeClass = 'bg-secondary';
+    if (job.status === 'completed') {
+        statusBadgeClass = 'bg-success';
+    } else if (job.status === 'failed') {
+        statusBadgeClass = 'bg-danger';
+    } else if (job.status === 'running') {
+        statusBadgeClass = 'bg-primary';
+    } else if (job.status === 'queued') {
+        statusBadgeClass = 'bg-warning';
+    } else if (job.status === 'cancelled') {
+        statusBadgeClass = 'bg-secondary';
+    } else if (job.status === 'saved') {
+        statusBadgeClass = 'bg-info';
+    }
+    
+    // Job title/name display
+    const jobTitle = job.job_name || formatJobTimestamp(job.job_id);
+    
+    // Check if job has missing images
+    const hasInvalidImages = job.is_valid === false;
+    const invalidBadge = hasInvalidImages ? 
+        `<span class="badge bg-danger ms-2">Missing Images</span>` : '';
+    
+    // Queue position badge
+    const queuePositionBadge = job.status === 'queued' ? 
+        `<span class="badge bg-dark ms-2">#${job.queue_position}</span>` : '';
+    
+    jobItem.innerHTML = `
+        <div class="d-flex justify-content-between align-items-center">
+            <div>
+                <div class="fw-bold">${jobTitle}</div>
+                <div class="text-muted small">ID: ${job.job_id}</div>
+            </div>
+            <div>
+                <span class="badge ${statusBadgeClass}">${job.status}</span>
+                ${queuePositionBadge}
+                ${invalidBadge}
+            </div>
+        </div>
+        <div class="mt-2">
+            <div class="text-muted small">${job.message || 'No message'}</div>
+        </div>
+        ${job.status === 'running' ? `
+        <div class="progress mt-2" style="height: 5px;">
+            <div class="progress-bar" role="progressbar" style="width: ${job.progress}%" aria-valuenow="${job.progress}" aria-valuemin="0" aria-valuemax="100"></div>
+        </div>` : ''}
+    `;
+    
+    jobItem.addEventListener('click', () => {
+        // Remove active class from all job items
+        document.querySelectorAll('.job-item').forEach(item => {
+            item.classList.remove('active');
+        });
+        
+        // Add active class to the clicked job item
+        jobItem.classList.add('active');
+        
+        // Load the job details
+        loadJobDetails(job.job_id);
+    });
+    
+    return jobItem;
 }
 
 // Format job timestamp for display
@@ -240,7 +370,129 @@ async function clearCompletedJobs() {
         showMessage(`Failed to clear completed jobs: ${error.message}`, 'error');
         
         // Refresh anyway to show current state
-        loadJobQueue();
+        loadJobQueue().then(r => {}).catch(e => {
+            console.error('Error refreshing job queue:', e);
+            showMessage(`Failed to refresh job queue: ${e.message}`, 'error');
+        });
+    }
+}
+
+// Initialize drag and drop functionality for queue reordering
+function initDragAndDrop() {
+    const queueList = document.getElementById('queuedJobsList');
+    if (!queueList) return;
+    
+    let draggedItem = null;
+    
+    // Add drag event listeners to all draggable items
+    document.querySelectorAll('.draggable').forEach(item => {
+        item.setAttribute('draggable', 'true');
+        
+        item.addEventListener('dragstart', function() {
+            draggedItem = this;
+            setTimeout(() => this.classList.add('dragging'), 0);
+        });
+        
+        item.addEventListener('dragend', function() {
+            this.classList.remove('dragging');
+            draggedItem = null;
+            
+            // Update queue order on server
+            updateQueueOrder();
+        });
+        
+        item.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            if (draggedItem === this) return;
+            
+            const bbox = this.getBoundingClientRect();
+            const midY = bbox.y + bbox.height / 2;
+            const isAfter = e.clientY > midY;
+            
+            if (isAfter) {
+                queueList.insertBefore(draggedItem, this.nextSibling);
+            } else {
+                queueList.insertBefore(draggedItem, this);
+            }
+        });
+    });
+}
+
+// Update the queue order on the server
+async function updateQueueOrder() {
+    const queueList = document.getElementById('queuedJobsList');
+    if (!queueList) return;
+    
+    // Get job IDs in current order
+    const jobIds = Array.from(queueList.querySelectorAll('.job-item')).map(item => item.dataset.jobId);
+    
+    try {
+        const response = await fetch('/api/update_queue_order', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(jobIds)
+        });
+        
+        if (!response.ok) {
+            throw new Error('Failed to update queue order');
+        }
+        
+        // Refresh the job queue after a short delay
+        setTimeout(() => {
+            loadJobQueue();
+        }, 500);
+        
+    } catch (error) {
+        console.error('Error updating queue order:', error);
+        showMessage('Failed to update queue order: ' + error.message, 'error');
+    }
+}
+
+// Process all queued jobs
+async function processQueue() {
+    try {
+        // Show loading message
+        showMessage('Starting to process queued jobs...', 'info');
+        
+        // Refresh the queue to show the changes
+        loadJobQueue().then(r => {}).catch(e => {
+            console.error('Error refreshing job queue:', e);
+            showMessage('Failed to refresh job queue: ' + e.message, 'error');
+        });
+        
+    } catch (error) {
+        console.error('Error processing queue:', error);
+        showMessage('Error processing queue: ' + error.message, 'error');
+    }
+}
+
+// Cancel all jobs
+async function cancelAllJobs() {
+    try {
+        const response = await fetch('/api/cancel_all_jobs', {
+            method: 'POST'
+        });
+        
+        if (!response.ok) {
+            throw new Error('Failed to cancel jobs');
+        }
+        
+        const result = await response.json();
+        
+        // Show success message
+        showMessage(result.message, 'success');
+        
+        // Refresh the job queue
+        loadJobQueue().then(r => {}).catch(e => {
+            console.error('Error refreshing job queue:', e);
+            showMessage('Failed to refresh job queue: ' + e.message, 'error');
+        });
+        
+    } catch (error) {
+        console.error('Error cancelling all jobs:', error);
+        showMessage('Error cancelling jobs: ' + error.message, 'error');
     }
 }
 
@@ -315,6 +567,10 @@ function displayJobDetails(jobData) {
         statusBadgeClass = 'bg-primary';
     } else if (jobData.status === 'queued') {
         statusBadgeClass = 'bg-warning';
+    } else if (jobData.status === 'cancelled') {
+        statusBadgeClass = 'bg-secondary';
+    } else if (jobData.status === 'saved') {
+        statusBadgeClass = 'bg-info';
     }
     
     // Check if job has missing images
@@ -332,6 +588,10 @@ function displayJobDetails(jobData) {
             the job to timeline but must fix the missing images before rerunning.
         </div>` : '';
     
+    // Queue position info
+    const queueInfo = jobData.status === 'queued' ? 
+        `<p><strong>Queue Position:</strong> ${jobData.queue_position}</p>` : '';
+    
     jobInfoCard.innerHTML = `
         <div class="card-header d-flex justify-content-between align-items-center">
             <h5 class="card-title mb-0">Job Information</h5>
@@ -342,6 +602,7 @@ function displayJobDetails(jobData) {
             <p><strong>Job ID:</strong> ${jobData.job_id}</p>
             ${jobName}
             <p><strong>Status:</strong> ${jobData.status.charAt(0).toUpperCase() + jobData.status.slice(1)}</p>
+            ${queueInfo}
             <p><strong>Progress:</strong> ${jobData.progress}%</p>
             <p><strong>Message:</strong> ${jobData.message || 'No message'}</p>
             <p><strong>Created:</strong> ${formatJobTimestamp(jobData.job_id)}</p>
@@ -432,6 +693,17 @@ function displayJobDetails(jobData) {
         actionContainer.appendChild(cancelBtn);
     }
     
+    // Queue button for completed, failed, or cancelled jobs
+    if ((jobData.status === 'completed' || jobData.status === 'failed' || 
+         jobData.status === 'cancelled' || jobData.status === 'saved') && 
+        jobData.job_settings && jobData.is_valid !== false) {
+        const queueBtn = document.createElement('button');
+        queueBtn.className = 'btn btn-warning';
+        queueBtn.innerHTML = '<i class="bi bi-hourglass"></i> Queue Job';
+        queueBtn.onclick = () => requeueJob(jobData.job_id);
+        actionContainer.appendChild(queueBtn);
+    }
+    
     // View and download buttons if job is completed
     if (jobData.status === 'completed' && jobData.result_video) {
         const viewBtn = document.createElement('button');
@@ -458,7 +730,8 @@ function displayJobDetails(jobData) {
     }
     
     // Rerun button for completed or failed jobs (only if images are valid)
-    if ((jobData.status === 'completed' || jobData.status === 'failed') && 
+    if ((jobData.status === 'completed' || jobData.status === 'failed' || 
+         jobData.status === 'cancelled' || jobData.status === 'saved') && 
         jobData.job_settings && jobData.is_valid !== false) {
         const rerunBtn = document.createElement('button');
         rerunBtn.className = 'btn btn-outline-success';
@@ -473,7 +746,11 @@ function displayJobDetails(jobData) {
     deleteBtn.innerHTML = '<i class="bi bi-trash"></i> Delete Job';
     deleteBtn.onclick = () => {
         if (confirm(`Are you sure you want to delete this job? This will remove all files related to ${jobData.job_id}.`)) {
-            deleteJob(jobData.job_id);
+            deleteJob(jobData.job_id).then(r => {}).catch(e => {
+                console.error('Error deleting job:', e);
+                showMessage(`Failed to delete job: ${e.message}`, 'error');
+
+            });
         }
     };
     actionContainer.appendChild(deleteBtn);
@@ -531,7 +808,11 @@ async function cancelJob(jobId) {
         
         if (result.success) {
             // Refresh the job queue to show updated status
-            loadJobQueue();
+            loadJobQueue().then(r => {}).catch(e => {
+                console.error('Error refreshing job queue:', e);
+                showMessage(`Failed to refresh job queue: ${e.message}`, 'error');
+
+            });
             
             // Show success message
             showMessage('Job cancelled successfully', 'success');
@@ -709,6 +990,80 @@ async function rerunJob(jobId) {
         console.error('Error rerunning job:', error);
         showMessage(`Failed to rerun job: ${error.message}`, 'error');
     }
+}
+
+// Queue a job (without running it immediately)
+async function requeueJob(jobId) {
+    try {
+        const response = await fetch(`/api/requeue_job/${jobId}`, {
+            method: 'POST'
+        });
+        
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || 'Failed to queue job');
+        }
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            // Refresh the job queue
+            loadJobQueue();
+            
+            // Show success message
+            showMessage(`Job queued at position ${result.queue_position}`, 'success');
+            
+            // Load details for the queued job
+            loadJobDetails(jobId).then(r => {}).catch(e => {
+                console.error('Error loading job details:', e);
+                showMessage(`Failed to load job details: ${e.message}`, 'error');
+            });
+        } else {
+            throw new Error(result.error || 'Failed to queue job');
+        }
+        
+    } catch (error) {
+        console.error('Error queueing job:', error);
+        showMessage(`Failed to queue job: ${error.message}`, 'error');
+    }
+}
+
+// Add CSS for draggable queue items
+function addQueueStyles() {
+    // Check if style is already added
+    if (document.getElementById('queueStyles')) return;
+    
+    const style = document.createElement('style');
+    style.id = 'queueStyles';
+    style.textContent = `
+        .queue-list {
+            border: 1px solid #f0f0f0;
+            border-radius: 6px;
+            padding: 5px;
+            background: #f9f9f9;
+        }
+        .draggable {
+            cursor: grab;
+            position: relative;
+        }
+        .draggable::before {
+            content: ":::";
+            position: absolute;
+            left: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #aaa;
+            font-weight: bold;
+            letter-spacing: 1px;
+        }
+        .draggable .d-flex {
+            padding-left: 20px;
+        }
+        .draggable.dragging {
+            opacity: 0.5;
+        }
+    `;
+    document.head.appendChild(style);
 }
 
 // Export module functions
