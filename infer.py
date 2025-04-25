@@ -1,12 +1,12 @@
 import argparse
+import asyncio
 import importlib
-import json
 import logging
 import os
 import time
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,8 +14,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
 import modules
-from datatypes.datatypes import ConnectionManager, EndpointFilter
-from handlers.job_queue import job_statuses
+from datatypes.datatypes import EndpointFilter
 from handlers.model import preload_all_models
 from handlers.path import thumbnail_path, upload_path, output_path
 
@@ -32,8 +31,6 @@ print(args)
 
 os.makedirs("static/images", exist_ok=True)
 
-# Create a connection manager instance
-manager = ConnectionManager()
 
 # ----------------------------------------
 # FastAPI app setup
@@ -69,8 +66,6 @@ app.mount("/thumbnails", StaticFiles(directory=thumbnail_path), name="thumbnails
 
 # Templates setup
 templates = Jinja2Templates(directory="templates")
-
-
 
 
 @app.middleware("http")
@@ -146,31 +141,9 @@ async def api_docs_redirect():
     return RedirectResponse(url="/api/docs")
 
 
-
-
-@app.websocket("/ws/job/{job_id}")
-async def websocket_endpoint(websocket: WebSocket, job_id: str):
-    await manager.connect(websocket, job_id)
-
-    # Send initial job status on connection
-    try:
-        status_obj = job_statuses.get(job_id)
-        if status_obj:
-            await websocket.send_text(json.dumps(status_obj.to_dict()))
-    except Exception as e:
-        print(f"Error sending initial job status: {e}")
-
-    try:
-        while True:
-            # Wait for any client messages (mostly ping/pong)
-            data = await websocket.receive_text()
-            # Just echo back to confirm connection is alive
-            await websocket.send_text(data)
-    except WebSocketDisconnect:
-        manager.disconnect(websocket, job_id)
-    except Exception as e:
-        print(f"WebSocket error: {e}")
-        manager.disconnect(websocket, job_id)
+# WebSocket endpoint is now handled in handlers/socket.py
+# This ensures backward compatibility while migrating to the new system
+from handlers.socket import process_broadcasts
 
 
 def register_all_endpoints():
@@ -206,11 +179,19 @@ def register_all_endpoints():
 
 # Run cleanup on startup with a max age of 30 days
 
+# Setup startup and shutdown events
+@app.on_event("startup")
+async def startup_event():
+    # Start the broadcast processing task
+    asyncio.create_task(process_broadcasts())
+    # Run cleanup on startup with a max age of 30 days
+    cleanup_thumbnail_cache(30)
+
+
 # Run the application
 if __name__ == "__main__":
-    # Preload models if requested
+    # Register API endpoints
     register_all_endpoints()
-    cleanup_thumbnail_cache(30)
 
     if args.preload:
         model_paths = preload_all_models(use_auth_token=args.hf_token)

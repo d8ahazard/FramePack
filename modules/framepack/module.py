@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import time
 import traceback
+from typing import Union
 
 import einops
 import numpy as np
@@ -18,8 +19,9 @@ from datatypes.datatypes import JobStatus, DynamicSwapInstaller
 from handlers.job_queue import process_queue, job_statuses, save_job_data
 from handlers.model import check_download_model
 from handlers.path import output_path
+from handlers.socket import queue_broadcast
 from handlers.vram import fake_diffusers_current_device, get_cuda_free_memory_gb, \
-    move_model_to_device_with_memory_preservation, unload_complete_models, load_model_as_complete, gpu
+    move_model_to_device_with_memory_preservation, unload_complete_models, load_model_as_complete, gpu, high_vram
 from modules.framepack.diffusers_helper.bucket_tools import find_nearest_bucket
 from modules.framepack.diffusers_helper.clip_vision import hf_clip_vision_encode
 from modules.framepack.diffusers_helper.hunyuan import encode_prompt_conds, vae_encode, vae_decode_fake
@@ -48,7 +50,6 @@ framepack_path = check_download_model("lllyasviel/FramePackI2V_HY")
 
 def load_models():
     global text_encoder, text_encoder_2, image_encoder, vae, transformer, tokenizer, tokenizer_2, feature_extractor, models_loaded
-    # Import here to avoid circular imports
 
     if models_loaded:
         return
@@ -67,7 +68,11 @@ def load_models():
     tokenizer_2 = CLIPTokenizer.from_pretrained(
         os.path.join(hunyuan_path, 'tokenizer_2')
     )
-    vae = handlers.vram.cpu()
+
+    vae = AutoencoderKLHunyuanVideo.from_pretrained(
+        os.path.join(hunyuan_path, 'vae'),
+        torch_dtype=torch.float16
+    ).cpu()
 
     feature_extractor = SiglipImageProcessor.from_pretrained(
         os.path.join(flux_path, 'feature_extractor')
@@ -110,7 +115,7 @@ def load_models():
         m.requires_grad_(False)
 
     # model offloading or full-load
-    if not handlers.high_vram:
+    if not high_vram:
         DynamicSwapInstaller.install_model(transformer, device=gpu)
         DynamicSwapInstaller.install_model(text_encoder, device=gpu)
     else:
@@ -140,7 +145,7 @@ def worker(
         segment_index=None,
         master_job_id=None,
         progress_callback=None
-):
+) -> Union[None, str]:
     # Import here to avoid circular imports
 
     global adaptive_memory_management, text_encoder, text_encoder_2, image_encoder, vae, transformer, tokenizer, tokenizer_2, feature_extractor
@@ -189,7 +194,7 @@ def worker(
         # -------------------------
         models_to_keep_in_memory = []
         free_mem_gb = get_cuda_free_memory_gb()
-        if handlers.high_vram or adaptive_memory_management:
+        if high_vram or adaptive_memory_management:
             if free_mem_gb >= 26:
                 image_encoder.to(gpu)
                 vae.to(gpu)
@@ -333,7 +338,7 @@ def worker(
             image_emb = (image_emb + end_vis.last_hidden_state) / 2
 
         # Unload image_encoder if not high VRAM
-        if not handlers.high_vram:
+        if not high_vram:
             unload_complete_models(image_encoder)
 
         # cast dtypes
@@ -421,7 +426,7 @@ def worker(
 
             def callback(d):
                 # Get denoised latents
-                step = d['step']
+                step = d.get('step', 0)
 
                 # Process every 5th step
                 if step % 5 == 0 or step == steps - 1:
@@ -526,7 +531,7 @@ def worker(
             # overwrite segment file
             save_bcthw_as_mp4(history_pixels, output_path, fps=30, crf=mp4_crf)
             # Unload VAE if not high VRAM
-            if not handlers.high_vram:
+            if not high_vram:
                 unload_complete_models(vae)
 
             job_status.segments.append(output_path)
@@ -560,7 +565,7 @@ def worker(
         traceback.print_exc()
         return None
     finally:
-        if not handlers.high_vram and segment_index is None:
+        if not high_vram and segment_index is None:
             unload_complete_models(
                 text_encoder,
                 text_encoder_2,
@@ -573,6 +578,7 @@ def worker(
                 shutil.rmtree(temp_dir)
         except Exception as e:
             print(f"Cleanup error: {e}")
+        return None
 
 
 @torch.no_grad()
@@ -684,7 +690,21 @@ def worker_multi_segment(
             def progress_callback(segment_progress):
                 overall_progress = int((segment_progress / 100) * 100)
                 job_status.progress = overall_progress
+
+                # Update job status in filesystem
                 save_job_data(job_id, job_status.to_dict())
+
+                # Directly update UI via websocket for more immediate feedback
+                try:
+                    from handlers.socket import update_status
+                    update_status(
+                        job_id=job_id,
+                        status=job_status.status,
+                        progress=overall_progress,
+                        message=job_status.message
+                    )
+                except Exception as e:
+                    print(f"Error updating status via websocket: {e}")
 
             # Generate the video with the single image
             segment_output = worker(
@@ -734,11 +754,24 @@ def worker_multi_segment(
     # Process multiple segments (original implementation)
     # Process segments in reverse order
     num_segments = len(segments)
-    for i in range(num_segments - 1, -1, -1):
-        seg_no = num_segments - i
-        segment_idx = num_segments - 1 - i  # Index in the workloads array
-        current_segment = segments[i]
+    last_segment = segments[-1]
+    use_last_frame = last_segment.get('use_last_frame', False)
+    framepack_settings = job_status.job_settings.get('framepack', {})
+    use_last_frame = framepack_settings.get('include_last_frame',
+                                            False) if job_status.job_settings else False
 
+    segment_pairs = []
+    if len(segments) > 1:
+        for i in range(num_segments - 1):
+            segment_pairs.append((segments[i], segments[i + 1]))
+        if use_last_frame:
+            segment_pairs.append((segments[-1], None))
+    else:
+        segment_pairs.append((segments[0], None))
+
+    seg_no = 0
+
+    for (start_segment, end_segment) in segment_pairs:
         # Check if the job has been cancelled
         job_status = job_statuses.get(job_id)
         if job_status and job_status.status == "cancelled":
@@ -751,12 +784,12 @@ def worker_multi_segment(
 
         # Calculate progress up to this segment
         previous_segments_progress = 0
-        for j in range(i + 1, num_segments):
+        for j in range(seg_no + 1, num_segments):
             previous_idx = num_segments - 1 - j
             previous_segments_progress += segment_workloads[previous_idx]
 
         # Use individual segment prompts if provided, concatenate with global prompt
-        segment_prompt = current_segment.get('prompt', '').strip()
+        segment_prompt = start_segment.get('prompt', '').strip()
         if segment_prompt:
             # Concatenate with global prompt
             combined_prompt = f"{global_prompt.strip()}, {segment_prompt}"
@@ -764,11 +797,11 @@ def worker_multi_segment(
             combined_prompt = global_prompt
 
         # Get segment duration
-        segment_duration = current_segment.get('duration', 3.0)
+        segment_duration = start_segment.get('duration', 3.0)
 
         try:
             # Get the image path directly from the segment
-            image_path = current_segment['image_path']
+            image_path = start_segment['image_path']
 
             if not os.path.exists(image_path):
                 raise FileNotFoundError(f"Image file not found: {image_path}")
@@ -779,33 +812,17 @@ def worker_multi_segment(
 
             # Load end image if not the last segment
             end_image = None
-            if i < num_segments - 1:
-                end_image_path = segments[i + 1]['image_path']
+            if end_segment is not None:
+                end_image_path = end_segment.get('image_path', None)
+                if end_image_path is None:
+                    raise ValueError("End image path is missing in the segment data")
 
                 if not os.path.exists(end_image_path):
                     raise FileNotFoundError(f"End image file not found: {end_image_path}")
 
                 print(f"Loading end image from: {end_image_path}")
                 end_image = np.array(Image.open(end_image_path).convert('RGB'))
-            else:
-                # Check if this is the last frame and include_last_frame is False
-                # In this case, we want to generate a segment for the last frame
-                # If include_last_frame is False, we need to handle it differently
-                # Get framepack settings from job_settings dictionary
-                framepack_settings = job_status.job_settings.get('framepack', {})
-                include_last_frame = framepack_settings.get('include_last_frame',
-                                                                 False) if job_status.job_settings else False
-                if i == num_segments - 1 and not include_last_frame:
-                    # For the last frame without an end frame (with include_last_frame=False),
-                    # we'll create a transition from the last frame to itself
-                    # just to complete the sequence, but with a very short duration
-                    end_image = start_image  # Use the same image as start
-                    print(f"Using self-transition for last frame (include_last_frame=False)")
-                elif i == num_segments - 1 and include_last_frame:
-                    # If this is the last frame and include_last_frame is True,
-                    # we use the same image as both start and end, but keep the full duration
-                    end_image = start_image
-                    print(f"Including last frame as segment with full duration (include_last_frame=True)")
+
 
         except Exception as e:
             error_msg = f"Error loading image for segment {seg_no}: {str(e)}"
@@ -819,16 +836,29 @@ def worker_multi_segment(
 
         # Custom callback to update master progress based on segment's contribution to overall workload
         def progress_callback(segment_progress):
-            segment_contribution = segment_workloads[segment_idx]
+            segment_contribution = segment_workloads[seg_no]
             segment_completed = (segment_progress / 100) * segment_contribution
             overall_completed = previous_segments_progress + segment_completed
             overall_progress = int((overall_completed / total_steps) * 100)
             job_status.progress = overall_progress
+
+            # Update job status in filesystem
             save_job_data(job_id, job_status.to_dict())
+
+            # Directly update UI via websocket for more immediate feedback
+            # try:
+            #     queue_broadcast(
+            #         job_id=job_id,
+            #         status=job_status.status,
+            #         progress=overall_progress,
+            #         message=job_status.message
+            #     )
+            # except Exception as e:
+            #     print(f"Error updating status via websocket: {e}")
 
         # Clear cache if needed
         curr_free = get_cuda_free_memory_gb(gpu)
-        if not handlers.high_vram and curr_free < 2.0:
+        if not high_vram and curr_free < 2.0:
             torch.cuda.empty_cache()
             if curr_free < 1.0:
                 unload_complete_models(
@@ -861,7 +891,7 @@ def worker_multi_segment(
 
         if segment_output:
             segment_paths.append((seg_no, segment_output))
-            completed_steps += segment_workloads[segment_idx]
+            completed_steps += segment_workloads[seg_no]
         else:
             job_status.status = "failed"
             job_status.message = f"Failed to generate segment {seg_no}"
@@ -888,7 +918,21 @@ def worker_multi_segment(
         save_job_data(job_id, job_status.to_dict())
         return None
 
-    if not handlers.high_vram:
+    # Clean up temporary files
+    if os.path.exists(concat_txt):
+        try:
+            os.remove(concat_txt)
+        except Exception as e:
+            print(f"Error removing concat file {concat_txt}: {e}")
+
+    if os.path.exists(final_output):
+        for seg_no, path in segment_paths:
+            try:
+                os.remove(path)
+            except Exception as e:
+                print(f"Error removing segment file {path}: {e}")
+
+    if not high_vram:
         unload_complete_models(
             text_encoder, text_encoder_2, image_encoder, vae, transformer
         )

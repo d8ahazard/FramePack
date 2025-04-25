@@ -57,7 +57,6 @@ class PathsExistResponse(BaseModel):
 
 class SaveJobRequest(BaseModel):
     job_id: str
-    job_name: str
     status: str
     progress: int
     message: str
@@ -133,9 +132,8 @@ class GenerateResponse(BaseModel):
 
 
 class JobStatus:
-    def __init__(self, job_id: str, job_name: str = None):
+    def __init__(self, job_id: str):
         self.job_id = job_id
-        self.job_name = job_name
         self.status = "queued"  # status options: queued, running, completed, failed, cancelled, saved
         self.progress = 0
         self.message = ""
@@ -151,7 +149,6 @@ class JobStatus:
     def to_dict(self):
         return {
             "job_id": self.job_id,
-            "job_name": self.job_name,
             "status": self.status,
             "progress": self.progress,
             "message": self.message,
@@ -197,7 +194,6 @@ class JobStatusResponse(BaseModel):
     result_video: Optional[str] = None
     segments: List[str] = []
     current_latents: Optional[str] = None
-    job_name: Optional[str] = None
     is_valid: bool = True  # Whether all images in job still exist
     missing_images: List[str] = []
     job_settings: Optional[dict] = None  # For storing original settings
@@ -222,7 +218,6 @@ class VideoRequest(BaseModel):
     global_prompt: str
     negative_prompt: str
     segments: List[SegmentConfig]
-    job_name: Optional[str] = None  # Optional job name for user reference
     seed: int = 31337
     steps: int = 25
     guidance_scale: float = 10.0

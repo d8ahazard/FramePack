@@ -1,5 +1,48 @@
 /* Main CSS for FramePack */
+/* Toast notifications */
+#toast-container {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    display: flex;
+    flex-direction: column-reverse;
+    align-items: flex-end;
+    z-index: 9999;
+    max-height: 80vh;
+    overflow: hidden;
+}
 
+.toast {
+    padding: 12px 20px;
+    border-radius: 4px;
+    margin: 10px 0;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+    min-width: 200px;
+    max-width: 300px;
+    word-break: break-word;
+    opacity: 1;
+    transition: all 0.5s ease;
+}
+
+.toast-error {
+    background-color: #ff5252;
+    color: white;
+}
+
+.toast-success {
+    background-color: #4caf50;
+    color: white;
+}
+
+.toast-info {
+    background-color: #2196f3;
+    color: white;
+}
+
+.toast-warning {
+    background-color: #ff9800;
+    color: white;
+}
 :root {
     --primary-color: #4361ee;
     --primary-hover: #3a56d4;
@@ -723,7 +766,88 @@ header h3 {
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
     padding: 10px 0;
 }
+/* Toast notifications */
+#toast-container {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    display: flex;
+    flex-direction: column-reverse;
+    align-items: flex-end;
+    z-index: 10000;
+    max-height: 80vh;
+    overflow: hidden;
+    pointer-events: none; /* Let clicks pass through the container */
+    width: auto;
+    max-width: 100%;
+}
 
+.toast {
+    position: relative;
+    padding: 12px 20px;
+    margin: 8px;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    min-width: 250px;
+    max-width: 350px;
+    color: white;
+    font-weight: bold;
+    opacity: 1;
+    transform: translateX(0);
+    transition: all 0.3s ease;
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    pointer-events: auto; /* Make toast elements clickable */
+    word-break: break-word;
+}
+
+.toast.toast-hiding {
+    opacity: 0;
+    transform: translateX(100%);
+}
+
+.toast-success {
+    background-color: #00c851;
+}
+
+.toast-error {
+    background-color: #ff3547;
+}
+
+.toast-info {
+    background-color: #33b5e5;
+}
+
+.toast-warning {
+    background-color: #ff9f1a;
+}
+
+.toast-icon {
+    margin-right: 10px;
+    font-size: 18px;
+}
+
+.toast-message {
+    flex-grow: 1;
+}
+
+/* Animation for toast appearing */
+@keyframes toast-slide-in {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+.toast {
+    animation: toast-slide-in 0.3s ease forwards;
+}
 /* Latent container specific styling */
 #jobMediaContainer .card-body:has(#jobCurrentLatents) {
     padding: 10px;

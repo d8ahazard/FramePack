@@ -29,7 +29,7 @@ def register_api_endpoints(app):
         """
 
         job_id = generate_timestamp()
-        job_status = JobStatus(job_id, request_data.job_name)
+        job_status = JobStatus(job_id)
 
         # Store original job settings for later use as a dictionary with module name as key
         module_settings = request_data.dict()
@@ -48,8 +48,7 @@ def register_api_endpoints(app):
 
         # Log the request for debugging
         print(f"Video generation request received:")
-        if request_data.job_name:
-            print(f"  Job name: {request_data.job_name}")
+        print(f"  Job ID: {job_id}")
         print(f"  Global prompt: {request_data.global_prompt[:50]}..." if len(
             request_data.global_prompt) > 50 else f"  Global prompt: {request_data.global_prompt}")
         print(f"  Negative prompt: {request_data.negative_prompt[:50]}..." if len(

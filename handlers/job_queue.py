@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import time
+import traceback
 from typing import List, Union
 from typing import Optional
 
@@ -90,10 +91,17 @@ def save_job_data(job_id, job_data):
 
     # Broadcast update to WebSocket clients
     try:
-        from infer import manager
-        asyncio.create_task(manager.broadcast(job_id, data_dict))
+        # Use the update_status function from socket.py to handle the websocket broadcasting
+        from handlers.socket import update_status_sync
+        # Extract key status fields if they exist
+        status = data_dict.get("status")
+        progress = data_dict.get("progress")
+        message = data_dict.get("message")
+        # Update with all data for complete information
+        update_status_sync(job_id, status, progress, message, data_dict)
     except Exception as e:
-        print(f"Error broadcasting job update: {e}")
+        print(f"Error queuing job update for broadcast: {e}")
+        traceback.print_exc()
 
     return True
 
@@ -186,7 +194,7 @@ async def run_job(job_id: str):
             print(f"Job {job_id} not found")
             return
 
-        job_status = JobStatus(job_id, job_data.get("job_name"))
+        job_status = JobStatus(job_id)
         job_status.__dict__.update(job_data)
         job_statuses[job_id] = job_status
 
@@ -362,7 +370,7 @@ def register_api_endpoints(app):
 
         # Create job status if not in memory
         if job_id not in job_statuses:
-            job_status = JobStatus(job_id, job_data.get("job_name"))
+            job_status = JobStatus(job_id)
             job_status.__dict__.update(job_data)
             job_statuses[job_id] = job_status
         else:
@@ -494,7 +502,7 @@ def register_api_endpoints(app):
             return ErrorResponse(error="Job not found")
 
         # Create a JobStatus object from the saved data
-        status = JobStatus(job_id, job_data.get("job_name"))
+        status = JobStatus(job_id)
         status.status = job_data.get("status", "unknown")
         status.progress = job_data.get("progress", 0)
         status.message = job_data.get("message", "")
@@ -539,13 +547,13 @@ def register_api_endpoints(app):
                 existing_job_data = load_job_data(job_id)
                 if existing_job_data:
                     # Create a JobStatus object from the saved data
-                    existing_job = JobStatus(job_id, existing_job_data.get("job_name", "Unnamed Job"))
+                    existing_job = JobStatus(job_id)
                     existing_job.__dict__.update(existing_job_data)
                     
             if not existing_job and not load_job_data(job_id):
                 # If no existing job, we'll create a new one with this ID
                 print(f"Creating new job with ID {job_id}")
-                existing_job = JobStatus(job_id, job_data.job_name)
+                existing_job = JobStatus(job_id)
             
             # Ensure job_id in path matches job_id in request
             if job_data.job_id != job_id:
@@ -554,7 +562,6 @@ def register_api_endpoints(app):
             # Update job_status with data from request
             if existing_job:
                 existing_job.status = "saved"
-                existing_job.job_name = job_data.job_name
                 existing_job.progress = job_data.progress
                 existing_job.message = job_data.message
                 
@@ -598,145 +605,6 @@ def register_api_endpoints(app):
             traceback.print_exc()
             return ErrorResponse(error=f"Error saving job: {str(e)}")
 
-    # @app.post("/api/save_job/{job_id}", tags=[api_tag])
-    # async def save_job(
-    #         job_id: str,
-    #         request_data: SaveJobRequest
-    # ):
-    #     """
-    #     Save a job without starting generation
-    #
-    #     Args:
-    #         job_id: Unique job identifier
-    #         request_data: Complete SaveJobRequest object with job data
-    #
-    #     Returns:
-    #         Success message with job_id
-    #     """
-    #     print(f"Save job request received for job_id: {job_id}")
-    #
-    #     # Ensure job_id consistency
-    #     if job_id != request_data.job_id:
-    #         print(f"Warning: Job ID mismatch. URL: {job_id}, Payload: {request_data.job_id}. Using URL value.")
-    #         request_data.job_id = job_id
-    #
-    #     # Ensure the job_path directory exists
-    #     os.makedirs(job_path, exist_ok=True)
-    #
-    #     # Check if segments are valid
-    #     if request_data.segments:
-    #         for i, segment_path in enumerate(request_data.segments):
-    #             if isinstance(segment_path, str) and not os.path.exists(segment_path):
-    #                 print(f"Warning: Image file not found for segment {i + 1}: {segment_path}")
-    #                 request_data.is_valid = False
-    #                 if segment_path not in request_data.missing_images:
-    #                     request_data.missing_images.append(segment_path)
-    #
-    #     # Save job to in-memory cache and disk
-    #     try:
-    #         # Convert SaveJobRequest to dict for storage
-    #         job_data = request_data.dict()
-    #
-    #         # Create a JobStatus object for compatibility with existing systems
-    #         job_status = JobStatus(job_id, request_data.job_name)
-    #         job_status.set_status(request_data.status)
-    #         job_status.set_progress(request_data.progress)
-    #         job_status.set_message(request_data.message)
-    #
-    #         # Store segments in the job status
-    #         job_status.segments = request_data.segments
-    #
-    #         # If job settings are provided, use them
-    #         if request_data.job_settings is not None:
-    #             if isinstance(request_data.job_settings, dict):
-    #                 # Check if it's already using our dictionary of modules format
-    #                 if "framepack" in request_data.job_settings and isinstance(request_data.job_settings["framepack"],
-    #                                                                            dict):
-    #                     # It's already in our new format
-    #                     module_settings = request_data.job_settings["framepack"]
-    #
-    #                     # Make sure segments exist in the module settings
-    #                     if "segments" not in module_settings or not isinstance(module_settings["segments"], list):
-    #                         module_settings["segments"] = []
-    #
-    #                     # Ensure we have the right number of segment configurations
-    #                     while len(module_settings["segments"]) < len(request_data.segments):
-    #                         # Add empty segment configurations if needed
-    #                         if len(module_settings["segments"]) > 0:
-    #                             # Copy the structure of the first segment
-    #                             segment_template = module_settings["segments"][0].copy()
-    #                             # Update with placeholder values
-    #                             segment_template["image_path"] = request_data.segments[len(module_settings["segments"])]
-    #                             segment_template["prompt"] = ""
-    #                             segment_template["duration"] = 1.0
-    #                             module_settings["segments"].append(segment_template)
-    #                         else:
-    #                             # Create a new segment configuration
-    #                             for segment_path in request_data.segments:
-    #                                 module_settings["segments"].append({
-    #                                     "image_path": segment_path,
-    #                                     "prompt": "",
-    #                                     "duration": 1.0
-    #                                 })
-    #                 else:
-    #                     # Legacy format - we need to convert to our new format
-    #                     # First check if the old format had segments
-    #                     if not request_data.ensure_segments_in_job_settings():
-    #                         print(f"Warning: Job settings missing segments or mismatch. Fixing...")
-    #
-    #                         # If job_settings doesn't have segments, add them
-    #                         if "segments" not in request_data.job_settings:
-    #                             request_data.job_settings["segments"] = []
-    #
-    #                         # Ensure we have the right number of segment configurations
-    #                         while len(request_data.job_settings["segments"]) < len(request_data.segments):
-    #                             # Add empty segment configurations if needed
-    #                             if len(request_data.job_settings["segments"]) > 0:
-    #                                 # Copy the structure of the first segment
-    #                                 segment_template = request_data.job_settings["segments"][0].copy()
-    #                                 # Update with placeholder values
-    #                                 segment_template["image_path"] = request_data.segments[
-    #                                     len(request_data.job_settings["segments"])]
-    #                                 segment_template["prompt"] = ""
-    #                                 segment_template["duration"] = 1.0
-    #                                 request_data.job_settings["segments"].append(segment_template)
-    #                             else:
-    #                                 # Create a new segment configuration
-    #                                 for segment_path in request_data.segments:
-    #                                     request_data.job_settings["segments"].append({
-    #                                         "image_path": segment_path,
-    #                                         "prompt": "",
-    #                                         "duration": 1.0
-    #                                     })
-    #
-    #                     # Now convert to our new format
-    #                     module_settings = request_data.job_settings
-    #                     request_data.job_settings = {"framepack": module_settings}
-    #
-    #                 # Set the validated job settings
-    #                 job_status.set_job_settings(request_data.job_settings)
-    #                 print(f"Saving job with {len(request_data.job_settings['segments'])} segments in job settings")
-    #
-    #         # Save to in-memory cache
-    #         job_statuses[job_id] = job_status
-    #
-    #         # Save the complete request data to disk
-    #         save_job_data(job_id, job_data)
-    #
-    #         # Broadcast job queue update to connected clients
-    #         try:
-    #             from handlers.websocket import manager
-    #             await manager.broadcast("global", {"type": "refresh_job_queue"})
-    #         except Exception as e:
-    #             print(f"Error broadcasting job queue refresh: {e}")
-    #
-    #         return {"success": True, "job_id": job_id, "message": "Job saved successfully"}
-    #     except Exception as e:
-    #         print(f"Error saving job: {e}")
-    #         return JSONResponse(
-    #             status_code=500,
-    #             content={"success": False, "error": f"Failed to save job: {str(e)}"}
-    #         )
 
     @app.get("/api/check_file_exists", response_model=dict, tags=[api_tag])
     async def check_file_exists(path: str):
@@ -842,7 +710,6 @@ def register_api_endpoints(app):
 
         return {
             "job_id": job_id,
-            "job_name": job_data.get("job_name"),
             "is_valid": is_valid,
             "missing_images": missing_images,
             "job_settings": job_settings
@@ -898,7 +765,6 @@ def register_api_endpoints(app):
                 global_prompt=job_settings.get("global_prompt", ""),
                 negative_prompt=job_settings.get("negative_prompt", ""),
                 segments=segments,
-                job_name=f"Rerun of {job_data.get('job_name', job_id)}",
                 seed=job_settings.get("seed", 31337),
                 steps=job_settings.get("steps", 25),
                 guidance_scale=job_settings.get("guidance_scale", 10.0),
@@ -910,8 +776,8 @@ def register_api_endpoints(app):
             )
 
             # Create the job status
-            job_status = JobStatus(new_job_id, request_data.job_name)
-            job_status.set_job_settings(request_data.dict())
+            job_status = JobStatus(new_job_id)
+            job_status.set_job_settings(request_data.model_dump())
             job_statuses[new_job_id] = job_status
 
             # Save to disk
@@ -1050,7 +916,7 @@ def register_api_endpoints(app):
                 job_data = load_job_data(job_id)
                 if not job_data:
                     return ErrorResponse(error="Job not found")
-                job_status = JobStatus(job_id, job_data.get("job_name"))
+                job_status = JobStatus(job_id)
                 job_status.__dict__.update(job_data)
                 job_statuses[job_id] = job_status
 

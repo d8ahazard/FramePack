@@ -9,7 +9,6 @@ class FramePackJobSettings(ModuleJobSettings):
     gpu_memory_preservation: float
     guidance_scale: float
     include_last_frame: bool
-    job_name: str
     mp4_crf: int
     negative_prompt: str
     resolution: int

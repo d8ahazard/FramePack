@@ -10,12 +10,17 @@ import {
     connectJobWebsocket,
     disconnectJobWebsocket,
     addJobEventListener,
-    removeJobEventListener
+    removeJobEventListener,
+    JOB_EVENT_TYPES
 } from './common.js';
 
 import {
     loadJobQueue
 } from './job_queue.js';
+
+// Track current active job ID in the editor
+window.currentActiveJobId = null;
+let editorJobListenerIndex = -1;
 
 let keepCurrentImage = false;
 let currentEditIndex = -1;
@@ -265,6 +270,121 @@ function uploadFileToServer(file) {
     });
 }
 
+// Set up WebSocket listener for job updates in the editor
+function setupEditorJobListener() {
+    // Connect to WebSocket if not already connected
+    connectJobWebsocket();
+    
+    // Register event listener for job status updates
+    editorJobListenerIndex = addJobEventListener(event => {
+        // Handle job update events
+        if (event.type === 'job_update') {
+            // Extract job details
+            const jobId = event.job_id;
+            const status = event.status;
+            const progress = event.progress;
+            const message = event.message;
+            
+            // Update the editor UI if this is the current job
+            if (window.currentActiveJobId === jobId) {
+                updateEditorProgress(jobId, status, progress, message);
+            }
+        }
+    });
+}
+
+// Update editor UI based on job status
+function updateEditorProgress(jobId, status, progress, message) {
+    // Only update if we have a progress container
+    if (!elements.progressContainer) return;
+    
+    // Update the current active job ID
+    window.currentActiveJobId = jobId;
+    
+    // Show the progress container
+    elements.progressContainer.classList.remove('d-none');
+    
+    // Update progress bar
+    if (elements.progressBar) {
+        elements.progressBar.style.width = `${progress}%`;
+        elements.progressBar.setAttribute('aria-valuenow', progress);
+        elements.progressBar.textContent = `${progress}%`;
+    }
+    
+    // Update status message
+    if (elements.progressStatus) {
+        elements.progressStatus.textContent = message || 'Processing...';
+    }
+    
+    // Handle different job statuses
+    if (status === 'completed') {
+        // Show completion message
+        showMessage('Video generation completed!', 'success');
+        
+        // Update UI for completed state
+        if (elements.progressBar) {
+            elements.progressBar.classList.remove('progress-bar-animated', 'progress-bar-striped');
+            elements.progressBar.classList.add('bg-success');
+        }
+        
+        // After a delay, hide the progress container
+        setTimeout(() => {
+            // Switch to the job queue tab to show the completed job
+            const queueTab = document.getElementById('queue-tab');
+            if (queueTab) {
+                queueTab.click();
+            }
+            
+            // Reset the editor state
+            elements.progressContainer.classList.add('d-none');
+            window.currentActiveJobId = null;
+            
+            // Reload the job queue to see the completed job
+            loadJobQueue();
+        }, 3000);
+    } 
+    else if (status === 'failed' || status === 'cancelled') {
+        // Show error message
+        showMessage(`Job ${status}: ${message}`, 'error');
+        
+        // Update UI for failed state
+        if (elements.progressBar) {
+            elements.progressBar.classList.remove('progress-bar-animated', 'progress-bar-striped');
+            elements.progressBar.classList.add('bg-danger');
+        }
+        
+        // After a delay, hide the progress container
+        setTimeout(() => {
+            elements.progressContainer.classList.add('d-none');
+            window.currentActiveJobId = null;
+        }, 5000);
+    } 
+    else if (status === 'running') {
+        // Ensure progress bar is styled correctly for running state
+        if (elements.progressBar) {
+            elements.progressBar.classList.add('progress-bar-animated', 'progress-bar-striped');
+            elements.progressBar.classList.remove('bg-success', 'bg-danger');
+            elements.progressBar.classList.add('bg-primary');
+        }
+        
+        // Update preview image if provided
+        if (event && event.current_latents) {
+            updateProgressPreview(event.current_latents);
+        }
+    }
+}
+
+// Update the preview image in the progress area
+function updateProgressPreview(previewUrl) {
+    if (!elements.previewContainer || !elements.previewImage) return;
+    
+    // Show the preview container
+    elements.previewContainer.classList.remove('d-none');
+    
+    // Update the preview image
+    elements.previewImage.src = previewUrl;
+}
+
 // Function to show upload modal
 function showUploadModal() {
     // Clear previous uploads
@@ -302,6 +422,9 @@ function initEditor() {
     // Initialize timeline drop zone
     initTimelineDropZone();
     
+    // Set up WebSocket for job updates
+    setupEditorJobListener();
+    
     // Add sort buttons event listeners
     const sortAscBtn = document.getElementById('sortAscBtn');
     const sortDescBtn = document.getElementById('sortDescBtn');
@@ -315,6 +438,13 @@ function initEditor() {
     }
 
     console.log('Files module initialized');
+    
+    // Clean up WebSocket listener when leaving the page
+    window.addEventListener('beforeunload', () => {
+        if (editorJobListenerIndex >= 0) {
+            removeJobEventListener(editorJobListenerIndex);
+        }
+    });
 
     // Initialize upload modal
     // Add event listeners
@@ -781,10 +911,8 @@ function startGeneration() {
     // The backend will handle wrapping it in ModuleJobSettings format
     
     // Ensure job_settings has the proper ModuleJobSettings structure
-    if (!payload.job_settings.module_type) {
-        console.warn('Job settings missing module_type, adding default framepack module type');
+    console.warn('Job settings missing module_type, adding default framepack module type');
         payload.job_settings = prepareModuleJobSettings(payload.job_settings);
-    }
     
     console.log('Sending generation request with payload:', JSON.stringify(payload, null, 2));
     
@@ -875,7 +1003,6 @@ function saveJob() {
     // Create a SaveJobRequest structure matching the backend requirements
     const payload = {
         job_id: jobId,
-        job_name: jobSettings.job_name,
         status: "saved",
         progress: 0,
         message: "Job saved",
@@ -911,6 +1038,7 @@ function saveJob() {
                 }
             });
         }
+        showMessage('Job saved successfully!', 'success');
         return response.json();
     })
     .then(data => {
@@ -1019,14 +1147,12 @@ function prepareJobPayload() {
     } else {
         firstImageName = segments[0].image_path.split('\\').pop().split('.')[0];
     }
-    const jobName = `${firstImageName}_${timestamp}`;
-    
-    // Create request payload with all form settings
-    const payload = {
+
+    // Create the payload with all form settings
+    return {
         global_prompt: elements.globalPrompt ? elements.globalPrompt.value : "",
         negative_prompt: elements.negativePrompt ? elements.negativePrompt.value : "",
         segments: segments,
-        job_name: jobName,
         seed: Math.floor(Math.random() * 100000),
         steps: elements.steps ? parseInt(elements.steps.value) : 25,
         guidance_scale: elements.guidanceScale ? parseFloat(elements.guidanceScale.value) : 10.0,
@@ -1037,8 +1163,6 @@ function prepareJobPayload() {
         gpu_memory_preservation: 6.0,
         include_last_frame: includeLastFrame || false
     };
-    
-    return payload;
 }
 
 // Function to connect to job websocket and handle updates

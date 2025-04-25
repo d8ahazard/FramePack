@@ -13,6 +13,14 @@ const timeline = [];
 let jobSocket = null;
 const jobEventListeners = [];
 
+// Define job status event types
+const JOB_EVENT_TYPES = {
+    STATUS_UPDATE: 'status_update',
+    JOB_CREATED: 'job_created',
+    JOB_COMPLETED: 'job_completed',
+    JOB_FAILED: 'job_failed'
+};
+
 // Variables for edit mode
 
 
@@ -136,18 +144,152 @@ function formatTimestamp(timestamp) {
     return date.toLocaleString();
 }
 
-// Show a message using a toast or alert
+// Create toast container if it doesn't exist
+function createToastContainer() {
+    let container = document.getElementById('toast-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'toast-container';
+        
+        // Essential inline styles to ensure visibility
+        const containerStyles = {
+            position: 'fixed',
+            bottom: '20px',
+            right: '20px',
+            display: 'flex',
+            flexDirection: 'column-reverse',
+            alignItems: 'flex-end',
+            zIndex: '10000',
+            maxHeight: '80vh',
+            overflow: 'hidden',
+            pointerEvents: 'none',
+            width: 'auto',
+            maxWidth: '100%'
+        };
+        
+        // Apply essential styles
+        Object.assign(container.style, containerStyles);
+        
+        // Ensure it's added to the body
+        document.body.appendChild(container);
+        
+        console.log('Toast container created and added to DOM');
+    } else {
+        console.log('Toast container already exists');
+    }
+    return container;
+}
+
+// Create and display a toast notification
+function createToast(message, type) {
+    const container = createToastContainer();
+    
+    // Normalize type
+    type = type || 'info';
+    
+    // Create toast element
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    
+    // Essential inline styles to ensure visibility
+    const essentialStyles = {
+        position: 'relative',
+        minWidth: '250px', 
+        maxWidth: '350px',
+        padding: '12px 20px',
+        margin: '8px',
+        borderRadius: '6px',
+        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)',
+        color: 'white',
+        fontWeight: 'bold',
+        opacity: '1',
+        display: 'flex',
+        alignItems: 'center',
+        zIndex: '10000',
+        pointerEvents: 'auto'
+    };
+    
+    // Apply essential styles
+    Object.assign(toast.style, essentialStyles);
+    
+    // Set background color based on type
+    switch(type) {
+        case 'error':
+            toast.style.backgroundColor = '#ff3547';
+            break;
+        case 'warning':
+            toast.style.backgroundColor = '#ff9f1a';
+            break;
+        case 'info':
+            toast.style.backgroundColor = '#33b5e5';
+            break;
+        default: // success or undefined
+            toast.style.backgroundColor = '#00c851';
+    }
+    
+    // Add icon based on type
+    let icon = '';
+    switch(type) {
+        case 'error':
+            icon = '❌';
+            break;
+        case 'warning':
+            icon = '⚠️';
+            break;
+        case 'info':
+            icon = 'ℹ️';
+            break;
+        default: // success or undefined
+            icon = '✅';
+    }
+    
+    // Add content with icon
+    toast.innerHTML = `
+        <span style="margin-right: 10px; font-size: 18px;">${icon}</span>
+        <span style="flex-grow: 1;">${message}</span>
+    `;
+    
+    // Add to container
+    container.appendChild(toast);
+    
+    // Schedule toast removal with animation
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateX(100%)';
+        setTimeout(() => {
+            if (container.contains(toast)) {
+                container.removeChild(toast);
+            }
+        }, 500);
+    }, 5000);
+    
+    // Log to console as well
+    console.log(`Toast (${type}): ${message}`);
+    
+    return toast;
+}
+
+// Show a message using a toast notification
 function showMessage(message, type) {
-    // You could implement this with a toast notification
+    // Log the message to console
     console.log(`${type.toUpperCase()}: ${message}`);
     
-    // For now, use a simple alert
-    if (type === 'error') {
-        alert(`Error: ${message}`);
-    } else if (type === 'success') {
-        alert(`Success: ${message}`);
-    }
+    // Create and display a toast
+    createToast(message, type || 'info');
 }
+
+// Make toast functions available globally
+if (typeof window !== 'undefined') {
+    window.showMessage = showMessage;
+    window.createToast = createToast;
+    window.createToastContainer = createToastContainer;
+}
+
+// Ensure toast container exists when DOM is loaded
+document.addEventListener('DOMContentLoaded', () => {
+    const container = createToastContainer();
+    console.log('Toast container initialized on DOM content loaded');
+});
 
 // Initialize all DOM elements
 function initElements() {
@@ -324,6 +466,8 @@ export {
     progressElements,
     formatTimestamp,
     showMessage,
+    createToast,
+    createToastContainer,
     initElements,
     enforceHorizontalLayout,
     checkImageExists,

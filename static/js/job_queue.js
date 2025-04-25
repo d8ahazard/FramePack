@@ -28,6 +28,11 @@ function initJobQueue() {
     // Initial load of job queue
     loadJobQueue();
     
+    // Setup job WebSocket listener if not already set up
+    if (jobListenerIndex < 0) {
+        setupJobWebSocketListener();
+    }
+    
     // Clean up websocket when leaving the page
     window.addEventListener('beforeunload', () => {
         if (jobListenerIndex >= 0) {
@@ -38,6 +43,98 @@ function initJobQueue() {
     
     // Export loadJobQueue for access from other modules
     window.loadJobQueue = loadJobQueue;
+}
+
+// Set up WebSocket listener for job events
+function setupJobWebSocketListener() {
+    // Connect to WebSocket for job updates if not already connected
+    connectJobWebsocket();
+    
+    // Register event listener for job status updates
+    jobListenerIndex = addJobEventListener(event => {
+        // Check if this is a job status update
+        if (event.type === 'job_update') {
+            console.log('Job update received via WebSocket:', event);
+            
+            // Extract job details
+            const jobId = event.job_id;
+            const status = event.status;
+            const progress = event.progress;
+            const message = event.message;
+            
+            // Update the job in the queue UI
+            updateJobInQueue(jobId, status, progress, message);
+            
+            // If this is the currently active job in the editor, update the editor UI
+            if (window.currentActiveJobId === jobId) {
+                // Update the editor progress display
+                updateEditorProgress(jobId, status, progress, message);
+            }
+            
+            // For completed or failed jobs, ensure we update the full job list
+            if (status === 'completed' || status === 'failed') {
+                // Reload the entire job queue to get the most up-to-date information
+                setTimeout(() => loadJobQueue(), 500);
+            }
+        }
+    });
+}
+
+// Update a specific job in the queue UI without reloading everything
+function updateJobInQueue(jobId, status, progress, message) {
+    // Find the job item in the DOM
+    const jobItem = document.querySelector(`.job-item[data-job-id="${jobId}"]`);
+    if (!jobItem) {
+        console.log(`Job ${jobId} not found in queue UI, will be updated on next reload`);
+        return;
+    }
+    
+    // Update status badge
+    const statusBadge = jobItem.querySelector('.status-badge');
+    if (statusBadge) {
+        // Remove all existing badge classes
+        statusBadge.classList.remove('bg-secondary', 'bg-success', 'bg-danger', 'bg-primary', 'bg-warning', 'bg-info');
+        
+        // Add the appropriate badge class based on status
+        if (status === 'completed') {
+            statusBadge.classList.add('bg-success');
+            statusBadge.textContent = 'Completed';
+        } else if (status === 'failed') {
+            statusBadge.classList.add('bg-danger');
+            statusBadge.textContent = 'Failed';
+        } else if (status === 'running') {
+            statusBadge.classList.add('bg-primary');
+            statusBadge.textContent = 'Running';
+        } else if (status === 'queued') {
+            statusBadge.classList.add('bg-warning');
+            statusBadge.textContent = 'Queued';
+        } else if (status === 'cancelled') {
+            statusBadge.classList.add('bg-secondary');
+            statusBadge.textContent = 'Cancelled';
+        } else if (status === 'saved') {
+            statusBadge.classList.add('bg-info');
+            statusBadge.textContent = 'Saved';
+        }
+    }
+    
+    // Update progress information
+    const progressBar = jobItem.querySelector('.progress-bar');
+    if (progressBar) {
+        progressBar.style.width = `${progress}%`;
+        progressBar.setAttribute('aria-valuenow', progress);
+        progressBar.textContent = `${progress}%`;
+    }
+    
+    // Update status message
+    const statusMessage = jobItem.querySelector('.job-message');
+    if (statusMessage) {
+        statusMessage.textContent = message || '';
+    }
+    
+    // Update the overall job item class to reflect the new status
+    jobItem.className = `job-item ${status || 'unknown'}`;
+    
+    console.log(`Updated job ${jobId} in queue UI: status=${status}, progress=${progress}`);
 }
 
 // Load the job queue UI
@@ -252,7 +349,7 @@ function createJobItem(job) {
     }
     
     // Job title/name display
-    const jobTitle = job.job_name || formatJobTimestamp(job.job_id);
+    const jobTitle = formatJobTimestamp(job.job_id);
     
     // Check if job has missing images
     const hasInvalidImages = job.is_valid === false;
@@ -266,8 +363,7 @@ function createJobItem(job) {
     jobItem.innerHTML = `
         <div class="d-flex justify-content-between align-items-center">
             <div>
-                <div class="fw-bold">${jobTitle}</div>
-                <div class="text-muted small">ID: ${job.job_id}</div>
+                <div class="fw-bold">ID: ${job.job_id}</div>
             </div>
             <div>
                 <span class="badge ${statusBadgeClass}">${job.status}</span>
@@ -579,10 +675,6 @@ function displayJobDetails(jobData) {
     // Check if job has missing images
     const hasInvalidImages = jobData.is_valid === false;
     
-    // Display job name if available
-    const jobName = jobData.job_name ? 
-        `<p><strong>Name:</strong> ${jobData.job_name}</p>` : '';
-    
     // Invalid images warning
     const invalidImagesWarning = hasInvalidImages ? 
         `<div class="alert alert-warning">
@@ -602,8 +694,6 @@ function displayJobDetails(jobData) {
         </div>
         <div class="card-body">
             ${invalidImagesWarning}
-            <p><strong>Job ID:</strong> ${jobData.job_id}</p>
-            ${jobName}
             <p><strong>Status:</strong> ${jobData.status.charAt(0).toUpperCase() + jobData.status.slice(1)}</p>
             ${queueInfo}
             <p><strong>Progress:</strong> ${jobData.progress}%</p>

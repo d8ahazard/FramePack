@@ -95,5 +95,10 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Apply horizontal layout on window resize
     window.addEventListener('resize', enforceHorizontalLayout);
+    
+    // Ensure toast container exists and is showing
+    if (window.createToastContainer) {
+        const container = window.createToastContainer();
+    }
 });
 
