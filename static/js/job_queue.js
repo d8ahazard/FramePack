@@ -686,7 +686,9 @@ function displayJobDetails(jobData) {
     // Queue position info
     const queueInfo = jobData.status === 'queued' ? 
         `<p><strong>Queue Position:</strong> ${jobData.queue_position}</p>` : '';
-    
+
+    const jobStatus = jobData.status ? jobData.status.charAt(0).toUpperCase() + jobData.status.slice(1) : 'Unknown';
+
     jobInfoCard.innerHTML = `
         <div class="card-header d-flex justify-content-between align-items-center">
             <h5 class="card-title mb-0">Job Information</h5>
@@ -694,7 +696,7 @@ function displayJobDetails(jobData) {
         </div>
         <div class="card-body">
             ${invalidImagesWarning}
-            <p><strong>Status:</strong> ${jobData.status.charAt(0).toUpperCase() + jobData.status.slice(1)}</p>
+            <p><strong>Status:</strong> ${jobStatus}</p>
             ${queueInfo}
             <p><strong>Progress:</strong> ${jobData.progress}%</p>
             <p><strong>Message:</strong> ${jobData.message || 'No message'}</p>

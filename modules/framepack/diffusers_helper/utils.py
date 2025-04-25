@@ -275,7 +275,7 @@ def save_bcthw_as_mp4(x, output_filename, fps=10, crf=0):
 
     os.makedirs(os.path.dirname(os.path.abspath(os.path.realpath(output_filename))), exist_ok=True)
     x = torch.clamp(x.float(), -1., 1.) * 127.5 + 127.5
-    x = x.detach(z).cpu().to(torch.uint8)
+    x = x.detach().cpu().to(torch.uint8)
     x = einops.rearrange(x, '(m n) c t h w -> t (m h) (n w) c', n=per_row)
     torchvision.io.write_video(output_filename, x, fps=fps, video_codec='libx264', options={'crf': str(int(crf))})
     return x
