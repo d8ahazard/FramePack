@@ -18,7 +18,61 @@ import { openVideoViewer } from './outputs.js';
 let currentJobId = null;
 let jobListenerIndex = -1;
 
+/**
+ * Get the proper URL for a segment image using the API
+ * @param {string} path - The server path to the image
+ * @returns {string} URL to the image through the API
+ */
+function getImageUrl(path) {
+    if (!path) return '/static/images/placeholder-image.png';
+    
+    // Clean up the path if needed (remove any query parameters)
+    const cleanPath = path.split('?')[0];
+    
+    // Use the serve_file API endpoint to serve the image
+    return `/api/serve_file?path=${encodeURIComponent(cleanPath)}`;
+}
+
 // Module initialization function
+/**
+ * Get a thumbnail URL for a job frame
+ * @param {Object} job - The job object
+ * @param {number} frameIndex - Index of the frame to get thumbnail for, defaults to 0
+ * @returns {string} URL to the thumbnail
+ */
+function getThumbnailUrl(job, frameIndex = 0) {
+    // First check if job has segments with latent previews (for running jobs)
+    if (job.segments && job.segments.length > 0) {
+        // Use the last segment for the most recent preview
+        return `/api/serve_file?path=${encodeURIComponent(job.segments[job.segments.length - 1])}`;
+    }
+    
+    // Then check if job has frames
+    if (job.frames && job.frames.length > 0) {
+        // Make sure frameIndex is valid
+        if (frameIndex >= job.frames.length) {
+            frameIndex = 0;
+        }
+        
+        const framePath = job.frames[frameIndex].image_path;
+        if (framePath) {
+            return `/api/serve_file?path=${encodeURIComponent(framePath)}`;
+        }
+    }
+    
+    // For saved jobs that haven't been processed yet
+    if (job.job_settings && job.job_settings.framepack && 
+        job.job_settings.framepack.segments && 
+        job.job_settings.framepack.segments.length > 0) {
+        
+        const segmentPath = job.job_settings.framepack.segments[0].image_path;
+        return `/api/serve_file?path=${encodeURIComponent(segmentPath)}`;
+    }
+    
+    // Default placeholder
+    return '/static/images/placeholder-image.png';
+}
+
 function initJobQueue() {
     console.log('Job Queue module initialized');
     
@@ -123,6 +177,19 @@ function updateJobInQueue(jobId, status, progress, message) {
         progressBar.style.width = `${progress}%`;
         progressBar.setAttribute('aria-valuenow', progress);
         progressBar.textContent = `${progress}%`;
+    } else if (status === 'running') {
+        // Add progress bar if it doesn't exist but job is running
+        const messageDiv = jobItem.querySelector('.job-message').parentNode;
+        if (messageDiv) {
+            const progressDiv = document.createElement('div');
+            progressDiv.className = 'progress mt-2';
+            progressDiv.style.height = '5px';
+            progressDiv.innerHTML = `
+                <div class="progress-bar" role="progressbar" style="width: ${progress}%" 
+                     aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100">${progress}%</div>
+            `;
+            messageDiv.after(progressDiv);
+        }
     }
     
     // Update status message
@@ -133,6 +200,17 @@ function updateJobInQueue(jobId, status, progress, message) {
     
     // Update the overall job item class to reflect the new status
     jobItem.className = `job-item ${status || 'unknown'}`;
+    
+    // If the status has changed between running and something else,
+    // we may need to add or remove the progress bar
+    if (status !== 'running' && progressBar) {
+        progressBar.parentNode.remove();
+    }
+    
+    // If the job details are currently shown for this job, also update them
+    if (currentJobId === jobId) {
+        loadJobDetails(jobId);
+    }
     
     console.log(`Updated job ${jobId} in queue UI: status=${status}, progress=${progress}`);
 }
@@ -360,24 +438,34 @@ function createJobItem(job) {
     const queuePositionBadge = job.status === 'queued' ? 
         `<span class="badge bg-dark ms-2">#${job.queue_position}</span>` : '';
     
+    // Get thumbnail URL - use getThumbnailUrl function for proper image loading
+    const thumbnailUrl = getThumbnailUrl(job);
+    
     jobItem.innerHTML = `
-        <div class="d-flex justify-content-between align-items-center">
-            <div>
-                <div class="fw-bold">ID: ${job.job_id}</div>
+        <div class="d-flex align-items-start">
+            <div class="job-thumbnail me-2">
+                <img src="${thumbnailUrl}" alt="Frame" class="img-fluid rounded">
             </div>
-            <div>
-                <span class="badge ${statusBadgeClass}">${job.status}</span>
-                ${queuePositionBadge}
-                ${invalidBadge}
+            <div class="flex-grow-1">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <div class="fw-bold">ID: ${job.job_id}</div>
+                    </div>
+                    <div>
+                        <span class="badge ${statusBadgeClass} status-badge">${job.status}</span>
+                        ${queuePositionBadge}
+                        ${invalidBadge}
+                    </div>
+                </div>
+                <div class="mt-2">
+                    <div class="text-muted small job-message">${job.message || 'No message'}</div>
+                </div>
+                ${job.status === 'running' ? `
+                <div class="progress mt-2" style="height: 5px;">
+                    <div class="progress-bar" role="progressbar" style="width: ${job.progress}%" aria-valuenow="${job.progress}" aria-valuemin="0" aria-valuemax="100">${job.progress}%</div>
+                </div>` : ''}
             </div>
         </div>
-        <div class="mt-2">
-            <div class="text-muted small">${job.message || 'No message'}</div>
-        </div>
-        ${job.status === 'running' ? `
-        <div class="progress mt-2" style="height: 5px;">
-            <div class="progress-bar" role="progressbar" style="width: ${job.progress}%" aria-valuenow="${job.progress}" aria-valuemin="0" aria-valuemax="100"></div>
-        </div>` : ''}
     `;
     
     jobItem.addEventListener('click', () => {
@@ -741,10 +829,10 @@ function displayJobDetails(jobData) {
         // Determine which image to show - use the latest segment to avoid duplicates
         let latentImageSrc = '';
         if (jobData.current_latents) {
-            latentImageSrc = jobData.current_latents;
+            latentImageSrc = getImageUrl(jobData.current_latents);
         } else if (jobData.segments && jobData.segments.length > 0) {
             // Use the latest segment to avoid showing duplicates
-            latentImageSrc = jobData.segments[jobData.segments.length - 1];
+            latentImageSrc = getImageUrl(jobData.segments[jobData.segments.length - 1]);
         }
         
         latentsContainer.innerHTML = `
