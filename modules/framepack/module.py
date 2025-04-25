@@ -24,7 +24,7 @@ from handlers.vram import fake_diffusers_current_device, get_cuda_free_memory_gb
     move_model_to_device_with_memory_preservation, unload_complete_models, load_model_as_complete, gpu, high_vram
 from modules.framepack.diffusers_helper.bucket_tools import find_nearest_bucket
 from modules.framepack.diffusers_helper.clip_vision import hf_clip_vision_encode
-from modules.framepack.diffusers_helper.hunyuan import encode_prompt_conds, vae_encode, vae_decode_fake
+from modules.framepack.diffusers_helper.hunyuan import encode_prompt_conds, vae_encode, vae_decode_fake, vae_decode
 from modules.framepack.diffusers_helper.models.hunyuan_video_packed import HunyuanVideoTransformer3DModelPacked
 from modules.framepack.diffusers_helper.pipelines.k_diffusion_hunyuan import sample_hunyuan
 from modules.framepack.diffusers_helper.utils import crop_or_pad_yield_mask, resize_and_center_crop, soft_append_bcthw, \
@@ -435,7 +435,7 @@ def worker(
 
                         # Create preview using vae_decode_fake (faster)
                         preview = vae_decode_fake(denoised)
-                        preview = handlers.vram.cpu().numpy().clip(0, 255).astype(np.uint8)
+                        preview = (preview * 255.0).detach().cpu().numpy().clip(0, 255).astype(np.uint8)
                         preview = einops.rearrange(preview, 'b c t h w -> (b h) (t w) c')
 
                         preview_filename = os.path.join("uploads", f"{job_id}_latent_{step}.jpg")
@@ -521,11 +521,11 @@ def worker(
             # decode frames
             real = history_latents[:, :, :total_generated]
             if history_pixels is None:
-                history_pixels = handlers.vram.cpu()
+                history_pixels = vae_decode(real, vae).cpu()
             else:
                 frames_count = latent_window_size * 2 + (1 if is_last else 0)
                 overlap = latent_window_size * 4 - 3
-                curr_pix = handlers.vram.cpu()
+                curr_pix = vae_decode(real[:, :, :frames_count], vae).cpu()
                 history_pixels = soft_append_bcthw(curr_pix, history_pixels, overlap)
 
             # overwrite segment file

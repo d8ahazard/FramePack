@@ -2,6 +2,7 @@ import hashlib
 import hashlib
 import logging
 import os
+import time
 from typing import List, Union
 
 from fastapi import HTTPException
@@ -350,3 +351,27 @@ def register_api_endpoints(app):
                 status_code=500,
                 content={"error": f"Failed to generate thumbnail: {str(e)}"}
             )
+
+
+def cleanup_thumbnail_cache(max_age_days=30):
+    """
+    Clean up old thumbnails from the cache directory
+
+    Args:
+        max_age_days: Maximum age of thumbnails to keep
+    """
+    try:
+        now = time.time()
+        count = 0
+
+        for filename in os.listdir(thumbnail_path):
+            file_path = os.path.join(thumbnail_path, filename)
+            if os.path.isfile(file_path):
+                file_age = now - os.path.getmtime(file_path)
+                if file_age > max_age_days * 86400:  # Convert days to seconds
+                    os.remove(file_path)
+                    count += 1
+
+        print(f"Cleaned up {count} old thumbnails")
+    except Exception as e:
+        print(f"Error cleaning up thumbnails: {e}")

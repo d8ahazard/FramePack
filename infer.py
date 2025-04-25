@@ -3,7 +3,7 @@ import asyncio
 import importlib
 import logging
 import os
-import time
+from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
@@ -15,8 +15,11 @@ from starlette.requests import Request
 
 import modules
 from datatypes.datatypes import EndpointFilter
+from handlers.file import cleanup_thumbnail_cache
 from handlers.model import preload_all_models
 from handlers.path import thumbnail_path, upload_path, output_path
+from handlers.socket import process_broadcasts
+from handlers.job_queue import clear_running_jobs
 
 logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 
@@ -35,13 +38,29 @@ os.makedirs("static/images", exist_ok=True)
 # ----------------------------------------
 # FastAPI app setup
 # ----------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Load the ML model
+    # Start the broadcast processing task
+    asyncio.create_task(process_broadcasts())
+    # Run cleanup on startup with a max age of 30 days
+    cleanup_thumbnail_cache(30)
+    clear_running_jobs()
+    yield
+    # Run cleanup on startup with a max age of 30 days
+    cleanup_thumbnail_cache(30)
+    clear_running_jobs()
+
+
 app = FastAPI(
     title="FramePack API",
     description="API for image to video generation using FramePack",
     version="1.0.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
-    openapi_url="/api/openapi.json"
+    openapi_url="/api/openapi.json",
+    lifespan=lifespan,
 )
 
 # Configure logging to suppress job status logs
@@ -77,50 +96,6 @@ async def add_response_headers(request: Request, call_next):
     return response
 
 
-def resolve_upload_path(path):
-    """
-    Resolves path to a valid file path in the uploads directory.
-
-    Args:
-        path: A full server path to an uploaded file
-
-    Returns:
-        tuple: (resolved_path, exists) where resolved_path is the full filesystem path
-               and exists is a boolean indicating if the file exists
-    """
-    if not path:
-        return None, False
-
-    # Just check if the provided path exists directly
-    exists = os.path.isfile(path)
-
-    return path, exists
-
-
-def cleanup_thumbnail_cache(max_age_days=30):
-    """
-    Clean up old thumbnails from the cache directory
-
-    Args:
-        max_age_days: Maximum age of thumbnails to keep
-    """
-    try:
-        now = time.time()
-        count = 0
-
-        for filename in os.listdir(thumbnail_path):
-            file_path = os.path.join(thumbnail_path, filename)
-            if os.path.isfile(file_path):
-                file_age = now - os.path.getmtime(file_path)
-                if file_age > max_age_days * 86400:  # Convert days to seconds
-                    os.remove(file_path)
-                    count += 1
-
-        print(f"Cleaned up {count} old thumbnails")
-    except Exception as e:
-        print(f"Error cleaning up thumbnails: {e}")
-
-
 @app.get("/favicon.ico")
 async def favicon():
     """Serve the favicon"""
@@ -141,9 +116,6 @@ async def api_docs_redirect():
     return RedirectResponse(url="/api/docs")
 
 
-# WebSocket endpoint is now handled in handlers/socket.py
-# This ensures backward compatibility while migrating to the new system
-from handlers.socket import process_broadcasts
 
 
 def register_all_endpoints():
@@ -175,17 +147,6 @@ def register_all_endpoints():
         try_register(api_module_name)
 
 
-# Register job queue routes
-
-# Run cleanup on startup with a max age of 30 days
-
-# Setup startup and shutdown events
-@app.on_event("startup")
-async def startup_event():
-    # Start the broadcast processing task
-    asyncio.create_task(process_broadcasts())
-    # Run cleanup on startup with a max age of 30 days
-    cleanup_thumbnail_cache(30)
 
 
 # Run the application

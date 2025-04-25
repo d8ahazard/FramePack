@@ -15,6 +15,7 @@ from datatypes.datatypes import JobStatusResponse, ErrorResponse
 from datatypes.datatypes import SaveJobRequest
 from handlers.path import job_path
 from handlers.path import upload_path
+
 #from infer import manager
 
 # Job queue and processing state
@@ -24,6 +25,22 @@ job_processing_lock = asyncio.Lock()
 
 # Global job tracking
 job_statuses = {}
+
+
+# Run this at app start in case we terminated/failed
+def clear_running_jobs():
+    # Get all saved jobs
+    saved_jobs = list_saved_jobs()
+    # Check if any jobs are running
+    for job_id in saved_jobs:
+        job_data = load_job_data(job_id)
+        if job_data:
+            # Check if the job is running
+            if job_data.get("status") == "running":
+                # If so, set it to failed
+                job_data["status"] = "failed"
+                job_data["message"] = "Job was interrupted"
+                save_job_data(job_id, job_data)
 
 
 def add_to_queue(job_id: str, position: Optional[int] = None):
@@ -65,26 +82,24 @@ def save_job_data(job_id, job_data):
     else:
         # Assume it's already a dict
         data_dict = job_data
-    
+
     # Ensure job_id is consistent
     data_dict["job_id"] = job_id
-    
+
     # Add timestamp if missing
     if "created_timestamp" not in data_dict:
         data_dict["created_timestamp"] = int(time.time())
 
     # Ensure job_path directory exists
     os.makedirs(job_path, exist_ok=True)
-    
+
     # Save to disk
     job_file = os.path.join(job_path, f"{job_id}.json")
-    
-    print(f"Saving job data to: {job_file}")
-    
+
     try:
         with open(job_file, "w") as f:
             json.dump(data_dict, f, indent=4)
-        print(f"Successfully saved job data to {job_file}")
+
     except Exception as e:
         print(f"Error saving job data: {e}")
         raise e
@@ -292,14 +307,14 @@ def verify_job_images(job_data):
         if not image_path:
             missing_images.append("Missing path")
             continue
-            
+
         # Normalize path for cross-platform compatibility
         norm_path = os.path.normpath(image_path)
-        
+
         # Handle file:// protocol if present
         if norm_path.startswith('file://'):
             norm_path = norm_path[7:]
-            
+
         # Check if the file exists
         if not os.path.exists(norm_path) or not os.path.isfile(norm_path):
             missing_images.append(image_path)
@@ -540,7 +555,7 @@ def register_api_endpoints(app):
         try:
             # Validate that the job exists
             existing_job = None
-            
+
             if job_id in job_statuses:
                 existing_job = job_statuses[job_id]
             else:
@@ -549,52 +564,52 @@ def register_api_endpoints(app):
                     # Create a JobStatus object from the saved data
                     existing_job = JobStatus(job_id)
                     existing_job.__dict__.update(existing_job_data)
-                    
+
             if not existing_job and not load_job_data(job_id):
                 # If no existing job, we'll create a new one with this ID
                 print(f"Creating new job with ID {job_id}")
                 existing_job = JobStatus(job_id)
-            
+
             # Ensure job_id in path matches job_id in request
             if job_data.job_id != job_id:
                 return ErrorResponse(error="Job ID mismatch between URL and request body")
-                
+
             # Update job_status with data from request
             if existing_job:
                 existing_job.status = "saved"
                 existing_job.progress = job_data.progress
                 existing_job.message = job_data.message
-                
+
                 # Only update result_video if it's provided and not empty
                 if job_data.result_video:
                     existing_job.result_video = job_data.result_video
-                
+
                 # Only update segments if they're provided and not empty
                 if job_data.segments:
                     existing_job.segments = job_data.segments
-                
+
                 # Update remaining fields
                 if job_data.current_latents:
                     existing_job.current_latents = job_data.current_latents
-                    
+
                 existing_job.is_valid = job_data.is_valid
                 existing_job.missing_images = job_data.missing_images
-                
+
                 # Update job settings
                 if job_data.job_settings:
                     existing_job.job_settings = job_data.job_settings
-                
+
                 existing_job.queue_position = job_data.queue_position
-                
+
                 # Update or add to in-memory cache
                 job_statuses[job_id] = existing_job
-                
+
                 # Save to disk
                 save_job_data(job_id, existing_job)
             else:
                 # Save directly from request data
                 save_job_data(job_id, job_data)
-                
+
             return {
                 "success": True,
                 "message": f"Job {job_id} has been saved"
@@ -604,7 +619,6 @@ def register_api_endpoints(app):
             import traceback
             traceback.print_exc()
             return ErrorResponse(error=f"Error saving job: {str(e)}")
-
 
     @app.get("/api/check_file_exists", response_model=dict, tags=[api_tag])
     async def check_file_exists(path: str):
@@ -619,16 +633,16 @@ def register_api_endpoints(app):
         """
         # Clean the path to prevent directory traversal attacks
         clean_path = os.path.normpath(path)
-        
+
         # If path starts with file:// protocol, remove it
         if clean_path.startswith('file://'):
             clean_path = clean_path[7:]
-            
+
         # Check if the file exists
         exists = os.path.exists(clean_path) and os.path.isfile(clean_path)
-        
+
         return {"exists": exists}
-        
+
     @app.get("/api/result_video/{job_id}", tags=[api_tag])
     async def get_result_video(job_id: str):
         """
@@ -649,11 +663,11 @@ def register_api_endpoints(app):
             if not job_data or not job_data.get("result_video"):
                 raise HTTPException(status_code=404, detail="Video not found")
             video_path = job_data.get("result_video")
-        
+
         # Verify the file exists
         if not os.path.exists(video_path) or not os.path.isfile(video_path):
             raise HTTPException(status_code=404, detail="Video file missing from disk")
-            
+
         return FileResponse(
             path=video_path,
             filename=f"{job_id}.mp4",

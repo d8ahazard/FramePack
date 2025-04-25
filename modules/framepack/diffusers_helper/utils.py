@@ -275,7 +275,7 @@ def save_bcthw_as_mp4(x, output_filename, fps=10, crf=0):
 
     os.makedirs(os.path.dirname(os.path.abspath(os.path.realpath(output_filename))), exist_ok=True)
     x = torch.clamp(x.float(), -1., 1.) * 127.5 + 127.5
-    x = handlers.vram.cpu().to(torch.uint8)
+    x = x.detach(z).cpu().to(torch.uint8)
     x = einops.rearrange(x, '(m n) c t h w -> t (m h) (n w) c', n=per_row)
     torchvision.io.write_video(output_filename, x, fps=fps, video_codec='libx264', options={'crf': str(int(crf))})
     return x
@@ -284,7 +284,7 @@ def save_bcthw_as_mp4(x, output_filename, fps=10, crf=0):
 def save_bcthw_as_png(x, output_filename):
     os.makedirs(os.path.dirname(os.path.abspath(os.path.realpath(output_filename))), exist_ok=True)
     x = torch.clamp(x.float(), -1., 1.) * 127.5 + 127.5
-    x = handlers.vram.cpu().to(torch.uint8)
+    x = x.detach().cpu().to(torch.uint8)
     x = einops.rearrange(x, 'b c t h w -> c (b h) (t w)')
     torchvision.io.write_png(x, output_filename)
     return output_filename
@@ -293,7 +293,7 @@ def save_bcthw_as_png(x, output_filename):
 def save_bchw_as_png(x, output_filename):
     os.makedirs(os.path.dirname(os.path.abspath(os.path.realpath(output_filename))), exist_ok=True)
     x = torch.clamp(x.float(), -1., 1.) * 127.5 + 127.5
-    x = handlers.vram.cpu().to(torch.uint8)
+    x = x.detach().cpu().to(torch.uint8)
     x = einops.rearrange(x, 'b c h w -> c h (b w)')
     torchvision.io.write_png(x, output_filename)
     return output_filename
@@ -411,7 +411,7 @@ def pytorch2numpy(imgs):
     for x in imgs:
         y = x.movedim(0, -1)
         y = y * 127.5 + 127.5
-        y = handlers.vram.cpu().numpy().clip(0, 255).astype(np.uint8)
+        y = y.detach().float().cpu().numpy().clip(0, 255).astype(np.uint8)
         results.append(y)
     return results
 

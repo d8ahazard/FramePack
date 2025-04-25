@@ -14,7 +14,7 @@ let jobSocket = null;
 const jobEventListeners = [];
 
 // Define job status event types
-const JOB_EVENT_TYPES = {
+export const JOB_EVENT_TYPES = {
     STATUS_UPDATE: 'status_update',
     JOB_CREATED: 'job_created',
     JOB_COMPLETED: 'job_completed',
@@ -474,5 +474,6 @@ export {
     connectJobWebsocket,
     disconnectJobWebsocket,
     addJobEventListener,
-    removeJobEventListener
+    removeJobEventListener,
+    JOB_EVENT_TYPES
 }; 
