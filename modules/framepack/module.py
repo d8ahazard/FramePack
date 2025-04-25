@@ -19,7 +19,6 @@ from datatypes.datatypes import JobStatus, DynamicSwapInstaller
 from handlers.job_queue import process_queue, job_statuses, save_job_data
 from handlers.model import check_download_model
 from handlers.path import output_path
-from handlers.socket import queue_broadcast
 from handlers.vram import fake_diffusers_current_device, get_cuda_free_memory_gb, \
     move_model_to_device_with_memory_preservation, unload_complete_models, load_model_as_complete, gpu, high_vram
 from modules.framepack.diffusers_helper.bucket_tools import find_nearest_bucket
@@ -902,7 +901,7 @@ def worker_multi_segment(
     concat_txt = os.path.join(master_temp, "concat_list.txt")
     with open(concat_txt, 'w') as f:
         for seg_no, path in sorted(segment_paths, key=lambda x: x[0]):
-            # Ensure absolute path with proper escaping for FFmpeg
+            # Ensure an absolute path with proper escaping for FFmpeg
             abs_path = os.path.abspath(path).replace('\\', '/')
             f.write(f"file '{abs_path}'\n")
 
