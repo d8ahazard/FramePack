@@ -15,7 +15,7 @@ from transformers import LlamaModel, CLIPTextModel, LlamaTokenizerFast, CLIPToke
     SiglipVisionModel
 
 import handlers.vram
-from datatypes.datatypes import JobStatus, DynamicSwapInstaller, VideoRequest
+from datatypes.datatypes import JobStatus, DynamicSwapInstaller
 from handlers.job_queue import process_queue, job_statuses, save_job_data
 from handlers.model import check_download_model
 from handlers.path import output_path
@@ -170,8 +170,8 @@ def worker(
         segment_number = 1
 
     base_name = f"{job_id}_segment_{segment_number}"
-    output_dir = os.path.join(output_path, f"{base_name}.mp4")
-    temp_dir = os.path.join(output_dir, f"{base_name}_temp")
+    output_file = os.path.join(output_path, f"{base_name}.mp4")
+    temp_dir = os.path.join(output_path, f"{base_name}_temp")
     os.makedirs(temp_dir, exist_ok=True)
 
     job_status.message = "Starting..."
@@ -529,12 +529,12 @@ def worker(
                 history_pixels = soft_append_bcthw(curr_pix, history_pixels, overlap)
 
             # overwrite segment file
-            save_bcthw_as_mp4(history_pixels, output_path, fps=30, crf=mp4_crf)
+            save_bcthw_as_mp4(history_pixels, output_file, fps=30, crf=mp4_crf)
             # Unload VAE if not high VRAM
             if not high_vram:
                 unload_complete_models(vae)
 
-            job_status.segments.append(output_path)
+            job_status.segments.append(output_file)
             # Save updated status to disk
             save_job_data(job_id, job_status.to_dict())
 
@@ -544,7 +544,7 @@ def worker(
         job_status.status = "completed"
         job_status.progress = 100
         job_status.message = "Generation completed"
-        job_status.result_video = output_path
+        job_status.result_video = output_file
         # Delete the latent preview image
         output_filename = f"uploads/{job_id}_latent.jpg"
 
@@ -555,7 +555,7 @@ def worker(
         if progress_callback:
             progress_callback(100)
 
-        return output_path
+        return output_file
 
     except Exception as e:
         job_status.status = "failed"
@@ -580,25 +580,54 @@ def worker(
             print(f"Cleanup error: {e}")
         return None
 
+#     job_id: str
+#     global_prompt: str
+#     mp4_crf: int
+#     negative_prompt: str
+#     segments: List[SegmentConfig]
+#     seed: int = 31337
+#     steps: int = 25
+#     guidance_scale: float = 10.0
+#     use_teacache: bool = True
+#     enable_adaptive_memory: bool = True
+#     resolution: int = 640
+#     mp4_crf: int = 16
+#     gpu_memory_preservation: float = 6.0
+#     include_last_frame: bool = False  # Control whether to generate a segment for the last frame
+
+
+
 
 @torch.no_grad()
 def worker_multi_segment(
         job_id,
         segments,
         global_prompt,
-        n_prompt,
+        negative_prompt,
         seed,
         steps,
-        cfg,
-        gs,
-        rs,
-        gpu_memory_preservation,
-        use_teacache,
-        mp4_crf,
-        enable_adaptive_memory,
-        resolution,
-        latent_window_size=9
+        guidance_scale,
+        rs=0.7,
+        gpu_memory_preservation=6.0,
+        use_teacache=True,
+        mp4_crf=16,
+        enable_adaptive_memory=True,
+        resolution=640,
+        latent_window_size=9,
+        include_last_frame=False
 ):
+    # Helper function to safely get value from segment (supporting both dict and object)
+    def get_segment_value(segment, key, default=None):
+        if segment is None:
+            return default
+        if hasattr(segment, key):
+            return getattr(segment, key)
+        elif isinstance(segment, dict) and key in segment:
+            return segment[key]
+        elif isinstance(segment, dict) and hasattr(segment, 'get'):
+            return segment.get(key, default)
+        return default
+        
     # Import here to avoid circular imports
     load_models()
     job_status = job_statuses.get(job_id, JobStatus(job_id))
@@ -617,13 +646,12 @@ def worker_multi_segment(
         return None
 
     # Calculate total generation effort
-
     # Each segment takes steps * frames_per_segment amount of work
     total_steps = 0
     segment_workloads = []
 
     for segment in segments:
-        segment_duration = segment.get('duration', 1.0)
+        segment_duration = get_segment_value(segment, 'duration', 1.0)
         segment_frames = int(segment_duration * 30)
         segment_steps = steps
         segment_workload = segment_steps * segment_frames
@@ -666,7 +694,7 @@ def worker_multi_segment(
                 return None
 
             # Get the image path directly from the segment
-            image_path = current_segment['image_path']
+            image_path = get_segment_value(current_segment, 'image_path')
 
             if not os.path.exists(image_path):
                 raise FileNotFoundError(f"Image file not found: {image_path}")
@@ -676,7 +704,7 @@ def worker_multi_segment(
             start_image = np.array(Image.open(image_path).convert('RGB'))
 
             # Use segment prompt if provided, concatenate with global prompt
-            segment_prompt = current_segment.get('prompt', '').strip()
+            segment_prompt = get_segment_value(current_segment, 'prompt', '').strip()
             if segment_prompt:
                 # Concatenate with global prompt
                 combined_prompt = f"{global_prompt.strip()}, {segment_prompt}"
@@ -684,7 +712,7 @@ def worker_multi_segment(
                 combined_prompt = global_prompt
 
             # Get segment duration (longer for single image)
-            segment_duration = current_segment.get('duration', 3.0)
+            segment_duration = get_segment_value(current_segment, 'duration', 3.0)
 
             # Custom callback to update master progress
             def progress_callback(segment_progress):
@@ -712,13 +740,13 @@ def worker_multi_segment(
                 input_image=start_image,
                 end_image=None,  # No end image for single image case
                 prompt=combined_prompt,
-                n_prompt=n_prompt,
+                n_prompt=negative_prompt,
                 seed=seed,
                 total_second_length=segment_duration,
                 latent_window_size=latent_window_size,
                 steps=steps,
-                cfg=cfg,
-                gs=gs,
+                cfg=guidance_scale,
+                gs=guidance_scale,
                 rs=rs,
                 gpu_memory_preservation=gpu_memory_preservation,
                 use_teacache=use_teacache,
@@ -755,7 +783,7 @@ def worker_multi_segment(
     # Process segments in reverse order
     num_segments = len(segments)
     last_segment = segments[-1]
-    use_last_frame = last_segment.get('use_last_frame', False)
+    use_last_frame = get_segment_value(last_segment, 'use_last_frame', False)
     framepack_settings = job_status.job_settings.get('framepack', {})
     use_last_frame = framepack_settings.get('include_last_frame',
                                             False) if job_status.job_settings else False
@@ -789,7 +817,7 @@ def worker_multi_segment(
             previous_segments_progress += segment_workloads[previous_idx]
 
         # Use individual segment prompts if provided, concatenate with global prompt
-        segment_prompt = start_segment.get('prompt', '').strip()
+        segment_prompt = get_segment_value(start_segment, 'prompt', '').strip()
         if segment_prompt:
             # Concatenate with global prompt
             combined_prompt = f"{global_prompt.strip()}, {segment_prompt}"
@@ -797,11 +825,11 @@ def worker_multi_segment(
             combined_prompt = global_prompt
 
         # Get segment duration
-        segment_duration = start_segment.get('duration', 3.0)
+        segment_duration = get_segment_value(start_segment, 'duration', 3.0)
 
         try:
             # Get the image path directly from the segment
-            image_path = start_segment['image_path']
+            image_path = get_segment_value(start_segment, 'image_path')
 
             if not os.path.exists(image_path):
                 raise FileNotFoundError(f"Image file not found: {image_path}")
@@ -813,7 +841,7 @@ def worker_multi_segment(
             # Load end image if not the last segment
             end_image = None
             if end_segment is not None:
-                end_image_path = end_segment.get('image_path', None)
+                end_image_path = get_segment_value(end_segment, 'image_path')
                 if end_image_path is None:
                     raise ValueError("End image path is missing in the segment data")
 
@@ -871,13 +899,13 @@ def worker_multi_segment(
             input_image=start_image,
             end_image=end_image,
             prompt=combined_prompt,
-            n_prompt=n_prompt,
+            n_prompt=negative_prompt,
             seed=seed,
             total_second_length=segment_duration,
             latent_window_size=latent_window_size,
             steps=steps,
-            cfg=cfg,
-            gs=gs,
+            cfg=guidance_scale,
+            gs=guidance_scale,
             rs=rs,
             gpu_memory_preservation=gpu_memory_preservation,
             use_teacache=use_teacache,
@@ -947,28 +975,18 @@ def worker_multi_segment(
     job_status.result_video = final_output
     save_job_data(job_id, job_status.to_dict())
 
-    # After job completes (successful or failed), clear this job from running jobs and process next job
-    # Update the global running_job_ids in job_queue module
-    if job_id in handlers.job_queue.running_job_ids:
-        handlers.job_queue.running_job_ids.discard(job_id)
-
-    # Schedule job queue processing in the event loop
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # We're in an event loop
-            asyncio.create_task(handlers.job_queue.process_queue())
-        else:
-            # We're not in an event loop, create a new one
-            asyncio.run(handlers.job_queue.process_queue())
-    except RuntimeError:
-        # If we can't get the event loop, run in a new one
-        asyncio.run(handlers.job_queue.process_queue())
-
     return final_output
 
 
 @torch.no_grad()
 def process(request: FramePackJobSettings):
     request_dict = request.model_dump()
+    
+    # Convert SegmentConfig objects to dictionaries
+    if 'segments' in request_dict and request_dict['segments']:
+        request_dict['segments'] = [
+            segment.model_dump() if hasattr(segment, 'model_dump') else segment 
+            for segment in request_dict['segments']
+        ]
+    
     return worker_multi_segment(**request_dict)

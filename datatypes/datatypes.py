@@ -2,7 +2,7 @@ from abc import ABC
 import json
 import logging
 import time
-from typing import List, Optional, Dict, Set
+from typing import Annotated, List, Optional, Dict, Set
 
 import torch
 from pydantic import BaseModel
@@ -41,7 +41,7 @@ class ConnectionManager:
                 self.disconnect(conn, job_id)
 
 
-class ModuleJobSettings(ABC):
+class ModuleJobSettings(BaseModel, ABC):
     """Base class for module-specific job settings"""
     pass
 
@@ -205,6 +205,18 @@ class SegmentConfig(BaseModel):
     image_path: str
     prompt: str
     duration: float
+    
+    def to_dict(self):
+        """Convert the model to a dictionary for JSON serialization"""
+        return {
+            "image_path": self.image_path,
+            "prompt": self.prompt,
+            "duration": self.duration
+        }
+    
+    def model_dump(self):
+        """Alias for to_dict() for compatibility with Pydantic v2"""
+        return self.to_dict()
 
 
 class UploadResponse(BaseModel):

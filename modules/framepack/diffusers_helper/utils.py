@@ -3,6 +3,7 @@ import glob
 import json
 import os
 import random
+import time
 
 import cv2
 import einops
@@ -266,19 +267,42 @@ def soft_append_bcthw(history, current, overlap=0):
 
 def save_bcthw_as_mp4(x, output_filename, fps=10, crf=0):
     b, c, t, h, w = x.shape
-
+    
+    # Ensure output has proper .mp4 extension
+    if os.path.isdir(output_filename) or not output_filename.endswith('.mp4'):
+        # If it's a directory or doesn't have .mp4 extension
+        if os.path.isdir(output_filename):
+            # It's a directory, append a default filename
+            output_filename = os.path.join(output_filename, f"output_{int(time.time())}.mp4")
+        else:
+            # It has a path but wrong extension, add .mp4
+            output_filename = f"{output_filename}.mp4"
+    
     per_row = b
     for p in [6, 5, 4, 3, 2]:
         if b % p == 0:
             per_row = p
             break
 
+    # Ensure directory exists
     os.makedirs(os.path.dirname(os.path.abspath(os.path.realpath(output_filename))), exist_ok=True)
+    
+    # Process tensor
     x = torch.clamp(x.float(), -1., 1.) * 127.5 + 127.5
     x = x.detach().cpu().to(torch.uint8)
     x = einops.rearrange(x, '(m n) c t h w -> t (m h) (n w) c', n=per_row)
-    torchvision.io.write_video(output_filename, x, fps=fps, video_codec='libx264', options={'crf': str(int(crf))})
-    return x
+    
+    try:
+        torchvision.io.write_video(output_filename, x, fps=fps, video_codec='libx264', options={'crf': str(int(crf))})
+        print(f"Video saved to {output_filename}")
+        return output_filename
+    except Exception as e:
+        print(f"Error saving video: {e}")
+        # Fallback to a default output path if the original fails
+        fallback_path = os.path.join(os.path.dirname(os.path.abspath(os.path.realpath(__file__))), f"output_{int(time.time())}.mp4")
+        print(f"Attempting to save to fallback path: {fallback_path}")
+        torchvision.io.write_video(fallback_path, x, fps=fps, video_codec='libx264', options={'crf': str(int(crf))})
+        return fallback_path
 
 
 def save_bcthw_as_png(x, output_filename):

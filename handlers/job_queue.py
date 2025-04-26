@@ -92,39 +92,46 @@ def add_to_queue(job_id: str, position: Optional[int] = None):
     asyncio.create_task(process_queue())
 
 
-def save_job_data(job_id, job_data):
-    """Save job data to disk for persistence."""
-
-    # For compatibility: convert different types of input to dict
-    if isinstance(job_data, JobStatus):
-        data_dict = job_data.to_dict()
-    elif hasattr(job_data, "model_dump"):
-        # Handle Pydantic models
-        data_dict = job_data.model_dump()
-    elif hasattr(job_data, "dict"):
-        # Handle older Pydantic models
-        data_dict = job_data.dict()
-    else:
-        # Assume it's already a dict
-        data_dict = job_data
-
-    # Ensure job_id is consistent
-    data_dict["job_id"] = job_id
-
-    # Add timestamp if missing
-    if "created_timestamp" not in data_dict:
-        data_dict["created_timestamp"] = int(time.time())
-
-    # Ensure job_path directory exists
-    os.makedirs(job_path, exist_ok=True)
-
-    # Save to disk
+def save_job_data(job_id, data_dict):
+    """Save job data to file"""
+    # Create job path if not exists
     job_file = os.path.join(job_path, f"{job_id}.json")
-
+    os.makedirs(os.path.dirname(job_file), exist_ok=True)
+    
+    # For compatibility: convert different types of input to dict
+    if isinstance(data_dict, JobStatus):
+        data_dict = data_dict.to_dict()
+    elif hasattr(data_dict, "model_dump"):
+        # Handle Pydantic models
+        data_dict = data_dict.model_dump()
+    elif hasattr(data_dict, "dict"):
+        # Handle older Pydantic models
+        data_dict = data_dict.dict()
+    
+    # Ensure job_id is consistent
+    if isinstance(data_dict, dict):
+        data_dict["job_id"] = job_id
+        
+        # Add timestamp if missing
+        if "created_timestamp" not in data_dict:
+            data_dict["created_timestamp"] = int(time.time())
+            
+        # Handle SegmentConfig objects in job_settings
+        if 'job_settings' in data_dict and data_dict['job_settings']:
+            job_settings = data_dict['job_settings']
+            new_settings = {}
+            for module_name, module_settings in job_settings.items():
+                if 'segments' in module_settings:
+                    if len(module_settings['segments']) > 0:
+                        if isinstance(module_settings['segments'][0], SegmentConfig):
+                            module_settings['segments'] = [segment.model_dump() for segment in module_settings['segments']]
+                new_settings[module_name] = module_settings
+            data_dict['job_settings'] = new_settings
+                    
+    
     try:
         with open(job_file, "w") as f:
             json.dump(data_dict, f, indent=4)
-
     except Exception as e:
         logger.error(f"Error saving job data: {e}")
         raise e
@@ -309,62 +316,42 @@ async def run_job(job_id: str):
                 logger.info(f"Importing module: {module_path}")
                 module = importlib.import_module(module_path)
 
+                process_func = None
+                request_type = None
                 # Check if the module has a process function
                 if hasattr(module, "process"):
                     logger.info(f"Calling {module_name}.process with settings")
+                    # Get the type of the first parameter of the process function
+                    process_func = getattr(module, "process")
 
-                    # Add job_id to the settings if not present
-                    if isinstance(module_settings, dict) and "job_id" not in module_settings:
-                        module_settings["job_id"] = job_id
+                    if hasattr(process_func, "__annotations__") and "request" in process_func.__annotations__:
+                        request_type = process_func.__annotations__["request"]
+                        logger.info(f"Request type: {request_type}")
 
-                    # Import the request type (if available)
-                    try:
-                        datatypes_module = importlib.import_module(f"modules.{module_name}.datatypes")
-                        if hasattr(datatypes_module, f"{module_name.capitalize()}JobSettings"):
-                            request_class = getattr(datatypes_module, f"{module_name.capitalize()}JobSettings")
-                            request = request_class(**module_settings)
-                            # Call process with the request object
-                            await asyncio.to_thread(module.process, request)
-                        else:
-                            # Call process with the raw settings
-                            await asyncio.to_thread(module.process, module_settings)
-                    except (ImportError, AttributeError):
-                        # If we can't import the datatypes, just use the dict
-                        await asyncio.to_thread(module.process, module_settings)
+
+                # Add job_id to the settings if not present
+                if isinstance(module_settings, dict) and "job_id" not in module_settings:
+                    module_settings["job_id"] = job_id
+
+                if process_func and request_type:
+                    # Convert module_settings to request_type instance
+                    # Instead of creating an empty instance and setting attributes,
+                    # pass the dictionary directly to the model constructor
+                    # Convert module_settings/segments to a list of SegmentConfig instances
+                    if "segments" in module_settings:
+                        module_settings["segments"] = [SegmentConfig(**segment) for segment in module_settings["segments"]]
+
+                    request_instance = request_type(**module_settings)
+                    
+                    # Run the worker function directly
+                    await asyncio.to_thread(
+                        process_func,
+                        request_instance
+                    )
                 else:
-                    # Fall back to module-specific worker functions as before
-                    if module_name == "framepack":
-                        # Extract segments for processing
-                        segments = []
-                        for segment in module_settings.get("segments", []):
-                            segments.append({
-                                "image_path": segment.get("image_path"),
-                                "prompt": segment.get("prompt", ""),
-                                "duration": segment.get("duration", 1.0)
-                            })
-
-                        # Run the worker function directly
-                        await asyncio.to_thread(
-                            module.worker_multi_segment,
-                            job_id=job_id,
-                            segments=segments,
-                            global_prompt=module_settings.get("global_prompt", ""),
-                            n_prompt=module_settings.get("negative_prompt", ""),
-                            seed=module_settings.get("seed", 31337),
-                            steps=module_settings.get("steps", 25),
-                            cfg=1.0,  # Fixed parameter
-                            gs=module_settings.get("guidance_scale", 10.0),
-                            rs=0.0,  # Fixed parameter
-                            gpu_memory_preservation=module_settings.get("gpu_memory_preservation", 6.0),
-                            use_teacache=module_settings.get("use_teacache", True),
-                            mp4_crf=module_settings.get("mp4_crf", 16),
-                            enable_adaptive_memory=module_settings.get("enable_adaptive_memory", True),
-                            resolution=module_settings.get("resolution", 640)
-                        )
-                    else:
-                        job_status.status = "failed"
-                        job_status.message = f"Module {module_name} does not have a process function"
-                        save_job_data(job_id, job_status)
+                    job_status.status = "failed"
+                    job_status.message = f"Module {module_name} does not have a process function or request type"
+                    save_job_data(job_id, job_status)
             except Exception as e:
                 print(f"Error processing module {module_name}: {e}")
                 import traceback
@@ -402,12 +389,25 @@ def verify_job_images(job_data):
     Returns:
         tuple: (is_valid, invalid_images) where invalid_images is a list of missing image paths
     """
-    if not job_data or 'segments' not in job_data:
+    if not job_data:
         return False, []
 
     missing_images = []
+    
+    # Check for different job settings structures
+    segments = None
+    
+    # Direct segments structure
+    if 'segments' in job_data:
+        segments = job_data['segments']
+    # Nested framepack structure
+    elif 'framepack' in job_data and 'segments' in job_data['framepack']:
+        segments = job_data['framepack']['segments']
+    
+    if not segments:
+        return False, []
 
-    for segment in job_data['segments']:
+    for segment in segments:
         image_path = segment.get('image_path')
         if not image_path:
             missing_images.append("Missing path")
@@ -822,6 +822,7 @@ def register_api_endpoints(app):
         # Verify images still exist
         is_valid, missing_images = verify_job_images(job_settings)
         if not is_valid:
+            print(f"Invalid job {job_id}, missing images: {missing_images}")
             return ErrorResponse(
                 error=f"Cannot run job: {len(missing_images)} missing images: {', '.join(missing_images[:3])}")
 
