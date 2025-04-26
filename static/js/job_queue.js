@@ -41,13 +41,16 @@ function getImageUrl(path) {
  * @returns {string} URL to the thumbnail
  */
 function getThumbnailUrl(job, frameIndex = 0) {
-    // First check if job has segments with latent previews (for running jobs)
-    if (job.segments && job.segments.length > 0) {
-        // Use the last segment for the most recent preview
-        return `/api/serve_file?path=${encodeURIComponent(job.segments[job.segments.length - 1])}`;
+    // First check for segments in job settings (original input images)
+    if (job.job_settings && job.job_settings.framepack && 
+        job.job_settings.framepack.segments && 
+        job.job_settings.framepack.segments.length > 0) {
+        
+        const segmentPath = job.job_settings.framepack.segments[frameIndex % job.job_settings.framepack.segments.length].image_path;
+        return `/api/serve_file?path=${encodeURIComponent(segmentPath)}`;
     }
     
-    // Then check if job has frames
+    // Then check if job has frames (processed frames)
     if (job.frames && job.frames.length > 0) {
         // Make sure frameIndex is valid
         if (frameIndex >= job.frames.length) {
@@ -60,13 +63,10 @@ function getThumbnailUrl(job, frameIndex = 0) {
         }
     }
     
-    // For saved jobs that haven't been processed yet
-    if (job.job_settings && job.job_settings.framepack && 
-        job.job_settings.framepack.segments && 
-        job.job_settings.framepack.segments.length > 0) {
-        
-        const segmentPath = job.job_settings.framepack.segments[0].image_path;
-        return `/api/serve_file?path=${encodeURIComponent(segmentPath)}`;
+    // Last resort - use latent previews for running jobs that don't have other images
+    if (job.segments && job.segments.length > 0) {
+        // Use the first segment for thumbnail (not the last which would be latest latent)
+        return `/api/serve_file?path=${encodeURIComponent(job.segments[0])}`;
     }
     
     // Default placeholder
@@ -864,11 +864,7 @@ function displayJobDetails(jobData) {
                         <i class="bi bi-chevron-left"></i>
                     </div>
                     <div class="segment-thumbnails-scroll d-flex overflow-auto py-2 px-3">
-                        ${jobData.segments.map((segment, index) => `
-                            <div class="segment-thumbnail me-2" title="Frame ${index + 1}">
-                                <img src="${getImageUrl(segment)}" alt="Frame ${index + 1}" class="img-thumbnail" style="height: 80px; width: auto;">
-                            </div>
-                        `).join('')}
+                        ${getSegmentThumbnails(jobData)}
                     </div>
                     <div class="scroll-indicator scroll-indicator-right">
                         <i class="bi bi-chevron-right"></i>
@@ -1437,6 +1433,34 @@ async function loadJobToTimeline(jobId) {
         console.error('Error loading job to timeline:', error);
         showMessage(`Failed to load job: ${error.message}`, 'error');
     }
+}
+
+/**
+ * Generate HTML for segment thumbnails, preferring original input images over latent previews
+ * @param {Object} jobData - The job data object
+ * @returns {string} HTML for thumbnails
+ */
+function getSegmentThumbnails(jobData) {
+    // First try to use the original input images from job settings
+    if (jobData.job_settings && jobData.job_settings.framepack && 
+        jobData.job_settings.framepack.segments && 
+        jobData.job_settings.framepack.segments.length > 0) {
+        
+        return jobData.job_settings.framepack.segments.map((segment, index) => `
+            <div class="segment-thumbnail me-2" title="Frame ${index + 1}">
+                <img src="${getImageUrl(segment.image_path)}" alt="Frame ${index + 1}" 
+                     class="img-thumbnail" style="height: 80px; width: auto;">
+            </div>
+        `).join('');
+    }
+    
+    // If no original segments, fall back to existing latent previews
+    return jobData.segments.map((segment, index) => `
+        <div class="segment-thumbnail me-2" title="Frame ${index + 1}">
+            <img src="${getImageUrl(segment)}" alt="Frame ${index + 1}" 
+                 class="img-thumbnail" style="height: 80px; width: auto;">
+        </div>
+    `).join('');
 }
 
 // Export module functions
