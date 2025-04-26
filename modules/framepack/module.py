@@ -947,21 +947,23 @@ def worker_multi_segment(
     job_status.result_video = final_output
     save_job_data(job_id, job_status.to_dict())
 
-    # After job completes (successful or failed), clear running job and process next job
-    # Update the global running_job_id in job_queue module
-    handlers.job_queue.running_job_id = None
+    # After job completes (successful or failed), clear this job from running jobs and process next job
+    # Update the global running_job_ids in job_queue module
+    if job_id in handlers.job_queue.running_job_ids:
+        handlers.job_queue.running_job_ids.discard(job_id)
+
     # Schedule job queue processing in the event loop
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
             # We're in an event loop
-            asyncio.create_task(process_queue())
+            asyncio.create_task(handlers.job_queue.process_queue())
         else:
             # We're not in an event loop, create a new one
-            asyncio.run(process_queue())
+            asyncio.run(handlers.job_queue.process_queue())
     except RuntimeError:
         # If we can't get the event loop, run in a new one
-        asyncio.run(process_queue())
+        asyncio.run(handlers.job_queue.process_queue())
 
     return final_output
 

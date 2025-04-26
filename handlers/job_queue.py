@@ -1,15 +1,17 @@
 import asyncio
 import json
+import logging
 import os
 import time
 import traceback
-from typing import List, Union
+from typing import List, Union, Set
 from typing import Optional
 
+import torch
 from fastapi import BackgroundTasks, HTTPException
 from starlette.responses import FileResponse
 
-from datatypes.datatypes import GenerateResponse, JobStatus, SegmentConfig, VideoRequest, \
+from datatypes.datatypes import GenerateResponse, JobStatus, SegmentConfig, \
     DeleteJobRequest
 from datatypes.datatypes import JobStatusResponse, ErrorResponse
 from datatypes.datatypes import SaveJobRequest
@@ -18,17 +20,37 @@ from handlers.path import upload_path
 
 #from infer import manager
 
+# Configure logging
+logger = logging.getLogger(__name__)
+
 # Job queue and processing state
 job_queue = []
-running_job_id = None
+running_job_ids = set()  # Set of currently running job IDs
 job_processing_lock = asyncio.Lock()
 
 # Global job tracking
 job_statuses = {}
 
 
+# Get the number of available GPUs
+def get_available_gpu_count():
+    """
+    Returns the number of available CUDA GPUs.
+
+    Returns:
+        int: Number of available GPUs, minimum 1 if CUDA is available
+    """
+    if not torch.cuda.is_available():
+        logger.warning("CUDA is not available, defaulting to 1 virtual GPU")
+        return 1
+
+    return torch.cuda.device_count()
+
 # Run this at app start in case we terminated/failed
 def clear_running_jobs():
+    """Reset any jobs that were running when the server was stopped."""
+    global running_job_ids
+
     # Get all saved jobs
     saved_jobs = list_saved_jobs()
     # Check if any jobs are running
@@ -41,6 +63,9 @@ def clear_running_jobs():
                 job_data["status"] = "failed"
                 job_data["message"] = "Job was interrupted"
                 save_job_data(job_id, job_data)
+
+    # Clear running jobs set
+    running_job_ids.clear()
 
 
 def add_to_queue(job_id: str, position: Optional[int] = None):
@@ -101,7 +126,7 @@ def save_job_data(job_id, job_data):
             json.dump(data_dict, f, indent=4)
 
     except Exception as e:
-        print(f"Error saving job data: {e}")
+        logger.error(f"Error saving job data: {e}")
         raise e
 
     # Broadcast update to WebSocket clients
@@ -115,7 +140,7 @@ def save_job_data(job_id, job_data):
         # Update with all data for complete information
         update_status_sync(job_id, status, progress, message, data_dict)
     except Exception as e:
-        print(f"Error queuing job update for broadcast: {e}")
+        logger.error(f"Error queuing job update for broadcast: {e}")
         traceback.print_exc()
 
     return True
@@ -160,38 +185,82 @@ def list_saved_jobs():
 
 async def process_queue():
     """
-    Process the next job in the queue
+    Process jobs in the queue based on available GPUs.
 
-    This function will check if there's already a job running,
-    and if not, will start the next job in the queue.
+    This function will check how many GPUs are available and start
+    multiple jobs concurrently if possible.
     """
-    global running_job_id, job_queue
+    global running_job_ids, job_queue
 
     # Acquire lock to prevent multiple instances running
     async with job_processing_lock:
-        if running_job_id is not None:
-            # Already processing a job
+        # Get the number of available GPUs
+        max_concurrent_jobs = get_available_gpu_count()
+        logger.info(f"Available GPUs: {max_concurrent_jobs}")
+
+        # Check if we can start more jobs
+        available_slots = max_concurrent_jobs - len(running_job_ids)
+
+        if available_slots <= 0:
+            # Already running maximum number of jobs
+            logger.debug("Maximum number of concurrent jobs already running")
             return
 
         if not job_queue:
             # No jobs in queue
+            logger.debug("No jobs in queue to process")
             return
 
-        # Get the next job
-        running_job_id = job_queue.pop(0)
+        # Start as many jobs as we have available slots
+        jobs_to_start = min(available_slots, len(job_queue))
+        logger.info(f"Starting {jobs_to_start} new job(s)")
 
-        # Update queue positions
-        update_queue_positions()
+        for _ in range(jobs_to_start):
+            if not job_queue:
+                break
+
+            # Get the next job
+            job_id = job_queue.pop(0)
+
+            # Add to running jobs set
+            running_job_ids.add(job_id)
+
+            # Update queue positions
+            update_queue_positions()
+
+            # Start the job in a separate task
+            asyncio.create_task(run_job_and_process_next(job_id))
+
+async def run_job_and_process_next(job_id: str):
+    """
+    Run a job and then process the next job in the queue.
+
+    Args:
+        job_id: The job ID to run
+    """
+    global running_job_ids
 
     try:
         # Process the job
-        await run_job(running_job_id)
+        await run_job(job_id)
+    except Exception as e:
+        logger.error(f"Error processing job {job_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+
+        # Update job status to failed if it's still in the running state
+        if job_id in job_statuses:
+            job_status = job_statuses[job_id]
+            if job_status.status == "running":
+                job_status.status = "failed"
+                job_status.message = f"Job failed with error: {str(e)}"
+                save_job_data(job_id, job_status.to_dict())
     finally:
-        # Clear running job ID and process next job
-        running_job_id = None
-        # If more jobs in queue, process the next one
+        # Remove from running jobs set
+        running_job_ids.discard(job_id)
+
+        # Process next job if there are more in the queue
         if job_queue:
-            await asyncio.create_task(process_queue())
+            await process_queue()
 
 
 async def run_job(job_id: str):
@@ -207,7 +276,7 @@ async def run_job(job_id: str):
     if job_id not in job_statuses:
         job_data = load_job_data(job_id)
         if not job_data:
-            print(f"Job {job_id} not found")
+            logger.error(f"Job {job_id} not found")
             return
 
         job_status = JobStatus(job_id)
@@ -218,7 +287,7 @@ async def run_job(job_id: str):
     job_settings = job_status.job_settings
 
     if not job_settings:
-        print(f"Job {job_id} has no settings")
+        logger.error(f"Job {job_id} has no settings")
         job_status.status = "failed"
         job_status.message = "No job settings found"
         save_job_data(job_id, job_status)
@@ -230,23 +299,24 @@ async def run_job(job_id: str):
         job_status.progress = 0
         job_status.message = "Starting..."
         save_job_data(job_id, job_status)
+        logger.info(f"Starting job {job_id}")
 
         # Look for module keys in job_settings
         for module_name, module_settings in job_settings.items():
             try:
                 # Import the module dynamically
                 module_path = f"modules.{module_name}.module"
-                print(f"Importing module: {module_path}")
+                logger.info(f"Importing module: {module_path}")
                 module = importlib.import_module(module_path)
-                
+
                 # Check if the module has a process function
                 if hasattr(module, "process"):
-                    print(f"Calling {module_name}.process with settings")
-                    
+                    logger.info(f"Calling {module_name}.process with settings")
+
                     # Add job_id to the settings if not present
                     if isinstance(module_settings, dict) and "job_id" not in module_settings:
                         module_settings["job_id"] = job_id
-                    
+
                     # Import the request type (if available)
                     try:
                         datatypes_module = importlib.import_module(f"modules.{module_name}.datatypes")
@@ -365,17 +435,17 @@ def register_api_endpoints(app):
     async def requeue_job(job_id: str, position: int = None, background_tasks: BackgroundTasks = None):
         """
         Re-queue a job (backward compatibility endpoint)
-        
+
         Args:
             job_id: The unique job identifier
             position: Optional position in queue (0-based, None = end of queue)
-        
+
         Returns:
             Success message or error
         """
         # Forward to the run_job_endpoint which now handles all job running
         result = await run_job_endpoint(job_id, background_tasks)
-        
+
         # If the result is a GenerateResponse, convert it to a dict with success message
         if isinstance(result, GenerateResponse):
             # Get the job status to return the queue position
@@ -387,15 +457,15 @@ def register_api_endpoints(app):
                 if job_data:
                     job_status = JobStatus(job_id)
                     job_status.__dict__.update(job_data)
-                    
+
             queue_position = job_status.queue_position if job_status else 0
-            
+
             return {
                 "success": True,
                 "message": f"Job {job_id} has been queued",
                 "queue_position": queue_position
             }
-        
+
         # If it's an error, just return it
         return result
 
@@ -403,23 +473,26 @@ def register_api_endpoints(app):
     async def cancel_all_jobs():
         """
         Cancel all running and queued jobs
-        
+
         Returns:
             Success message with count of cancelled jobs
         """
-        global job_queue, running_job_id
+        global job_queue, running_job_ids
 
         cancelled_count = 0
 
-        # Cancel running job if any
-        if running_job_id:
-            if running_job_id in job_statuses:
-                job_status = job_statuses[running_job_id]
+        # Cancel all running jobs
+        for job_id in list(running_job_ids):  # Use a copy since we'll modify the set
+            if job_id in job_statuses:
+                job_status = job_statuses[job_id]
                 job_status.status = "cancelled"
                 job_status.message = "Job cancelled by user"
-                save_job_data(running_job_id, job_status.to_dict())
+                save_job_data(job_id, job_status.to_dict())
                 cancelled_count += 1
-            running_job_id = None
+
+        # Clear running jobs set
+        running_job_ids.clear()
+        logger.info(f"Cancelled {cancelled_count} running jobs")
 
         # Cancel all queued jobs
         for job_id in list(job_queue):  # Use a copy since we'll modify the queue
@@ -443,10 +516,10 @@ def register_api_endpoints(app):
     async def update_queue_order(job_ids: List[str]):
         """
         Update the order of jobs in the queue
-        
+
         Args:
             job_ids: List of job IDs in the desired order
-        
+
         Returns:
             Updated list of job statuses
         """
@@ -537,11 +610,11 @@ def register_api_endpoints(app):
     ):
         """
         Save a job to disk
-        
+
         Args:
             job_id: The unique job identifier
             job_data: The job data to save
-            
+
         Returns:
             Success message or error
         """
@@ -617,10 +690,10 @@ def register_api_endpoints(app):
     async def check_file_exists(path: str):
         """
         Check if a file exists on the server
-        
+
         Args:
             path: The file path to check
-            
+
         Returns:
             A dictionary with exists: True/False
         """
@@ -754,25 +827,25 @@ def register_api_endpoints(app):
 
         # Create or update job status
         job_status = job_statuses.get(job_id, JobStatus(job_id))
-        
+
         # Update status
         job_status.status = "queued"
         job_status.progress = 0
         job_status.message = "Waiting in queue"
         job_status.result_video = ""  # Clear previous result
-        
+
         # Ensure job settings are in the right format
         job_status.job_settings = job_settings
-        
+
         # Save to memory cache
         job_statuses[job_id] = job_status
-        
+
         # Save to disk
         save_job_data(job_id, job_status.to_dict())
-        
+
         # Add job to the queue
         add_to_queue(job_id)
-        
+
         return GenerateResponse(job_id=job_id)
 
     @app.delete("/api/job/{job_id}", response_model=Union[dict, ErrorResponse], tags=[api_tag])
@@ -887,6 +960,8 @@ def register_api_endpoints(app):
         Returns:
             Success message or error
         """
+        global running_job_ids, job_queue
+
         # Check if job exists
         if job_id not in job_statuses and not load_job_data(job_id):
             return ErrorResponse(error="Job not found")
@@ -914,6 +989,18 @@ def register_api_endpoints(app):
             # Save the updated status to disk
             save_job_data(job_id, job_status.to_dict())
 
+            # Remove from running jobs set if it's there
+            if job_id in running_job_ids:
+                running_job_ids.discard(job_id)
+                logger.info(f"Removed job {job_id} from running jobs")
+
+            # Remove from queue if it's there
+            if job_id in job_queue:
+                job_queue.remove(job_id)
+                logger.info(f"Removed job {job_id} from queue")
+                # Update queue positions
+                update_queue_positions()
+
             # Note: The actual cancellation of the running process happens in the worker functions
             # They periodically check the job status and will detect the cancelled state
 
@@ -923,7 +1010,7 @@ def register_api_endpoints(app):
                 try:
                     os.remove(latent_preview)
                 except Exception as e:
-                    print(f"Failed to delete latent preview: {e}")
+                    logger.error(f"Failed to delete latent preview: {e}")
 
             return {
                 "success": True,
@@ -931,5 +1018,6 @@ def register_api_endpoints(app):
             }
 
         except Exception as e:
-            print(f"Error cancelling job: {e}")
+            logger.error(f"Error cancelling job: {e}")
+            logger.error(traceback.format_exc())
             return ErrorResponse(error=f"Failed to cancel job: {str(e)}")
