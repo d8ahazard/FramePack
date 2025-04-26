@@ -1136,13 +1136,14 @@ async function cancelJob(jobId) {
     }
 }
 
+// Run a job (fresh execution)
 async function runJob(jobId) {
     try {
-        console.log(`Attempting to rerun job: ${jobId}`);
+        console.log(`Attempting to run job: ${jobId}`);
         
         // Confirm with user
-        if (!confirm('Are you sure you want to rerun this job?')) {
-            console.log('Job rerun cancelled by user');
+        if (!confirm('Are you sure you want to run this job?')) {
+            console.log('Job run cancelled by user');
             return;
         }
 
@@ -1150,154 +1151,112 @@ async function runJob(jobId) {
         const jobDetailContainer = document.getElementById('jobDetailContainer');
         const loadingMessage = document.createElement('div');
         loadingMessage.className = 'alert alert-info mt-3';
-        loadingMessage.innerHTML = '<i class="bi bi-hourglass"></i> Starting job rerun...';
+        loadingMessage.innerHTML = '<i class="bi bi-hourglass"></i> Starting job...';
         jobDetailContainer.appendChild(loadingMessage);
 
-        // Get current job data first to check if we need to update the structure
-        console.log(`Fetching job data for ${jobId} to check structure`);
-        const jobResponse = await fetch(`/api/job_status/${jobId}`);
-        if (jobResponse.ok) {
-            const jobData = await jobResponse.json();
-            console.log(`Job data retrieved:`, jobData);
-
-            // Check if we need to update the job to use ModuleJobSettings format
-            if (jobData.job_settings) {
-                console.log('Converting job to ModuleJobSettings format before rerunning');
-
-                // Update the job to use ModuleJobSettings format
-                const updateResponse = await fetch(`/api/save_job/${jobId}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        ...jobData
-                    })
-                });
-                
-                if (updateResponse.ok) {
-                    console.log('Successfully updated job to ModuleJobSettings format');
-                } else {
-                    console.warn('Failed to update job structure:', await updateResponse.text());
-                }
-            }
-        } else {
-            console.warn(`Failed to fetch job data: ${jobResponse.status} ${jobResponse.statusText}`);
-            // Continue anyway - we'll try to rerun even if we can't update the structure
-        }
-
-        // Call rerun API
-        console.log(`Calling API to rerun job ${jobId}`);
-        const response = await fetch(`/api/rerun_job/${jobId}`, {
+        // Call run job API
+        console.log(`Calling API to run job ${jobId}`);
+        const response = await fetch(`/api/run_job/${jobId}`, {
             method: 'POST'
         });
 
-        console.log(`Rerun API response status: ${response.status} ${response.statusText}`);
+        console.log(`Run API response status: ${response.status} ${response.statusText}`);
         
         if (!response.ok) {
             const errorText = await response.text();
-            console.error(`Error response from rerun API: ${errorText}`);
+            console.error(`Error response from run API: ${errorText}`);
             try {
                 const errorData = JSON.parse(errorText);
-                throw new Error(errorData.error || 'Failed to rerun job');
+                throw new Error(errorData.error || 'Failed to run job');
             } catch (parseError) {
-                throw new Error(`Failed to rerun job: ${response.status} ${response.statusText}`);
+                throw new Error(`Failed to run job: ${response.status} ${response.statusText}`);
             }
         }
 
-        // Parse the response to get the new job ID
+        // Parse the response to get the job ID
         const result = await response.json();
-        console.log(`Complete rerun job result:`, result);
+        console.log(`Complete run job result:`, result);
         
-        // Try different possible field names for the job ID
-        let newJobId = result.job_id;
-        
-        // Log the entire response structure to debug
-        console.log("Response structure:", Object.keys(result));
-        
-        if (!newJobId) {
-            console.error("Could not find job ID in the response. Using original job ID as fallback.");
-            // Use the original job ID as a fallback, it might still work
-            newJobId = jobId;
-        }
-        
-        console.log(`Using job ID: ${newJobId}`);
+        const returnedJobId = result.job_id || jobId;
 
         // Remove loading message
         loadingMessage.remove();
 
-        // Show success and switch to the new job
-        showMessage('Job restarted successfully!', 'success');
+        // Show success message
+        showMessage('Job started successfully!', 'success');
 
         // Refresh job queue
         await loadJobQueue();
 
-        // Select the new job
+        // Select the job
         const jobItems = document.querySelectorAll('.job-item');
-        let foundNewJob = false;
+        let foundJob = false;
         jobItems.forEach(item => {
             item.classList.remove('active');
-            if (item.dataset.jobId === newJobId) {
+            if (item.dataset.jobId === returnedJobId) {
                 item.classList.add('active');
-                // Scroll to the new job
+                // Scroll to the job
                 item.scrollIntoView({ behavior: 'smooth' });
-                foundNewJob = true;
+                foundJob = true;
             }
         });
         
-        if (!foundNewJob) {
-            console.warn(`Could not find new job ${newJobId} in the job list. It may appear later.`);
+        if (!foundJob) {
+            console.warn(`Could not find job ${returnedJobId} in the job list. It may appear later.`);
         }
 
-        // Load details of the new job
-        loadJobDetails(newJobId);
+        // Load details of the job
+        loadJobDetails(returnedJobId);
 
     } catch (error) {
-        console.error('Error rerunning job:', error);
-        showMessage(`Failed to rerun job: ${error.message}`, 'error');
+        console.error('Error running job:', error);
+        showMessage(`Failed to run job: ${error.message}`, 'error');
     }
 }
 
 // Queue a job (without running it immediately)
 async function queueJob(jobId) {
     try {
-        // First get the current job data
+        // First get the current job data to verify it exists
         const jobResponse = await fetch(`/api/job_status/${jobId}`);
         if (!jobResponse.ok) {
             throw new Error('Failed to fetch job data');
         }
 
-        const jobData = await jobResponse.json();
-
-        
         // Queue the job
-        const response = await fetch(`/api/requeue_job/${jobId}`, {
+        const response = await fetch(`/api/run_job/${jobId}`, {
             method: 'POST'
         });
 
         if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.error || 'Failed to queue job');
+            const errorText = await response.text();
+            try {
+                const errorData = JSON.parse(errorText);
+                throw new Error(errorData.error || 'Failed to queue job');
+            } catch (e) {
+                throw new Error(`Failed to queue job: ${errorText}`);
+            }
         }
 
         const result = await response.json();
 
-        if (result.success) {
-            // Refresh the job queue
-            loadJobQueue();
+        // For compatibility with the old response format
+        const queuePosition = result.queue_position || 0;
+        const successMessage = result.success ? 
+            `Job queued at position ${queuePosition}` : 
+            'Job queued successfully';
 
-            // Show success message
-            showMessage(`Job queued at position ${result.queue_position}`, 'success');
+        // Refresh the job queue
+        loadJobQueue();
 
-            // Load details for the queued job
-            loadJobDetails(jobId).then(r => {}).catch(e => {
-                console.error('Error loading job details:', e);
-                showMessage(`Failed to load job details: ${e.message}`, 'error');
-            });
-        } else {
-            throw new Error(result.error || 'Failed to queue job');
-        }
+        // Show success message
+        showMessage(successMessage, 'success');
 
+        // Load details for the queued job
+        loadJobDetails(jobId).then(r => {}).catch(e => {
+            console.error('Error loading job details:', e);
+            showMessage(`Failed to load job details: ${e.message}`, 'error');
+        });
     } catch (error) {
         console.error('Error queueing job:', error);
         showMessage(`Failed to queue job: ${error.message}`, 'error');
@@ -1480,16 +1439,13 @@ async function loadJobToTimeline(jobId) {
     }
 }
 
-// Rerun a job
-
-
 // Export module functions
 export {
     initJobQueue,
     loadJobQueue,
     loadJobDetails,
     loadJobToTimeline,
-    runJob as rerunJob,
+    runJob,
     formatJobTimestamp,
     clearCompletedJobs,
     deleteJob,

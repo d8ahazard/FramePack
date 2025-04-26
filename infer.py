@@ -135,16 +135,16 @@ def register_all_endpoints():
     for _, module_name, _ in pkgutil.walk_packages(handlers.__path__, handlers.__name__ + "."):
         try_register(module_name)
 
-    # Check every subfolder in modules, find any API classes with register_api_endpoints, call them
-    for _, module_name, _ in pkgutil.walk_packages(modules.__path__, modules.__name__ + "."):
-        # Need to find the api module in the subfolder
-        api_module_name = module_name + ".api"
-        # Check if the api module is a valid import
-        try:
-            importlib.import_module(api_module_name)
-        except ImportError:
-            continue
-        try_register(api_module_name)
+    # # Check every subfolder in modules, find any API classes with register_api_endpoints, call them
+    # for _, module_name, _ in pkgutil.walk_packages(modules.__path__, modules.__name__ + "."):
+    #     # Need to find the api module in the subfolder
+    #     api_module_name = module_name + ".api"
+    #     # Check if the api module is a valid import
+    #     try:
+    #         importlib.import_module(api_module_name)
+    #     except ImportError:
+    #         continue
+    #     try_register(api_module_name)
 
 
 

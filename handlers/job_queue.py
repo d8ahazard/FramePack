@@ -201,6 +201,7 @@ async def run_job(job_id: str):
     Args:
         job_id: The job ID to run
     """
+    import importlib
 
     # Load job settings
     if job_id not in job_statuses:
@@ -220,6 +221,7 @@ async def run_job(job_id: str):
         print(f"Job {job_id} has no settings")
         job_status.status = "failed"
         job_status.message = "No job settings found"
+        save_job_data(job_id, job_status)
         return
 
     try:
@@ -227,47 +229,79 @@ async def run_job(job_id: str):
         job_status.status = "running"
         job_status.progress = 0
         job_status.message = "Starting..."
+        save_job_data(job_id, job_status)
 
-        # Load models
+        # Look for module keys in job_settings
+        for module_name, module_settings in job_settings.items():
+            try:
+                # Import the module dynamically
+                module_path = f"modules.{module_name}.module"
+                print(f"Importing module: {module_path}")
+                module = importlib.import_module(module_path)
+                
+                # Check if the module has a process function
+                if hasattr(module, "process"):
+                    print(f"Calling {module_name}.process with settings")
+                    
+                    # Add job_id to the settings if not present
+                    if isinstance(module_settings, dict) and "job_id" not in module_settings:
+                        module_settings["job_id"] = job_id
+                    
+                    # Import the request type (if available)
+                    try:
+                        datatypes_module = importlib.import_module(f"modules.{module_name}.datatypes")
+                        if hasattr(datatypes_module, f"{module_name.capitalize()}JobSettings"):
+                            request_class = getattr(datatypes_module, f"{module_name.capitalize()}JobSettings")
+                            request = request_class(**module_settings)
+                            # Call process with the request object
+                            await asyncio.to_thread(module.process, request)
+                        else:
+                            # Call process with the raw settings
+                            await asyncio.to_thread(module.process, module_settings)
+                    except (ImportError, AttributeError):
+                        # If we can't import the datatypes, just use the dict
+                        await asyncio.to_thread(module.process, module_settings)
+                else:
+                    # Fall back to module-specific worker functions as before
+                    if module_name == "framepack":
+                        # Extract segments for processing
+                        segments = []
+                        for segment in module_settings.get("segments", []):
+                            segments.append({
+                                "image_path": segment.get("image_path"),
+                                "prompt": segment.get("prompt", ""),
+                                "duration": segment.get("duration", 1.0)
+                            })
 
-        # Determine which module to use based on job_settings keys
-        module_name = next(iter(job_settings.keys()), "framepack")
-        module_settings = job_settings.get(module_name, {})
-
-        if module_name == "framepack":
-            # Extract segments for processing
-            segments = []
-            for segment in module_settings.get("segments", []):
-                segments.append({
-                    "image_path": segment.get("image_path"),
-                    "prompt": segment.get("prompt", ""),
-                    "duration": segment.get("duration", 1.0)
-                })
-
-            # Start the job in a separate thread
-            from modules.framepack.module import worker_multi_segment
-
-            await asyncio.to_thread(
-                worker_multi_segment,
-                job_id=job_id,
-                segments=segments,
-                global_prompt=module_settings.get("global_prompt", ""),
-                n_prompt=module_settings.get("negative_prompt", ""),
-                seed=module_settings.get("seed", 31337),
-                steps=module_settings.get("steps", 25),
-                cfg=1.0,  # Fixed parameter
-                gs=module_settings.get("guidance_scale", 10.0),
-                rs=0.0,  # Fixed parameter
-                gpu_memory_preservation=module_settings.get("gpu_memory_preservation", 6.0),
-                use_teacache=module_settings.get("use_teacache", True),
-                mp4_crf=module_settings.get("mp4_crf", 16),
-                enable_adaptive_memory=module_settings.get("enable_adaptive_memory", True),
-                resolution=module_settings.get("resolution", 640)
-            )
-        else:
-            # Add support for other modules here if needed
-            job_status.status = "failed"
-            job_status.message = f"Unknown module type: {module_name}"
+                        # Run the worker function directly
+                        await asyncio.to_thread(
+                            module.worker_multi_segment,
+                            job_id=job_id,
+                            segments=segments,
+                            global_prompt=module_settings.get("global_prompt", ""),
+                            n_prompt=module_settings.get("negative_prompt", ""),
+                            seed=module_settings.get("seed", 31337),
+                            steps=module_settings.get("steps", 25),
+                            cfg=1.0,  # Fixed parameter
+                            gs=module_settings.get("guidance_scale", 10.0),
+                            rs=0.0,  # Fixed parameter
+                            gpu_memory_preservation=module_settings.get("gpu_memory_preservation", 6.0),
+                            use_teacache=module_settings.get("use_teacache", True),
+                            mp4_crf=module_settings.get("mp4_crf", 16),
+                            enable_adaptive_memory=module_settings.get("enable_adaptive_memory", True),
+                            resolution=module_settings.get("resolution", 640)
+                        )
+                    else:
+                        job_status.status = "failed"
+                        job_status.message = f"Module {module_name} does not have a process function"
+                        save_job_data(job_id, job_status)
+            except Exception as e:
+                print(f"Error processing module {module_name}: {e}")
+                import traceback
+                traceback.print_exc()
+                job_status.status = "failed"
+                job_status.message = f"Error in {module_name} module: {str(e)}"
+                save_job_data(job_id, job_status)
 
     except Exception as e:
         print(f"Error running job {job_id}: {e}")
@@ -277,6 +311,7 @@ async def run_job(job_id: str):
         # Update job status
         job_status.status = "failed"
         job_status.message = f"Error: {str(e)}"
+        save_job_data(job_id, job_status)
 
 
 def update_queue_positions():
@@ -327,84 +362,42 @@ def register_api_endpoints(app):
     api_tag = __name__.split(".")[-1].title().replace("_", " ")
 
     @app.post("/api/requeue_job/{job_id}", response_model=Union[dict, ErrorResponse], tags=[api_tag])
-    async def requeue_job(job_id: str, position: int = None):
+    async def requeue_job(job_id: str, position: int = None, background_tasks: BackgroundTasks = None):
         """
-        Re-queue a job without running it immediately
+        Re-queue a job (backward compatibility endpoint)
         
         Args:
             job_id: The unique job identifier
             position: Optional position in queue (0-based, None = end of queue)
         
-        # Validate job_settings and segments to ensure they are properly structured
-        if "job_settings" in cleaned_data and cleaned_data["job_settings"] is not None:
-            if "segments" in cleaned_data["job_settings"]:
-                print(f"Saving job {job_id} with {len(cleaned_data['job_settings']['segments'])} segments in job settings")
-            else:
-                print(f"Warning: job_settings for {job_id} is missing 'segments' key")
-                
-                # If segments exist in the main job data but not in job_settings, add them
-                if "segments" in cleaned_data and cleaned_data["segments"]:
-                    cleaned_data["job_settings"]["segments"] = []
-                    # Create basic segment configurations
-                    for segment_path in cleaned_data["segments"]:
-                        cleaned_data["job_settings"]["segments"].append({
-                            "image_path": segment_path,
-                            "prompt": "",
-                            "duration": 1.0
-                        })
-                    print(f"Fixed job_settings by adding {len(cleaned_data['segments'])} segment configurations")
-                
-        # Ensure segments are saved
-        if "segments" in cleaned_data:
-            print(f"Saving job {job_id} with {len(cleaned_data['segments'])} segments")
-        
         Returns:
             Success message or error
         """
-
-        # Try to load the job data
-        job_data = None
-        if job_id in job_statuses:
-            job_data = job_statuses[job_id].to_dict()
-        else:
-            job_data = load_job_data(job_id)
-
-        if not job_data:
-            return ErrorResponse(error="Job not found")
-
-        # Check if the job has settings
-        job_settings = job_data.get("job_settings")
-        if not job_settings:
-            return ErrorResponse(error="Cannot requeue job: missing settings")
-
-        # Verify images still exist
-        is_valid, missing_images = verify_job_images(job_settings)
-        if not is_valid:
-            return ErrorResponse(
-                error=f"Cannot requeue job: {len(missing_images)} missing images: {', '.join(missing_images[:3])}")
-
-        # Create job status if not in memory
-        if job_id not in job_statuses:
-            job_status = JobStatus(job_id)
-            job_status.__dict__.update(job_data)
-            job_statuses[job_id] = job_status
-        else:
-            job_status = job_statuses[job_id]
-
-        # Update job status
-        job_status.status = "queued"
-        job_status.progress = 0
-        job_status.message = "Waiting in queue"
-        save_job_data(job_id, job_status.to_dict())
-
-        # Add to queue
-        add_to_queue(job_id, position)
-
-        return {
-            "success": True,
-            "message": f"Job {job_id} has been queued",
-            "queue_position": job_status.queue_position
-        }
+        # Forward to the run_job_endpoint which now handles all job running
+        result = await run_job_endpoint(job_id, background_tasks)
+        
+        # If the result is a GenerateResponse, convert it to a dict with success message
+        if isinstance(result, GenerateResponse):
+            # Get the job status to return the queue position
+            job_status = None
+            if job_id in job_statuses:
+                job_status = job_statuses[job_id]
+            else:
+                job_data = load_job_data(job_id)
+                if job_data:
+                    job_status = JobStatus(job_id)
+                    job_status.__dict__.update(job_data)
+                    
+            queue_position = job_status.queue_position if job_status else 0
+            
+            return {
+                "success": True,
+                "message": f"Job {job_id} has been queued",
+                "queue_position": queue_position
+            }
+        
+        # If it's an error, just return it
+        return result
 
     @app.post("/api/cancel_all_jobs", response_model=Union[dict, ErrorResponse], tags=[api_tag])
     async def cancel_all_jobs():
@@ -729,22 +722,20 @@ def register_api_endpoints(app):
             "job_settings": job_settings
         }
 
-    @app.post("/api/rerun_job/{job_id}", response_model=Union[GenerateResponse, ErrorResponse], tags=[api_tag])
-    async def rerun_job(
+    @app.post("/api/run_job/{job_id}", response_model=Union[GenerateResponse, ErrorResponse], tags=[api_tag])
+    async def run_job_endpoint(
             job_id: str,
             background_tasks: BackgroundTasks
     ):
         """
-        Re-run a completed or failed job
+        Run a job (whether new or existing)
 
         Args:
             job_id: The unique job identifier
 
         Returns:
-            new_job_id: A new job ID for the rerun
+            job_id: The job ID that was queued
         """
-        from modules.framepack.diffusers_helper.utils import generate_timestamp
-
         # Try to load the job data
         job_data = load_job_data(job_id)
         if not job_data:
@@ -753,58 +744,36 @@ def register_api_endpoints(app):
         # Check if the job has settings
         job_settings = job_data.get("job_settings")
         if not job_settings:
-            return ErrorResponse(error="Cannot rerun job: missing settings")
+            return ErrorResponse(error="Cannot run job: missing settings")
 
         # Verify images still exist
         is_valid, missing_images = verify_job_images(job_settings)
         if not is_valid:
             return ErrorResponse(
-                error=f"Cannot rerun job: {len(missing_images)} missing images: {', '.join(missing_images[:3])}")
+                error=f"Cannot run job: {len(missing_images)} missing images: {', '.join(missing_images[:3])}")
 
-        # Create a new job ID
-        new_job_id = generate_timestamp()
-
-        # Create request data from job settings
-        try:
-            # Copy all fields from the original job settings
-            segments = []
-            for segment in job_settings.get("segments", []):
-                segments.append(SegmentConfig(
-                    image_path=segment.get("image_path"),
-                    prompt=segment.get("prompt", ""),
-                    duration=segment.get("duration", 1.0)
-                ))
-
-            request_data = VideoRequest(
-                global_prompt=job_settings.get("global_prompt", ""),
-                negative_prompt=job_settings.get("negative_prompt", ""),
-                segments=segments,
-                seed=job_settings.get("seed", 31337),
-                steps=job_settings.get("steps", 25),
-                guidance_scale=job_settings.get("guidance_scale", 10.0),
-                use_teacache=job_settings.get("use_teacache", True),
-                enable_adaptive_memory=job_settings.get("enable_adaptive_memory", True),
-                resolution=job_settings.get("resolution", 640),
-                mp4_crf=job_settings.get("mp4_crf", 16),
-                gpu_memory_preservation=job_settings.get("gpu_memory_preservation", 6.0)
-            )
-
-            # Create the job status
-            job_status = JobStatus(new_job_id)
-            job_status.set_job_settings(request_data.model_dump())
-            job_statuses[new_job_id] = job_status
-
-            # Save to disk
-            save_job_data(new_job_id, job_status.to_dict())
-
-            # Add job to the queue
-            add_to_queue(new_job_id)
-
-            return GenerateResponse(job_id=new_job_id)
-
-        except Exception as e:
-            print(f"Error rerunning job: {e}")
-            return ErrorResponse(error=f"Error rerunning job: {str(e)}")
+        # Create or update job status
+        job_status = job_statuses.get(job_id, JobStatus(job_id))
+        
+        # Update status
+        job_status.status = "queued"
+        job_status.progress = 0
+        job_status.message = "Waiting in queue"
+        job_status.result_video = ""  # Clear previous result
+        
+        # Ensure job settings are in the right format
+        job_status.job_settings = job_settings
+        
+        # Save to memory cache
+        job_statuses[job_id] = job_status
+        
+        # Save to disk
+        save_job_data(job_id, job_status.to_dict())
+        
+        # Add job to the queue
+        add_to_queue(job_id)
+        
+        return GenerateResponse(job_id=job_id)
 
     @app.delete("/api/job/{job_id}", response_model=Union[dict, ErrorResponse], tags=[api_tag])
     async def delete_job(job_id: str, request: DeleteJobRequest = None):

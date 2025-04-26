@@ -15,12 +15,13 @@ from transformers import LlamaModel, CLIPTextModel, LlamaTokenizerFast, CLIPToke
     SiglipVisionModel
 
 import handlers.vram
-from datatypes.datatypes import JobStatus, DynamicSwapInstaller
+from datatypes.datatypes import JobStatus, DynamicSwapInstaller, VideoRequest
 from handlers.job_queue import process_queue, job_statuses, save_job_data
 from handlers.model import check_download_model
 from handlers.path import output_path
 from handlers.vram import fake_diffusers_current_device, get_cuda_free_memory_gb, \
     move_model_to_device_with_memory_preservation, unload_complete_models, load_model_as_complete, gpu, high_vram
+from modules.framepack.datatypes import FramePackJobSettings
 from modules.framepack.diffusers_helper.bucket_tools import find_nearest_bucket
 from modules.framepack.diffusers_helper.clip_vision import hf_clip_vision_encode
 from modules.framepack.diffusers_helper.hunyuan import encode_prompt_conds, vae_encode, vae_decode_fake, vae_decode
@@ -963,3 +964,9 @@ def worker_multi_segment(
         asyncio.run(process_queue())
 
     return final_output
+
+
+@torch.no_grad()
+def process(request: FramePackJobSettings):
+    request_dict = request.model_dump()
+    return worker_multi_segment(**request_dict)

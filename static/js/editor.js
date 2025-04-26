@@ -904,25 +904,56 @@ function startGeneration() {
     elements.progressBar.textContent = '0%';
     elements.progressStatus.textContent = 'Preparing generation request...';
     
+    // Generate a job ID
+    const timestamp = Math.floor(Date.now() / 1000);
+    const jobId = `${timestamp}_${Math.floor(Math.random() * 1000)}`;
+    
     // Use common function to prepare the job payload
     const payload = prepareJobPayload();
     
-    // For the /api/generate_video endpoint, we actually want the settings directly
-    // The backend will handle wrapping it in ModuleJobSettings format
-    
     // Ensure job_settings has the proper ModuleJobSettings structure
-    console.warn('Job settings missing module_type, adding default framepack module type');
-        payload.job_settings = prepareModuleJobSettings(payload.job_settings);
+    payload.job_settings = prepareModuleJobSettings(payload.job_settings);
     
-    console.log('Sending generation request with payload:', JSON.stringify(payload, null, 2));
+    console.log('Preparing job with settings:', JSON.stringify(payload, null, 2));
     
-    // Make API call
-    fetch('/api/generate_video', {
+    // First save the job
+    const savePayload = {
+        job_id: jobId,
+        status: "saved",
+        progress: 0,
+        message: "Job saved",
+        result_video: "",
+        segments: timeline.map(item => item.serverPath),
+        is_valid: true,
+        missing_images: [],
+        job_settings: payload.job_settings,
+        queue_position: -1,
+        created_timestamp: timestamp
+    };
+    
+    // Save the job first, then run it
+    fetch(`/api/save_job/${jobId}`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json'
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(savePayload)
+    })
+    .then(response => {
+        if (!response.ok) {
+            return response.text().then(text => {
+                throw new Error(`Failed to save job: ${text}`);
+            });
+        }
+        return response.json();
+    })
+    .then(data => {
+        console.log('Job saved:', data);
+        
+        // Now run the job using the run_job endpoint
+        return fetch(`/api/run_job/${jobId}`, {
+            method: 'POST'
+        });
     })
     .then(response => {
         if (!response.ok) {
@@ -937,7 +968,7 @@ function startGeneration() {
         elements.progressStatus.textContent = 'Generation started! Monitoring progress...';
         
         // Store current job ID
-        const currentJobId = data.job_id;
+        const currentJobId = jobId;
         
         // Clear the timeline after successfully starting a job
         // Clear UI
@@ -957,7 +988,7 @@ function startGeneration() {
             setupJobWebsocketConnection(currentJobId);
         } else {
             // Fallback to polling for browsers without WebSocket support
-            pollJobStatus(data.job_id);
+            pollJobStatus(currentJobId);
         }
     })
     .catch(error => {
