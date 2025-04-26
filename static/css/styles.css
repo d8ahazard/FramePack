@@ -1,4 +1,223 @@
 /* Main CSS for FramePack */
+
+.job-item {
+    transition: all 0.2s ease;
+}
+
+.job-item:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+.job-thumbnail {
+    width: 64px;
+    height: 64px;
+    min-width: 64px;
+    overflow: hidden;
+    border-radius: 4px;
+    background-color: #eee;
+    position: relative;
+}
+
+.job-thumbnail img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform 0.3s ease;
+}
+
+.job-thumbnail:hover img {
+    transform: scale(1.1);
+}
+
+.queue-list {
+    border: 1px solid #f0f0f0;
+    border-radius: 6px;
+    padding: 5px;
+    background: #f9f9f9;
+}
+
+.draggable {
+    cursor: grab;
+    position: relative;
+}
+
+.draggable::before {
+    content: ":::";
+    position: absolute;
+    left: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #aaa;
+    font-weight: bold;
+    letter-spacing: 1px;
+}
+
+.draggable .d-flex {
+    padding-left: 20px;
+}
+
+.draggable.dragging {
+    opacity: 0.5;
+}
+
+/* Thumbnail carousel styles */
+.segment-thumbnails-container {
+    position: relative;
+    overflow: hidden;
+    width: 100%;
+    padding: 12px 0;
+    background-color: #f8f9fa;
+}
+
+.segment-thumbnails-scroll {
+    display: flex;
+    gap: 12px;
+    padding: 0 12px;
+    overflow-x: auto;
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.3) transparent;
+}
+
+.segment-thumbnails-scroll::-webkit-scrollbar {
+    height: 6px;
+}
+
+.segment-thumbnails-scroll::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.segment-thumbnails-scroll::-webkit-scrollbar-thumb {
+    background-color: rgba(0, 0, 0, 0.3);
+    border-radius: 20px;
+}
+
+.segment-thumbnail {
+    flex: 0 0 auto;
+    position: relative;
+    border-radius: 4px;
+    overflow: hidden;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+    transition: transform 0.2s;
+}
+
+.segment-thumbnail:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.segment-thumbnail img {
+    height: 80px;
+    width: auto;
+    display: block;
+}
+
+.segment-thumbnail-card {
+    flex: 0 0 auto;
+    position: relative;
+    width: 180px;
+    height: 180px;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+    transition: transform 0.3s;
+}
+
+.segment-thumbnail-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+}
+
+.segment-thumbnail-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.segment-thumbnail-label {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: rgba(0, 0, 0, 0.7);
+    color: white;
+    padding: 5px;
+    font-size: 0.8rem;
+    text-align: center;
+}
+
+.scroll-indicator-left, .scroll-indicator-right {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 30px;
+    height: 30px;
+    background: rgba(255, 255, 255, 0.8);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.3s;
+    z-index: 2;
+}
+
+.scroll-indicator-left {
+    left: 5px;
+}
+
+.scroll-indicator-right {
+    right: 5px;
+}
+
+.segment-thumbnails-container:hover .scroll-indicator-left,
+.segment-thumbnails-container:hover .scroll-indicator-right {
+    opacity: 0.7;
+}
+
+.scroll-indicator-left:hover,
+.scroll-indicator-right:hover {
+    opacity: 1 !important;
+    background: rgba(255, 255, 255, 0.95);
+}
+
+/* Dark mode styles for segment thumbnails */
+[data-bs-theme="dark"] .segment-thumbnails-container {
+    background-color: var(--dark-card-bg);
+}
+
+[data-bs-theme="dark"] .scroll-indicator-left,
+[data-bs-theme="dark"] .scroll-indicator-right {
+    background: rgba(50, 50, 50, 0.8);
+    color: #fff;
+}
+
+[data-bs-theme="dark"] .scroll-indicator-left:hover,
+[data-bs-theme="dark"] .scroll-indicator-right:hover {
+    background: rgba(60, 60, 60, 0.95);
+}
+
+/* Smaller screens - adjust thumbnail size */
+@media (max-width: 768px) {
+    .segment-thumbnail-card {
+        width: 140px;
+        height: 140px;
+    }
+}
+
+/* Extra small screens */
+@media (max-width: 576px) {
+    .segment-thumbnail-card {
+        width: 120px;
+        height: 120px;
+    }
+}
+
 /* Toast notifications */
 #toast-container {
     position: fixed;
@@ -43,6 +262,7 @@
     background-color: #ff9800;
     color: white;
 }
+
 :root {
     --primary-color: #4361ee;
     --primary-hover: #3a56d4;
@@ -50,7 +270,7 @@
     --neutral-dark: #343a40;
     --neutral-darker: #232629;
     --light-grey: #e9ecef;
-    
+
     /* Dark theme colors */
     --dark-bg-color: #121212;
     --dark-card-bg: #1e1e1e;
@@ -93,14 +313,14 @@ body {
     border-color: var(--dark-border-color);
 }
 
-[data-bs-theme="dark"] .form-control, 
+[data-bs-theme="dark"] .form-control,
 [data-bs-theme="dark"] .form-select {
     background-color: var(--dark-input-bg);
     border-color: var(--dark-border-color);
     color: var(--dark-text-color);
 }
 
-[data-bs-theme="dark"] .form-control:focus, 
+[data-bs-theme="dark"] .form-control:focus,
 [data-bs-theme="dark"] .form-select:focus {
     background-color: var(--dark-input-bg);
     color: var(--dark-text-color);
@@ -379,7 +599,7 @@ body {
     padding: 2px;
     cursor: pointer;
     color: #dc3545;
-    filter: drop-shadow(0 0 1px rgba(0,0,0,0.3));
+    filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.3));
 }
 
 /* Timeline styles */
@@ -394,7 +614,7 @@ body {
 }
 
 /* Override any existing vertical layout styling */
-#timelineContainer, 
+#timelineContainer,
 .timeline-container,
 #editor-tab-pane #timelineContainer {
     display: flex !important;
@@ -541,7 +761,7 @@ body {
     position: absolute;
     top: 8px;
     right: 8px;
-    background-color: rgba(0,0,0,0.6);
+    background-color: rgba(0, 0, 0, 0.6);
     color: white;
     padding: 2px 6px;
     border-radius: 4px;
@@ -602,7 +822,7 @@ body {
     position: absolute;
     top: 8px;
     left: 8px;
-    background-color: rgba(0,0,0,0.6);
+    background-color: rgba(0, 0, 0, 0.6);
     color: white;
     padding: 2px 6px;
     border-radius: 4px;
@@ -619,7 +839,7 @@ body {
 
 /* Responsive adjustments for timeline */
 @media (max-width: 768px) {
-    #timelineContainer, 
+    #timelineContainer,
     .timeline-container,
     #editor-tab-pane #timelineContainer {
         flex-wrap: nowrap !important;
@@ -628,12 +848,12 @@ body {
         padding-bottom: 15px;
         align-items: stretch !important;
     }
-    
+
     .timeline-item {
         width: 180px !important;
         margin-right: 10px;
     }
-    
+
     .timeline-item img {
         height: 120px;
     }
@@ -699,15 +919,15 @@ body {
     .timeline-item-details {
         font-size: 0.9rem;
     }
-    
+
     .timeline-item-image {
         flex: 0 0 60px;
     }
-    
+
     .timeline-item-image img {
         max-height: 60px;
     }
-    
+
     #generateBtn {
         font-size: 1rem;
         padding: 0.5rem 1rem;
@@ -718,11 +938,11 @@ body {
     .timeline-item {
         flex-direction: column;
     }
-    
+
     .timeline-item-image {
         margin-bottom: 10px;
     }
-    
+
     .timeline-controls {
         flex-direction: column;
         gap: 0.5rem;
@@ -731,8 +951,12 @@ body {
 
 /* Animation effects */
 @keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
 }
 
 .fadeIn {
@@ -740,9 +964,15 @@ body {
 }
 
 @keyframes pulse {
-    0% { transform: scale(1); }
-    50% { transform: scale(1.05); }
-    100% { transform: scale(1); }
+    0% {
+        transform: scale(1);
+    }
+    50% {
+        transform: scale(1.05);
+    }
+    100% {
+        transform: scale(1);
+    }
 }
 
 .pulse {
@@ -774,7 +1004,7 @@ body {
 
 /* Header styling */
 header {
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
 header h3 {
@@ -789,13 +1019,13 @@ header h3 {
     padding: 0.5rem 1rem;
     margin-right: 1rem;
     font-weight: 500;
-    color: rgba(255,255,255,0.7) !important;
+    color: rgba(255, 255, 255, 0.7) !important;
     background-color: transparent !important;
 }
 
 .nav-tabs-light .nav-link:hover {
     color: white !important;
-    border-bottom-color: rgba(255,255,255,0.5);
+    border-bottom-color: rgba(255, 255, 255, 0.5);
 }
 
 .nav-tabs-light .nav-link.active {
@@ -845,6 +1075,7 @@ header h3 {
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
     padding: 10px 0;
 }
+
 /* Toast notifications */
 #toast-container {
     position: fixed;
@@ -927,6 +1158,7 @@ header h3 {
 .toast {
     animation: toast-slide-in 0.3s ease forwards;
 }
+
 /* Latent container specific styling */
 #jobMediaContainer .card-body:has(#jobCurrentLatents) {
     padding: 10px;
@@ -967,7 +1199,7 @@ header h3 {
     left: 0;
     right: 0;
     bottom: 0;
-    background-color: rgba(0,0,0,0.5);
+    background-color: rgba(0, 0, 0, 0.5);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -984,7 +1216,7 @@ header h3 {
     .card-header h5 {
         font-size: 1.1rem;
     }
-    
+
     .nav-tabs-light .nav-link {
         padding: 0.4rem 0.75rem;
         margin-right: 0.5rem;
@@ -1026,7 +1258,7 @@ header h3 {
     #videoViewerModal .modal-body {
         max-height: calc(100vh - 120px);
     }
-    
+
     #modalVideo {
         max-height: calc(100vh - 140px);
     }

@@ -76,10 +76,6 @@ function getThumbnailUrl(job, frameIndex = 0) {
 function initJobQueue() {
     console.log('Job Queue module initialized');
     
-    // Add queue styles
-    addQueueStyles();
-    
-    // Initial load of job queue
     loadJobQueue();
     
     // Setup job WebSocket listener if not already set up
@@ -189,6 +185,55 @@ function updateJobInQueue(jobId, status, progress, message) {
                      aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100">${progress}%</div>
             `;
             messageDiv.after(progressDiv);
+        }
+    }
+    
+    // Set up scroll buttons for thumbnails carousel
+    const thumbnailContainer = jobDetailContainer.querySelector('.segment-thumbnails-container');
+    if (thumbnailContainer) {
+        const scrollContainer = thumbnailContainer.querySelector('.segment-thumbnails-scroll');
+        const leftBtn = thumbnailContainer.querySelector('.scroll-indicator-left');
+        const rightBtn = thumbnailContainer.querySelector('.scroll-indicator-right');
+        
+        // Add scroll functionality
+        if (leftBtn && rightBtn && scrollContainer) {
+            // Calculate scroll amount based on container width
+            const scrollAmount = 250; // pixels to scroll
+            
+            // Left scroll button
+            leftBtn.addEventListener('click', () => {
+                scrollContainer.scrollBy({
+                    left: -scrollAmount,
+                    behavior: 'smooth'
+                });
+            });
+            
+            // Right scroll button
+            rightBtn.addEventListener('click', () => {
+                scrollContainer.scrollBy({
+                    left: scrollAmount,
+                    behavior: 'smooth'
+                });
+            });
+            
+            // Show or hide scroll buttons based on scroll position
+            scrollContainer.addEventListener('scroll', () => {
+                const scrollLeft = scrollContainer.scrollLeft;
+                const maxScrollLeft = scrollContainer.scrollWidth - scrollContainer.clientWidth;
+                
+                // Show/hide left button based on scroll position
+                leftBtn.style.opacity = scrollLeft > 10 ? '1' : '0';
+                
+                // Show/hide right button based on scroll position
+                rightBtn.style.opacity = scrollLeft < maxScrollLeft - 10 ? '1' : '0';
+            });
+            
+            // Initial check to see if scroll is needed
+            setTimeout(() => {
+                const isScrollable = scrollContainer.scrollWidth > scrollContainer.clientWidth;
+                rightBtn.style.opacity = isScrollable ? '1' : '0';
+                leftBtn.style.opacity = '0'; // Initially hide left button
+            }, 100);
         }
     }
     
@@ -443,13 +488,14 @@ function createJobItem(job) {
     
     jobItem.innerHTML = `
         <div class="d-flex align-items-start">
-            <div class="job-thumbnail me-2">
-                <img src="${thumbnailUrl}" alt="Frame" class="img-fluid rounded">
+            <div class="job-thumbnail me-3">
+                <img src="${thumbnailUrl}" alt="Frame" class="img-fluid rounded shadow-sm">
             </div>
             <div class="flex-grow-1">
                 <div class="d-flex justify-content-between align-items-center">
                     <div>
                         <div class="fw-bold">ID: ${job.job_id}</div>
+                        <div class="text-muted small">${jobTitle}</div>
                     </div>
                     <div>
                         <span class="badge ${statusBadgeClass} status-badge">${job.status}</span>
@@ -486,6 +532,9 @@ function createJobItem(job) {
 
 // Format job timestamp for display
 function formatJobTimestamp(jobId) {
+    // Check if jobId is undefined or null
+    if (!jobId) return 'Unknown';
+    
     const parts = jobId.split('_');
     if (parts.length >= 2) {
         const dateStr = parts[0];
@@ -801,6 +850,83 @@ function displayJobDetails(jobData) {
     // Add the job info card
     jobDetailContainer.appendChild(jobInfoCard);
     
+    // Add segment thumbnails if job has segments
+    if (jobData.segments && jobData.segments.length > 0) {
+        const thumbnailsCard = document.createElement('div');
+        thumbnailsCard.className = 'card mb-3';
+        thumbnailsCard.innerHTML = `
+            <div class="card-header">
+                <h5 class="card-title mb-0 fs-6">Frame Previews</h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="segment-thumbnails-container position-relative">
+                    <div class="scroll-indicator scroll-indicator-left">
+                        <i class="bi bi-chevron-left"></i>
+                    </div>
+                    <div class="segment-thumbnails-scroll d-flex overflow-auto py-2 px-3">
+                        ${jobData.segments.map((segment, index) => `
+                            <div class="segment-thumbnail me-2" title="Frame ${index + 1}">
+                                <img src="${getImageUrl(segment)}" alt="Frame ${index + 1}" class="img-thumbnail" style="height: 80px; width: auto;">
+                            </div>
+                        `).join('')}
+                    </div>
+                    <div class="scroll-indicator scroll-indicator-right">
+                        <i class="bi bi-chevron-right"></i>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        jobDetailContainer.appendChild(thumbnailsCard);
+        
+        // Set up scroll buttons for thumbnails carousel
+        const thumbnailContainer = thumbnailsCard.querySelector('.segment-thumbnails-container');
+        const scrollContainer = thumbnailContainer.querySelector('.segment-thumbnails-scroll');
+        const leftBtn = thumbnailContainer.querySelector('.scroll-indicator-left');
+        const rightBtn = thumbnailContainer.querySelector('.scroll-indicator-right');
+        
+        // Add scroll functionality
+        if (leftBtn && rightBtn && scrollContainer) {
+            // Calculate scroll amount based on container width
+            const scrollAmount = 250; // pixels to scroll
+            
+            // Left scroll button
+            leftBtn.addEventListener('click', () => {
+                scrollContainer.scrollBy({
+                    left: -scrollAmount,
+                    behavior: 'smooth'
+                });
+            });
+            
+            // Right scroll button
+            rightBtn.addEventListener('click', () => {
+                scrollContainer.scrollBy({
+                    left: scrollAmount,
+                    behavior: 'smooth'
+                });
+            });
+            
+            // Show or hide scroll buttons based on scroll position
+            scrollContainer.addEventListener('scroll', () => {
+                const scrollLeft = scrollContainer.scrollLeft;
+                const maxScrollLeft = scrollContainer.scrollWidth - scrollContainer.clientWidth;
+                
+                // Show/hide left button based on scroll position
+                leftBtn.style.opacity = scrollLeft > 10 ? '1' : '0';
+                
+                // Show/hide right button based on scroll position
+                rightBtn.style.opacity = scrollLeft < maxScrollLeft - 10 ? '1' : '0';
+            });
+            
+            // Initial check to see if scroll is needed
+            setTimeout(() => {
+                const isScrollable = scrollContainer.scrollWidth > scrollContainer.clientWidth;
+                rightBtn.style.opacity = isScrollable ? '1' : '0';
+                leftBtn.style.opacity = '0'; // Initially hide left button
+            }, 100);
+        }
+    }
+    
     // Show video and latents if job is running or completed
     if (jobData.status === 'running' || jobData.status === 'completed') {
         jobMediaContainer.classList.remove('d-none');
@@ -883,7 +1009,7 @@ function displayJobDetails(jobData) {
         const queueBtn = document.createElement('button');
         queueBtn.className = 'btn btn-warning';
         queueBtn.innerHTML = '<i class="bi bi-hourglass"></i> Queue Job';
-        queueBtn.onclick = () => requeueJob(jobData.job_id);
+        queueBtn.onclick = () => queueJob(jobData.job_id);
         actionContainer.appendChild(queueBtn);
     }
     
@@ -919,7 +1045,7 @@ function displayJobDetails(jobData) {
         const rerunBtn = document.createElement('button');
         rerunBtn.className = 'btn btn-outline-success';
         rerunBtn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Rerun Job';
-        rerunBtn.onclick = () => rerunJob(jobData.job_id);
+        rerunBtn.onclick = () => runJob(jobData.job_id);
         actionContainer.appendChild(rerunBtn);
     }
     
@@ -940,6 +1066,7 @@ function displayJobDetails(jobData) {
     
     // Add the action container
     jobDetailContainer.appendChild(actionContainer);
+    
 }
 
 // Delete a job
@@ -1006,6 +1133,174 @@ async function cancelJob(jobId) {
     } catch (error) {
         console.error('Error cancelling job:', error);
         showMessage(`Failed to cancel job: ${error.message}`, 'error');
+    }
+}
+
+async function runJob(jobId) {
+    try {
+        console.log(`Attempting to rerun job: ${jobId}`);
+        
+        // Confirm with user
+        if (!confirm('Are you sure you want to rerun this job?')) {
+            console.log('Job rerun cancelled by user');
+            return;
+        }
+
+        // Show loading indicator
+        const jobDetailContainer = document.getElementById('jobDetailContainer');
+        const loadingMessage = document.createElement('div');
+        loadingMessage.className = 'alert alert-info mt-3';
+        loadingMessage.innerHTML = '<i class="bi bi-hourglass"></i> Starting job rerun...';
+        jobDetailContainer.appendChild(loadingMessage);
+
+        // Get current job data first to check if we need to update the structure
+        console.log(`Fetching job data for ${jobId} to check structure`);
+        const jobResponse = await fetch(`/api/job_status/${jobId}`);
+        if (jobResponse.ok) {
+            const jobData = await jobResponse.json();
+            console.log(`Job data retrieved:`, jobData);
+
+            // Check if we need to update the job to use ModuleJobSettings format
+            if (jobData.job_settings) {
+                console.log('Converting job to ModuleJobSettings format before rerunning');
+
+                // Update the job to use ModuleJobSettings format
+                const updateResponse = await fetch(`/api/save_job/${jobId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        ...jobData
+                    })
+                });
+                
+                if (updateResponse.ok) {
+                    console.log('Successfully updated job to ModuleJobSettings format');
+                } else {
+                    console.warn('Failed to update job structure:', await updateResponse.text());
+                }
+            }
+        } else {
+            console.warn(`Failed to fetch job data: ${jobResponse.status} ${jobResponse.statusText}`);
+            // Continue anyway - we'll try to rerun even if we can't update the structure
+        }
+
+        // Call rerun API
+        console.log(`Calling API to rerun job ${jobId}`);
+        const response = await fetch(`/api/rerun_job/${jobId}`, {
+            method: 'POST'
+        });
+
+        console.log(`Rerun API response status: ${response.status} ${response.statusText}`);
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`Error response from rerun API: ${errorText}`);
+            try {
+                const errorData = JSON.parse(errorText);
+                throw new Error(errorData.error || 'Failed to rerun job');
+            } catch (parseError) {
+                throw new Error(`Failed to rerun job: ${response.status} ${response.statusText}`);
+            }
+        }
+
+        // Parse the response to get the new job ID
+        const result = await response.json();
+        console.log(`Complete rerun job result:`, result);
+        
+        // Try different possible field names for the job ID
+        let newJobId = result.job_id;
+        
+        // Log the entire response structure to debug
+        console.log("Response structure:", Object.keys(result));
+        
+        if (!newJobId) {
+            console.error("Could not find job ID in the response. Using original job ID as fallback.");
+            // Use the original job ID as a fallback, it might still work
+            newJobId = jobId;
+        }
+        
+        console.log(`Using job ID: ${newJobId}`);
+
+        // Remove loading message
+        loadingMessage.remove();
+
+        // Show success and switch to the new job
+        showMessage('Job restarted successfully!', 'success');
+
+        // Refresh job queue
+        await loadJobQueue();
+
+        // Select the new job
+        const jobItems = document.querySelectorAll('.job-item');
+        let foundNewJob = false;
+        jobItems.forEach(item => {
+            item.classList.remove('active');
+            if (item.dataset.jobId === newJobId) {
+                item.classList.add('active');
+                // Scroll to the new job
+                item.scrollIntoView({ behavior: 'smooth' });
+                foundNewJob = true;
+            }
+        });
+        
+        if (!foundNewJob) {
+            console.warn(`Could not find new job ${newJobId} in the job list. It may appear later.`);
+        }
+
+        // Load details of the new job
+        loadJobDetails(newJobId);
+
+    } catch (error) {
+        console.error('Error rerunning job:', error);
+        showMessage(`Failed to rerun job: ${error.message}`, 'error');
+    }
+}
+
+// Queue a job (without running it immediately)
+async function queueJob(jobId) {
+    try {
+        // First get the current job data
+        const jobResponse = await fetch(`/api/job_status/${jobId}`);
+        if (!jobResponse.ok) {
+            throw new Error('Failed to fetch job data');
+        }
+
+        const jobData = await jobResponse.json();
+
+        
+        // Queue the job
+        const response = await fetch(`/api/requeue_job/${jobId}`, {
+            method: 'POST'
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || 'Failed to queue job');
+        }
+
+        const result = await response.json();
+
+        if (result.success) {
+            // Refresh the job queue
+            loadJobQueue();
+
+            // Show success message
+            showMessage(`Job queued at position ${result.queue_position}`, 'success');
+
+            // Load details for the queued job
+            loadJobDetails(jobId).then(r => {}).catch(e => {
+                console.error('Error loading job details:', e);
+                showMessage(`Failed to load job details: ${e.message}`, 'error');
+            });
+        } else {
+            throw new Error(result.error || 'Failed to queue job');
+        }
+
+    } catch (error) {
+        console.error('Error queueing job:', error);
+        showMessage(`Failed to queue job: ${error.message}`, 'error');
     }
 }
 
@@ -1186,191 +1481,7 @@ async function loadJobToTimeline(jobId) {
 }
 
 // Rerun a job
-async function rerunJob(jobId) {
-    try {
-        // Confirm with user
-        if (!confirm('Are you sure you want to rerun this job?')) {
-            return;
-        }
 
-        // Show loading indicator
-        const jobDetailContainer = document.getElementById('jobDetailContainer');
-        const loadingMessage = document.createElement('div');
-        loadingMessage.className = 'alert alert-info mt-3';
-        loadingMessage.innerHTML = '<i class="bi bi-hourglass"></i> Starting job rerun...';
-        jobDetailContainer.appendChild(loadingMessage);
-
-        // Get current job data first to check if we need to update the structure
-        const jobResponse = await fetch(`/api/job/${jobId}`);
-        if (jobResponse.ok) {
-            const jobData = await jobResponse.json();
-
-            // Check if we need to update the job to use ModuleJobSettings format
-            if (jobData.job_settings && !jobData.job_settings.module_type && !jobData.job_settings.settings) {
-                console.log('Converting job to ModuleJobSettings format before rerunning');
-
-                // Update the job to use ModuleJobSettings format
-                await fetch(`/api/save_job/${jobId}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        ...jobData,
-                        job_settings: {
-                            module_type: "framepack",
-                            settings: jobData.job_settings
-                        }
-                    })
-                });
-            }
-        }
-
-        // Call rerun API
-        const response = await fetch(`/api/rerun_job/${jobId}`, {
-            method: 'POST'
-        });
-
-        if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.error || 'Failed to rerun job');
-        }
-
-        const result = await response.json();
-
-        // Remove loading message
-        loadingMessage.remove();
-
-        // Show success and switch to the new job
-        showMessage('Job restarted successfully!', 'success');
-
-        // Refresh job queue
-        await loadJobQueue();
-
-        // Select the new job
-        const jobItems = document.querySelectorAll('.job-item');
-        jobItems.forEach(item => {
-            item.classList.remove('active');
-            if (item.dataset.jobId === result.job_id) {
-                item.classList.add('active');
-                // Scroll to the new job
-                item.scrollIntoView({ behavior: 'smooth' });
-            }
-        });
-
-        // Load details of the new job
-        loadJobDetails(result.job_id);
-
-    } catch (error) {
-        console.error('Error rerunning job:', error);
-        showMessage(`Failed to rerun job: ${error.message}`, 'error');
-    }
-}
-
-// Queue a job (without running it immediately)
-async function requeueJob(jobId) {
-    try {
-        // First get the current job data
-        const jobResponse = await fetch(`/api/job/${jobId}`);
-        if (!jobResponse.ok) {
-            throw new Error('Failed to fetch job data');
-        }
-
-        const jobData = await jobResponse.json();
-
-        // Ensure job settings has the proper ModuleJobSettings structure before queuing
-        if (jobData.job_settings && !jobData.job_settings.module_type && !jobData.job_settings.settings) {
-            // Update job with proper ModuleJobSettings structure
-            const updateResponse = await fetch(`/api/save_job/${jobId}`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    ...jobData,
-                    job_settings: {
-                        module_type: "framepack",
-                        settings: jobData.job_settings
-                    }
-                })
-            });
-
-            if (!updateResponse.ok) {
-                console.warn('Failed to update job to new ModuleJobSettings format');
-            }
-        }
-
-        // Queue the job
-        const response = await fetch(`/api/requeue_job/${jobId}`, {
-            method: 'POST'
-        });
-
-        if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.error || 'Failed to queue job');
-        }
-
-        const result = await response.json();
-
-        if (result.success) {
-            // Refresh the job queue
-            loadJobQueue();
-
-            // Show success message
-            showMessage(`Job queued at position ${result.queue_position}`, 'success');
-
-            // Load details for the queued job
-            loadJobDetails(jobId).then(r => {}).catch(e => {
-                console.error('Error loading job details:', e);
-                showMessage(`Failed to load job details: ${e.message}`, 'error');
-            });
-        } else {
-            throw new Error(result.error || 'Failed to queue job');
-        }
-
-    } catch (error) {
-        console.error('Error queueing job:', error);
-        showMessage(`Failed to queue job: ${error.message}`, 'error');
-    }
-}
-
-// Add CSS for draggable queue items
-function addQueueStyles() {
-    // Check if style is already added
-    if (document.getElementById('queueStyles')) return;
-
-    const style = document.createElement('style');
-    style.id = 'queueStyles';
-    style.textContent = `
-        .queue-list {
-            border: 1px solid #f0f0f0;
-            border-radius: 6px;
-            padding: 5px;
-            background: #f9f9f9;
-        }
-        .draggable {
-            cursor: grab;
-            position: relative;
-        }
-        .draggable::before {
-            content: ":::";
-            position: absolute;
-            left: 8px;
-            top: 50%;
-            transform: translateY(-50%);
-            color: #aaa;
-            font-weight: bold;
-            letter-spacing: 1px;
-        }
-        .draggable .d-flex {
-            padding-left: 20px;
-        }
-        .draggable.dragging {
-            opacity: 0.5;
-        }
-    `;
-    document.head.appendChild(style);
-}
 
 // Export module functions
 export {
@@ -1378,7 +1489,7 @@ export {
     loadJobQueue,
     loadJobDetails,
     loadJobToTimeline,
-    rerunJob,
+    runJob as rerunJob,
     formatJobTimestamp,
     clearCompletedJobs,
     deleteJob,
