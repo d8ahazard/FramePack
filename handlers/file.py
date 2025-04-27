@@ -263,7 +263,8 @@ def register_api_endpoints(app):
         Returns:
             success: Whether the upload was successful
             filename: The filename on the server
-            path: The full server path to the file
+            path: The full server path to the file (for internal use)
+            url: The API URL to access the file (for frontend use)
         """
         try:
             # Get file content hash to ensure uniqueness
@@ -292,11 +293,19 @@ def register_api_endpoints(app):
                     f.write(file_content)
                 print(f"File uploaded successfully: {file_path}")
 
-            # Return the full server path
+            # Create API URL for frontend use
+            api_url = f"/api/serve_file?path={file_path}"
+            
+            # For backwards compatibility, also create a /uploads/ URL
+            upload_url = f"/uploads/{filename}"
+
+            # Return both the full server path (for job processing) and the API URL (for frontend)
             return UploadResponse(
                 success=True,
                 filename=filename,
-                path=file_path  # Return the full server path
+                path=file_path,  # Return the full server path for internal use
+                url=api_url,     # Return the API URL for frontend use
+                upload_url=upload_url  # Return the /uploads/ URL for backward compatibility
             )
         except Exception as e:
             print(f"Error uploading file: {str(e)}")

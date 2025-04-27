@@ -239,6 +239,8 @@ class UploadResponse(BaseModel):
     success: bool
     filename: Optional[str] = None
     path: Optional[str] = None
+    url: Optional[str] = None  # API URL to access the file
+    upload_url: Optional[str] = None  # Static URL using /uploads/ path
     error: Optional[str] = None
 
 
