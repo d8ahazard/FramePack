@@ -112,6 +112,19 @@ function setupJobWebSocketListener() {
             const progress = event.progress;
             const message = event.message;
             
+            // Check for video content in the update
+            const hasVideoContent = 
+                event.result_video || 
+                (event.segments && event.segments.some(seg => 
+                    (typeof seg === 'string' && seg.endsWith('.mp4')) || 
+                    (seg && seg.image_path && seg.image_path.endsWith('.mp4'))
+                ));
+            
+            // Log if we found video content
+            if (hasVideoContent) {
+                console.log("WebSocket update contains video content:", event);
+            }
+            
             // Update the job in the queue UI
             updateJobInQueue(jobId, status, progress, message);
             
@@ -119,6 +132,19 @@ function setupJobWebSocketListener() {
             if (window.currentActiveJobId === jobId) {
                 // Update the editor progress display
                 updateEditorProgress(jobId, status, progress, message);
+            }
+            
+            // If job details are currently displayed, refresh them with new data
+            if (currentJobId === jobId) {
+                // Always get fresh data from the server to ensure we have complete info
+                fetch(`/api/job_status/${jobId}`)
+                    .then(response => response.json())
+                    .then(jobData => {
+                        console.log("Refreshed job data from API:", jobData);
+                        // Update the job details display
+                        displayJobDetails(jobData);
+                    })
+                    .catch(err => console.error('Error refreshing job details:', err));
             }
             
             // For completed or failed jobs, ensure we update the full job list
@@ -757,6 +783,36 @@ async function loadJobDetails(jobId) {
         // Display job details
         displayJobDetails(jobData);
         
+        // For running jobs, set up periodic refresh to catch newly created videos
+        if (jobData.status === 'running') {
+            // Set up a timer to refresh the job details every 5 seconds for running jobs
+            const refreshTimer = setInterval(() => {
+                if (currentJobId === jobId) {
+                    // Only refresh if this is still the active job
+                    fetch(`/api/job_status/${jobId}`)
+                        .then(response => response.json())
+                        .then(updatedData => {
+                            // Update the display with fresh data
+                            displayJobDetails(updatedData);
+                        })
+                        .catch(err => {
+                            console.error('Error refreshing job details:', err);
+                            clearInterval(refreshTimer); // Stop trying if we get an error
+                        });
+                } else {
+                    // If we've switched to a different job, stop refreshing
+                    clearInterval(refreshTimer);
+                }
+            }, 5000); // 5 second refresh
+            
+            // Store the timer ID on the window object so we can clear it later
+            window.currentJobRefreshTimer = refreshTimer;
+        } else if (window.currentJobRefreshTimer) {
+            // Clear any existing refresh timer if the job is not running
+            clearInterval(window.currentJobRefreshTimer);
+            window.currentJobRefreshTimer = null;
+        }
+        
         // If job is active, connect to websocket for live updates
         if (jobData.status === 'running' || jobData.status === 'queued') {
             // Connect to websocket for live updates
@@ -779,6 +835,49 @@ async function loadJobDetails(jobId) {
         `;
         document.getElementById('jobMediaContainer').classList.add('d-none');
     }
+}
+
+/**
+ * Extract video file paths from job data
+ * @param {Object} jobData - The job data object
+ * @returns {Array} Array of video file paths
+ */
+function extractVideosFromJobData(jobData) {
+    const videos = [];
+    
+    // Check result_video first
+    if (jobData.result_video) {
+        videos.push(jobData.result_video);
+    }
+    
+    // Check segments
+    if (jobData.segments && Array.isArray(jobData.segments)) {
+        jobData.segments.forEach(segment => {
+            if (typeof segment === 'string') {
+                // Direct string path
+                if (segment.toLowerCase().endsWith('.mp4')) {
+                    videos.push(segment);
+                }
+            } else if (segment && typeof segment === 'object') {
+                // Check for image_path property
+                if (segment.image_path && segment.image_path.toLowerCase().endsWith('.mp4')) {
+                    videos.push(segment.image_path);
+                }
+            }
+        });
+    }
+    
+    // Check for current_video which might be set by backend
+    if (jobData.current_video) {
+        videos.push(jobData.current_video);
+    }
+    
+    // Log what we found
+    if (videos.length > 0) {
+        console.log(`Found ${videos.length} videos in job data:`, videos);
+    }
+    
+    return videos;
 }
 
 // Display job details - separated from loadJobDetails for websocket updates
@@ -930,14 +1029,31 @@ function displayJobDetails(jobData) {
         // Handle video preview
         const videoContainer = document.createElement('div');
         videoContainer.className = 'col-md-6';
+        
+        // Get available videos from job data
+        const availableVideos = extractVideosFromJobData(jobData);
+        
+        // Get the video source - use the first available video
+        let videoSrc = '';
+        if (availableVideos.length > 0) {
+            videoSrc = availableVideos[0];
+            console.log("Using video source:", videoSrc);
+        }
+        
+        // Ensure videoSrc is properly formatted for API access if needed
+        if (videoSrc && !videoSrc.startsWith('http') && !videoSrc.startsWith('/api/')) {
+            videoSrc = `/api/serve_file?path=${encodeURIComponent(videoSrc)}`;
+            console.log("Formatted video source:", videoSrc);
+        }
+        
         videoContainer.innerHTML = `
             <div class="card mb-3">
                 <div class="card-header">
                     <h5 class="card-title mb-0 fs-6">Current Output</h5>
                 </div>
                 <div class="card-body text-center">
-                    ${jobData.result_video ? 
-                        `<video id="jobCurrentVideo" src="${jobData.result_video}" controls class="img-fluid rounded"></video>` :
+                    ${videoSrc ? 
+                        `<video id="jobCurrentVideo" src="${videoSrc}" controls class="img-fluid rounded"></video>` :
                         `<div class="text-muted py-5"><i class="bi bi-film me-2"></i>Video not available yet</div>`
                     }
                 </div>
@@ -1454,7 +1570,21 @@ function getSegmentThumbnails(jobData) {
         `).join('');
     }
     
-    // If no original segments, fall back to existing latent previews
+    // Check for MP4 segments - these might be generated outputs but not latents
+    const videos = extractVideosFromJobData(jobData);
+    if (videos.length > 0) {
+        return videos.map((videoPath, index) => `
+            <div class="segment-thumbnail me-2" title="Video Segment ${index + 1}">
+                <div class="position-relative">
+                    <img src="/static/images/video-thumbnail.png" alt="Video ${index + 1}" 
+                         class="img-thumbnail" style="height: 80px; width: auto;">
+                    <span class="badge bg-primary position-absolute top-0 end-0">MP4</span>
+                </div>
+            </div>
+        `).join('');
+    }
+    
+    // If no original segments or videos, fall back to existing latent previews
     return jobData.segments.map((segment, index) => `
         <div class="segment-thumbnail me-2" title="Frame ${index + 1}">
             <img src="${getImageUrl(segment)}" alt="Frame ${index + 1}" 

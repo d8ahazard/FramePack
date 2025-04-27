@@ -912,7 +912,7 @@ def worker_multi_segment(
             mp4_crf=mp4_crf,
             enable_adaptive_memory=enable_adaptive_memory,
             resolution=resolution,
-            segment_index=i,
+            segment_index=seg_no,
             master_job_id=master_job_id,
             progress_callback=progress_callback
         )
@@ -925,6 +925,9 @@ def worker_multi_segment(
             job_status.message = f"Failed to generate segment {seg_no}"
             save_job_data(job_id, job_status.to_dict())
             return None
+            
+        # Increment segment number
+        seg_no += 1
 
     # Concatenate all segments in order
     concat_txt = os.path.join(master_temp, "concat_list.txt")
@@ -934,7 +937,7 @@ def worker_multi_segment(
             abs_path = os.path.abspath(path).replace('\\', '/')
             f.write(f"file '{abs_path}'\n")
 
-    final_output = os.path.join(output_path, f"{master_job_id}.mp4")
+    final_output = os.path.join(output_path, f"{master_job_id}_final.mp4")
     try:
         subprocess.run([
             'ffmpeg', '-f', 'concat', '-safe', '0',
