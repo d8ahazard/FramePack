@@ -81,29 +81,52 @@ function initJobQueue() {
     
     // Define a global updateEditorProgress function that properly targets the editor elements
     window.updateEditorProgress = function(jobId, status, progress, message, eventData) {
+        console.log(`updateEditorProgress called for job ${jobId}, status: ${status}, progress: ${progress}`);
+        
         // Get the progress container element in the editor tab
         const progressContainer = document.getElementById('progressContainer');
-        if (!progressContainer) return;
+        
+        if (!progressContainer) {
+            console.error('progressContainer element not found!');
+            return;
+        }
+        
+        console.log('Found progressContainer, making visible');
         
         // Update the current active job ID
         window.currentActiveJobId = jobId;
         
-        // Show the progress container
+        // ALWAYS show the progress container for running jobs
         progressContainer.classList.remove('d-none');
         
         // Get progress bar element
         const progressBar = document.getElementById('progressBar');
-        
-        // Update progress bar
-        if (progressBar) {
+        if (!progressBar) {
+            console.error('progressBar element not found!');
+        } else {
+            // Update progress bar
             progressBar.style.width = `${progress}%`;
             progressBar.setAttribute('aria-valuenow', progress);
             progressBar.textContent = `${progress}%`;
+            
+            // Also handle status-specific styling
+            if (status === 'completed') {
+                progressBar.classList.remove('progress-bar-animated', 'progress-bar-striped', 'bg-danger');
+                progressBar.classList.add('bg-success');
+            } else if (status === 'failed' || status === 'cancelled') {
+                progressBar.classList.remove('progress-bar-animated', 'progress-bar-striped', 'bg-success');
+                progressBar.classList.add('bg-danger');
+            } else if (status === 'running') {
+                progressBar.classList.add('progress-bar-animated', 'progress-bar-striped', 'bg-primary');
+                progressBar.classList.remove('bg-success', 'bg-danger');
+            }
         }
         
         // Get and update status message
         const progressStatus = document.getElementById('progressStatus');
-        if (progressStatus) {
+        if (!progressStatus) {
+            console.error('progressStatus element not found!');
+        } else {
             progressStatus.textContent = message || 'Processing...';
         }
         
@@ -112,18 +135,12 @@ function initJobQueue() {
             // Show completion message
             showMessage('Video generation completed!', 'success');
             
-            // Update UI for completed state
-            if (progressBar) {
-                progressBar.classList.remove('progress-bar-animated', 'progress-bar-striped');
-                progressBar.classList.add('bg-success');
-            }
-            
-            // After a delay, hide the progress container
+            // After a delay, hide the progress container and switch tabs
             setTimeout(() => {
                 // Switch to the job queue tab to show the completed job
                 const queueTab = document.getElementById('queue-tab');
                 if (queueTab) {
-                    queueTab.click();
+                    bootstrap.Tab.getOrCreateInstance(queueTab).show();
                 }
                 
                 // Reset the editor state
@@ -140,12 +157,6 @@ function initJobQueue() {
             // Show error message
             showMessage(`Job ${status}: ${message}`, 'error');
             
-            // Update UI for failed state
-            if (progressBar) {
-                progressBar.classList.remove('progress-bar-animated', 'progress-bar-striped');
-                progressBar.classList.add('bg-danger');
-            }
-            
             // After a delay, hide the progress container
             setTimeout(() => {
                 progressContainer.classList.add('d-none');
@@ -153,38 +164,56 @@ function initJobQueue() {
             }, 5000);
         } 
         else if (status === 'running') {
-            // Ensure progress bar is styled correctly for running state
-            if (progressBar) {
-                progressBar.classList.add('progress-bar-animated', 'progress-bar-striped');
-                progressBar.classList.remove('bg-success', 'bg-danger');
-                progressBar.classList.add('bg-primary');
-            }
-            
             // Update preview image if provided in the event data
-            if (eventData && eventData.current_latents) {
-                updateProgressPreview(eventData.current_latents);
-            } else if (eventData && eventData.segments && eventData.segments.length > 0) {
-                // Try to use the latest segment for preview
-                const latestSegment = eventData.segments[eventData.segments.length - 1];
-                if (latestSegment) {
-                    const segmentPath = typeof latestSegment === 'string' ? 
-                        latestSegment : (latestSegment.image_path || null);
-                    
-                    if (segmentPath) {
-                        const previewUrl = `/api/serve_file?path=${encodeURIComponent(segmentPath)}`;
-                        updateProgressPreview(previewUrl);
-                    }
-                }
+            const previewUpdate = updateProgressPreview(eventData);
+            if (!previewUpdate) {
+                console.warn('Failed to update preview image');
             }
         }
+        
+        console.log(`Editor progress updated for job ${jobId}`);
+        return true;
     };
     
     // Define updateProgressPreview function for editor
-    window.updateProgressPreview = function(previewUrl) {
+    window.updateProgressPreview = function(eventData) {
+        console.log('updateProgressPreview called with data:', eventData);
+        
         const previewContainer = document.getElementById('previewContainer');
         const previewImage = document.getElementById('previewImage');
         
-        if (!previewContainer || !previewImage) return;
+        if (!previewContainer || !previewImage) {
+            console.error('Preview elements not found: container=', !!previewContainer, 'image=', !!previewImage);
+            return false;
+        }
+        
+        let previewUrl = null;
+        
+        // Try to extract a preview URL from the event data
+        if (eventData) {
+            // Option 1: Direct current_latents URL
+            if (eventData.current_latents) {
+                previewUrl = eventData.current_latents;
+                console.log('Using current_latents for preview:', previewUrl);
+            } 
+            // Option 2: Latest segment from segments array
+            else if (eventData.segments && eventData.segments.length > 0) {
+                const latestSegment = eventData.segments[eventData.segments.length - 1];
+                
+                if (typeof latestSegment === 'string') {
+                    previewUrl = latestSegment;
+                    console.log('Using latest segment string for preview:', previewUrl);
+                } else if (latestSegment && latestSegment.image_path) {
+                    previewUrl = latestSegment.image_path;
+                    console.log('Using latest segment image_path for preview:', previewUrl);
+                }
+            }
+        }
+        
+        if (!previewUrl) {
+            console.warn('No valid preview URL found in event data');
+            return false;
+        }
         
         // Show the preview container
         previewContainer.classList.remove('d-none');
@@ -195,6 +224,8 @@ function initJobQueue() {
             formattedUrl = `/api/serve_file?path=${encodeURIComponent(previewUrl)}`;
         }
         
+        console.log('Setting preview image src to:', formattedUrl);
+        
         // Update the preview image
         previewImage.src = formattedUrl;
         
@@ -204,7 +235,10 @@ function initJobQueue() {
         if (currentJobThumbnail && currentJobImage) {
             currentJobThumbnail.classList.remove('d-none');
             currentJobImage.src = formattedUrl;
+            console.log('Updated thumbnail image as well');
         }
+        
+        return true;
     };
     
     loadJobQueue();
@@ -270,15 +304,18 @@ function setupJobWebSocketListener() {
             // Update the job in the queue UI
             updateJobInQueue(jobId, status, progress, message);
             
-            // If this is the currently active job in the editor, update the editor UI
-            if (window.currentActiveJobId === jobId) {
-                // Update the editor progress display
-                updateEditorProgress(jobId, status, progress, message, event);
-            } else if (typeof updateEditorProgress === 'function') {
-                // Even if not active, update editor UI if a job is running
-                // This ensures progress visibility across all tabs
-                if (status === 'running' || status === 'completed' || status === 'failed') {
-                    updateEditorProgress(jobId, status, progress, message, event);
+            // IMPORTANT: For running jobs, always update the editor progress display
+            // regardless of whether it's the active job
+            if (status === 'running') {
+                console.log("Updating editor progress for running job:", jobId);
+                window.currentActiveJobId = jobId; // Set this job as active for UI purposes
+                window.updateEditorProgress(jobId, status, progress, message, event);
+            } 
+            // For completed or failed jobs, only update if it's the active job
+            else if (status === 'completed' || status === 'failed') {
+                console.log("Job completed or failed, updating editor UI:", jobId);
+                if (window.currentActiveJobId === jobId || !window.currentActiveJobId) {
+                    window.updateEditorProgress(jobId, status, progress, message, event);
                 }
             }
             

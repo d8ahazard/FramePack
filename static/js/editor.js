@@ -864,16 +864,29 @@ function startGeneration() {
         return;
     }
     
-    // Show progress UI
-    elements.progressContainer.classList.remove('d-none');
-    elements.progressBar.style.width = '0%';
-    elements.progressBar.setAttribute('aria-valuenow', 0);
-    elements.progressBar.textContent = '0%';
-    elements.progressStatus.textContent = 'Preparing generation request...';
-    
     // Generate a job ID
     const timestamp = Math.floor(Date.now() / 1000);
     const jobId = `${timestamp}_${Math.floor(Math.random() * 1000)}`;
+    
+    // Set this as the current active job for UI updates
+    window.currentActiveJobId = jobId;
+    
+    // Show progress UI
+    const progressContainer = document.getElementById('progressContainer');
+    const progressBar = document.getElementById('progressBar');
+    const progressStatus = document.getElementById('progressStatus');
+    
+    if (progressContainer && progressBar && progressStatus) {
+        progressContainer.classList.remove('d-none');
+        progressBar.style.width = '0%';
+        progressBar.setAttribute('aria-valuenow', 0);
+        progressBar.textContent = '0%';
+        progressStatus.textContent = 'Preparing generation request...';
+        
+        // Add animation classes to progress bar
+        progressBar.classList.add('progress-bar-animated', 'progress-bar-striped', 'bg-primary');
+        progressBar.classList.remove('bg-success', 'bg-danger');
+    }
     
     // Use common function to prepare the job payload
     const payload = prepareJobPayload();
@@ -932,7 +945,10 @@ function startGeneration() {
     })
     .then(data => {
         console.log('Generation started:', data);
-        elements.progressStatus.textContent = 'Generation started! Monitoring progress...';
+        
+        if (progressStatus) {
+            progressStatus.textContent = 'Generation started! Monitoring progress...';
+        }
         
         // Store current job ID
         const currentJobId = jobId;
@@ -950,18 +966,21 @@ function startGeneration() {
         // Refresh the job queue
         loadJobQueue();
         
-        // Start websocket connection if supported
-        if (window.WebSocket) {
-            setupJobWebsocketConnection(currentJobId);
-        } else {
-            // Fallback to polling for browsers without WebSocket support
-            pollJobStatus(currentJobId);
-        }
+        // Connect to WebSocket
+        connectJobWebsocket(currentJobId);
+        
+        // Log that we've started monitoring
+        console.log(`Connected to WebSocket for job ${currentJobId}`);
     })
     .catch(error => {
         console.error('Error starting generation:', error);
-        elements.progressStatus.textContent = 'Error: ' + error.message;
-        elements.progressBar.classList.add('bg-danger');
+        
+        if (progressStatus) {
+            progressStatus.textContent = 'Error: ' + error.message;
+        }
+        if (progressBar) {
+            progressBar.classList.add('bg-danger');
+        }
     });
 }
 
