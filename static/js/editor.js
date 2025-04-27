@@ -422,8 +422,8 @@ function initEditor() {
     // Initialize timeline drop zone
     initTimelineDropZone();
     
-    // Set up WebSocket for job updates
-    setupEditorJobListener();
+    // Note: We no longer need to set up a separate WebSocket listener here
+    // as we now use the central WebSocket listener in job_queue.js for all updates
     
     // Add sort buttons event listeners
     const sortAscBtn = document.getElementById('sortAscBtn');
@@ -439,13 +439,6 @@ function initEditor() {
 
     console.log('Files module initialized');
     
-    // Clean up WebSocket listener when leaving the page
-    window.addEventListener('beforeunload', () => {
-        if (editorJobListenerIndex >= 0) {
-            removeJobEventListener(editorJobListenerIndex);
-        }
-    });
-
     // Initialize upload modal
     // Add event listeners
     if (elements.fileInput) {
@@ -463,8 +456,6 @@ function initEditor() {
         elements.uploadDropArea.addEventListener('drop', handleFileDrop);
         elements.uploadDropArea.addEventListener('click', triggerFileInput);
     }
-
-
 }
 
 // Initialize event listeners for the editor module
@@ -543,6 +534,18 @@ function initEventListeners() {
 }
 
 // Show upload modal
+function showUploadModal() {
+    // Clear previous uploads
+    if (elements.imageUploadContainer) {
+        elements.imageUploadContainer.innerHTML = '';
+    }
+    selectedFiles = [];
+    
+    // Show the modal
+    if (uploadModal) {
+        uploadModal.show();
+    }
+}
 
 // Add timeline drop zone for drag & drop from desktop
 function initTimelineDropZone() {

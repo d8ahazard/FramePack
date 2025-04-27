@@ -76,6 +76,9 @@ function getThumbnailUrl(job, frameIndex = 0) {
 function initJobQueue() {
     console.log('Job Queue module initialized');
     
+    // Export functions for use in other modules
+    window.updateJobInQueue = updateJobInQueue;
+    
     loadJobQueue();
     
     // Setup job WebSocket listener if not already set up
@@ -132,6 +135,12 @@ function setupJobWebSocketListener() {
             if (window.currentActiveJobId === jobId) {
                 // Update the editor progress display
                 updateEditorProgress(jobId, status, progress, message);
+            } else if (typeof updateEditorProgress === 'function') {
+                // Even if not active, update editor UI if a job is running
+                // This ensures progress visibility across all tabs
+                if (status === 'running' || status === 'completed' || status === 'failed') {
+                    updateEditorProgress(jobId, status, progress, message, event);
+                }
             }
             
             // If job details are currently displayed, refresh them with new data
@@ -151,6 +160,11 @@ function setupJobWebSocketListener() {
             if (status === 'completed' || status === 'failed') {
                 // Reload the entire job queue to get the most up-to-date information
                 setTimeout(() => loadJobQueue(), 500);
+                
+                // If outputs tab has a refresh function, call it
+                if (typeof loadOutputs === 'function') {
+                    setTimeout(() => loadOutputs(), 1000);
+                }
             }
         }
     });
@@ -283,7 +297,49 @@ function updateJobInQueue(jobId, status, progress, message) {
         loadJobDetails(jobId);
     }
     
+    // Update the job details if they're visible
+    const jobDetailContainer = document.getElementById('jobDetailContainer');
+    if (jobDetailContainer) {
+        // Check if there's job detail information visible for this job
+        const jobInfoCard = jobDetailContainer.querySelector(`.card[data-job-id="${jobId}"]`);
+        if (jobInfoCard) {
+            // Update status badge in the job info card
+            const detailsStatusBadge = jobInfoCard.querySelector('.badge');
+            if (detailsStatusBadge) {
+                detailsStatusBadge.className = `badge ${getStatusBadgeClass(status)}`;
+                detailsStatusBadge.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+            }
+            
+            // Update progress bar in details view
+            const detailsProgressBar = jobDetailContainer.querySelector('.progress-bar');
+            if (detailsProgressBar) {
+                detailsProgressBar.style.width = `${progress}%`;
+                detailsProgressBar.setAttribute('aria-valuenow', progress);
+                detailsProgressBar.textContent = `${progress}%`;
+            }
+            
+            // Update message in details view
+            const messageElement = jobDetailContainer.querySelector('p:contains("Message:")');
+            if (messageElement) {
+                messageElement.innerHTML = `<strong>Message:</strong> ${message || 'No message'}`;
+            }
+        }
+    }
+    
     console.log(`Updated job ${jobId} in queue UI: status=${status}, progress=${progress}`);
+}
+
+// Helper function to get badge class based on job status
+function getStatusBadgeClass(status) {
+    switch (status) {
+        case 'completed': return 'bg-success';
+        case 'failed': return 'bg-danger';
+        case 'running': return 'bg-primary';
+        case 'queued': return 'bg-warning';
+        case 'cancelled': return 'bg-secondary';
+        case 'saved': return 'bg-info';
+        default: return 'bg-secondary';
+    }
 }
 
 // Load the job queue UI
