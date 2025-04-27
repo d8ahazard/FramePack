@@ -17,7 +17,7 @@ import modules
 from datatypes.datatypes import EndpointFilter
 from handlers.file import cleanup_thumbnail_cache
 from handlers.model import preload_all_models
-from handlers.path import thumbnail_path, upload_path, output_path
+from handlers.path import thumbnail_path, upload_path, output_path, app_path
 from handlers.socket import process_broadcasts
 from handlers.job_queue import clear_running_jobs
 
@@ -78,6 +78,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+static_path = os.path.join(app_path, "static")
 # Mount static files directory
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/outputs", StaticFiles(directory=output_path), name="outputs")
