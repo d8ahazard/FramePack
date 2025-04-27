@@ -30,6 +30,9 @@ from modules.framepack.diffusers_helper.pipelines.k_diffusion_hunyuan import sam
 from modules.framepack.diffusers_helper.utils import crop_or_pad_yield_mask, resize_and_center_crop, soft_append_bcthw, \
     save_bcthw_as_mp4
 
+import logging
+
+logger = logging.getLogger(__name__)
 text_encoder = None
 text_encoder_2 = None
 image_encoder = None
@@ -99,7 +102,7 @@ def load_models():
     vae.enable_tiling()
 
     transformer.high_quality_fp32_output_for_inference = True
-    print('transformer.high_quality_fp32_output_for_inference = True')
+    logger.info('transformer.high_quality_fp32_output_for_inference = True')
 
     # dtype cast
     transformer.to(dtype=torch.bfloat16)
@@ -168,12 +171,11 @@ def worker(
         segment_number = segment_index + 1
     else:
         segment_number = 1
-
-    base_name = f"{job_id}_segment_{segment_number}"
+    timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    base_name = f"{job_id}_segment_{segment_number}_{timestamp}"
+    logger.info(f"base_name: {base_name}")
     output_file = os.path.join(output_path, f"{base_name}.mp4")
-    temp_dir = os.path.join(output_path, f"{base_name}_temp")
-    os.makedirs(temp_dir, exist_ok=True)
-
+    
     job_status.message = "Starting..."
     job_status.progress = 0
 
@@ -204,25 +206,25 @@ def worker(
                     vae,
                     transformer
                 ]
-                print("Ultra high memory mode: Keeping all models")
+                logger.info("Ultra high memory mode: Keeping all models")
             elif free_mem_gb >= 23:
                 transformer.to(gpu)
                 models_to_keep_in_memory = [
                     transformer,
                     vae
                 ]
-                print("High memory mode: Keeping transform & text encoders")
+                logger.info("High memory mode: Keeping transform & text encoders")
             elif free_mem_gb >= 4:
                 if free_mem_gb >= 6:
                     image_encoder.to(gpu)
                     vae.to(gpu)
-                    print("Medium memory mode: + image encoder & VAE")
+                    logger.info("Medium memory mode: + image encoder & VAE")
                 else:
-                    print("Medium memory mode: text encoders only")
+                    logger.info("Medium memory mode: text encoders only")
             else:
-                print("Low memory mode: no preloads")
+                logger.info("Low memory mode: no preloads")
         else:
-            print("Compatibility mode: unloading all")
+            logger.info("Compatibility mode: unloading all")
             unload_complete_models(
                 text_encoder,
                 text_encoder_2,
@@ -445,6 +447,7 @@ def worker(
                         # Update job status with latest latent preview
                         status_obj = job_statuses.get(job_id)
                         if status_obj:
+                            logger.info(f"Updating job status with latent preview: {preview_filename}")
                             # Use a consistent path that doesn't include the step number
                             status_obj.current_latents = preview_filename
                             # Add a cache-busting parameter to force browser refresh
@@ -468,13 +471,15 @@ def worker(
 
                             # Save updated status to disk
                             save_job_data(job_id, status_obj.to_dict())
+                        else:
+                            logger.info(f"Job status object not found for job_id {job_id}")
                     except Exception as e:
-                        print(f"Error saving latent preview: {e}")
+                        logger.info(f"Error saving latent preview: {e}")
 
                     # Check if the job has been cancelled
                     status_obj = job_statuses.get(job_id)
                     if status_obj and status_obj.status == "cancelled":
-                        print(f"Job {job_id} was cancelled during processing")
+                        logger.info(f"Job {job_id} was cancelled during processing")
                         # This will cause the sampling to stop at the current step
                         d['stop'] = True
 
@@ -545,6 +550,7 @@ def worker(
         job_status.progress = 100
         job_status.message = "Generation completed"
         job_status.result_video = output_file
+        logger.info(f"job_status: {job_status}")
         # Delete the latent preview image
         output_filename = f"uploads/{job_id}_latent.jpg"
 
@@ -554,8 +560,7 @@ def worker(
         save_job_data(job_id, job_status.to_dict())
         if progress_callback:
             progress_callback(100)
-
-        return output_file
+        logger.info(f"Generation completed")
 
     except Exception as e:
         job_status.status = "failed"
@@ -563,37 +568,22 @@ def worker(
         # Save error status to disk
         save_job_data(job_id, job_status.to_dict())
         traceback.print_exc()
-        return None
-    finally:
-        if not high_vram and segment_index is None:
-            unload_complete_models(
-                text_encoder,
-                text_encoder_2,
-                image_encoder,
-                vae,
-                transformer
-            )
-        try:
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
-        except Exception as e:
-            print(f"Cleanup error: {e}")
-        return None
+        if not os.path.exists(output_file):
+            output_file = None
 
-#     job_id: str
-#     global_prompt: str
-#     mp4_crf: int
-#     negative_prompt: str
-#     segments: List[SegmentConfig]
-#     seed: int = 31337
-#     steps: int = 25
-#     guidance_scale: float = 10.0
-#     use_teacache: bool = True
-#     enable_adaptive_memory: bool = True
-#     resolution: int = 640
-#     mp4_crf: int = 16
-#     gpu_memory_preservation: float = 6.0
-#     include_last_frame: bool = False  # Control whether to generate a segment for the last frame
+    if not high_vram and segment_index is None:
+        unload_complete_models(
+            text_encoder,
+            text_encoder_2,
+            image_encoder,
+            vae,
+            transformer
+        )
+    if not os.path.exists(output_file):
+        output_file = None
+    logger.info(f"Returning output_file: {output_file}")
+    return output_file
+
 
 
 
@@ -669,11 +659,11 @@ def worker_multi_segment(
 
     # Check if the job has been cancelled
     if job_status.status == "cancelled":
-        print(f"Job {job_id} was cancelled before processing started")
+        logger.info(f"Job {job_id} was cancelled before processing started")
         try:
             shutil.rmtree(master_temp)
         except Exception as e:
-            print(f"Cleanup error: {e}")
+            logger.info(f"Cleanup error: {e}")
         return None
 
     # Single segment case - simple animation from one image
@@ -686,11 +676,11 @@ def worker_multi_segment(
         try:
             # Check if the job has been cancelled
             if job_status.status == "cancelled":
-                print(f"Job {job_id} was cancelled before single segment processing started")
+                logger.info(f"Job {job_id} was cancelled before single segment processing started")
                 try:
                     shutil.rmtree(master_temp)
                 except Exception as e:
-                    print(f"Cleanup error: {e}")
+                    logger.info(f"Cleanup error: {e}")
                 return None
 
             # Get the image path directly from the segment
@@ -700,7 +690,7 @@ def worker_multi_segment(
                 raise FileNotFoundError(f"Image file not found: {image_path}")
 
             # Load start image
-            print(f"Loading single image from: {image_path}")
+            logger.info(f"Loading single image from: {image_path}")
             start_image = np.array(Image.open(image_path).convert('RGB'))
 
             # Use segment prompt if provided, concatenate with global prompt
@@ -732,7 +722,7 @@ def worker_multi_segment(
                         message=job_status.message
                     )
                 except Exception as e:
-                    print(f"Error updating status via websocket: {e}")
+                    logger.info(f"Error updating status via websocket: {e}")
 
             # Generate the video with the single image
             segment_output = worker(
@@ -773,20 +763,21 @@ def worker_multi_segment(
 
         except Exception as e:
             error_msg = f"Error processing single image: {str(e)}"
-            print(error_msg)
+            logger.info(error_msg)
             job_status.status = "failed"
             job_status.message = error_msg
             save_job_data(job_id, job_status.to_dict())
             return None
 
-    # Process multiple segments (original implementation)
-    # Process segments in reverse order
+    job_status.message = "Processing multi-segment video..."
+    save_job_data(job_id, job_status.to_dict())
     num_segments = len(segments)
     last_segment = segments[-1]
     use_last_frame = get_segment_value(last_segment, 'use_last_frame', False)
-    framepack_settings = job_status.job_settings.get('framepack', {})
-    use_last_frame = framepack_settings.get('include_last_frame',
-                                            False) if job_status.job_settings else False
+    logger.info(f"use_last_frame: {use_last_frame}")
+    # framepack_settings = job_status.job_settings.get('framepack', {})
+    # use_last_frame = framepack_settings.get('include_last_frame',
+    #                                         False) if job_status.job_settings else False
 
     segment_pairs = []
     if len(segments) > 1:
@@ -799,15 +790,18 @@ def worker_multi_segment(
 
     seg_no = 0
 
+    logger.info(f"segment_pairs: {segment_pairs}")
+
     for (start_segment, end_segment) in segment_pairs:
+        logger.info(f"Processing segments: {start_segment} and {end_segment}")
         # Check if the job has been cancelled
         job_status = job_statuses.get(job_id)
         if job_status and job_status.status == "cancelled":
-            print(f"Job {job_id} was cancelled before segment {seg_no} processing started")
+            logger.info(f"Job {job_id} was cancelled before segment {seg_no} processing started")
             try:
                 shutil.rmtree(master_temp)
             except Exception as e:
-                print(f"Cleanup error: {e}")
+                logger.info(f"Cleanup error: {e}")
             return None
 
         # Calculate progress up to this segment
@@ -835,7 +829,7 @@ def worker_multi_segment(
                 raise FileNotFoundError(f"Image file not found: {image_path}")
 
             # Load start image
-            print(f"Loading image from: {image_path}")
+            logger.info(f"Loading start image from: {image_path}")
             start_image = np.array(Image.open(image_path).convert('RGB'))
 
             # Load end image if not the last segment
@@ -848,13 +842,13 @@ def worker_multi_segment(
                 if not os.path.exists(end_image_path):
                     raise FileNotFoundError(f"End image file not found: {end_image_path}")
 
-                print(f"Loading end image from: {end_image_path}")
+                logger.info(f"Loading end image from: {end_image_path}")
                 end_image = np.array(Image.open(end_image_path).convert('RGB'))
 
 
         except Exception as e:
             error_msg = f"Error loading image for segment {seg_no}: {str(e)}"
-            print(error_msg)
+            logger.info(error_msg)
             job_status.status = "failed"
             job_status.message = error_msg
             save_job_data(job_id, job_status.to_dict())
@@ -882,7 +876,7 @@ def worker_multi_segment(
             #         message=job_status.message
             #     )
             # except Exception as e:
-            #     print(f"Error updating status via websocket: {e}")
+            #     logger.info(f"Error updating status via websocket: {e}")
 
         # Clear cache if needed
         curr_free = get_cuda_free_memory_gb(gpu)
@@ -893,6 +887,7 @@ def worker_multi_segment(
                     text_encoder, text_encoder_2, image_encoder, vae, transformer
                 )
 
+        logger.info(f"Generating segment {seg_no} with length {segment_duration} seconds...")
         # Generate this segment
         segment_output = worker(
             job_id=master_job_id,
@@ -918,6 +913,7 @@ def worker_multi_segment(
         )
 
         if segment_output:
+            logger.info(f"Segment {seg_no} generated: {segment_output}")
             segment_paths.append((seg_no, segment_output))
             completed_steps += segment_workloads[seg_no]
         else:
@@ -931,13 +927,17 @@ def worker_multi_segment(
 
     # Concatenate all segments in order
     concat_txt = os.path.join(master_temp, "concat_list.txt")
+    logger.info(f"Concatenating segments in order: {concat_txt}")
+    cat_txt = ""
     with open(concat_txt, 'w') as f:
         for seg_no, path in sorted(segment_paths, key=lambda x: x[0]):
             # Ensure an absolute path with proper escaping for FFmpeg
             abs_path = os.path.abspath(path).replace('\\', '/')
+            cat_txt += f"file '{abs_path}'\n"
             f.write(f"file '{abs_path}'\n")
-
+    logger.info(f"cat_txt: {cat_txt}")
     final_output = os.path.join(output_path, f"{master_job_id}_final.mp4")
+    logger.info(f"Final output: {final_output}")
     try:
         subprocess.run([
             'ffmpeg', '-f', 'concat', '-safe', '0',
@@ -954,14 +954,15 @@ def worker_multi_segment(
         try:
             os.remove(concat_txt)
         except Exception as e:
-            print(f"Error removing concat file {concat_txt}: {e}")
+            logger.info(f"Error removing concat file {concat_txt}: {e}")
 
     if os.path.exists(final_output):
         for seg_no, path in segment_paths:
             try:
                 os.remove(path)
+                logger.info(f"Removed segment file {path}")
             except Exception as e:
-                print(f"Error removing segment file {path}: {e}")
+                logger.info(f"Error removing segment file {path}: {e}")
 
     if not high_vram:
         unload_complete_models(
@@ -970,7 +971,7 @@ def worker_multi_segment(
     try:
         shutil.rmtree(master_temp)
     except Exception as e:
-        print(f"Cleanup error: {e}")
+        logger.info(f"Cleanup error: {e}")
 
     job_status.status = "completed"
     job_status.progress = 100

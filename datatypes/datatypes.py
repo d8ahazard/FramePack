@@ -120,7 +120,11 @@ class DeleteVideoRequest(BaseModel):
 
 class EndpointFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        return not (record.getMessage().find("GET /api/job_status/") >= 0)
+        if record.getMessage().find("206 Partial Content") >= 0:
+            return False
+        if record.getMessage().find("200 OK") >= 0:
+            return False
+        return True
 
 
 class ErrorResponse(BaseModel):

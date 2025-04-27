@@ -4,10 +4,12 @@ import json
 import queue
 from typing import Dict, Any
 from typing import List
+import logging
 
 from fastapi import WebSocket, WebSocketDisconnect
 
 from datatypes.datatypes import ConnectionManager
+logger = logging.getLogger(__name__)
 
 # Create connection manager instances
 global_manager = ConnectionManager()  # For broadcasts to all clients
@@ -103,6 +105,7 @@ def update_status_sync(job_id: str, status: str = None, progress: int = None, me
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
+
                 loop.create_task(message_queue.put(update_data))
                 return
         except RuntimeError:
@@ -171,6 +174,7 @@ def queue_broadcast(job_id: str, data: Dict[str, Any]):
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
+                logger.info("Using existing event loop for broadcast")
                 loop.create_task(update_status(job_id, data=data))
                 return
         except RuntimeError:
@@ -180,7 +184,9 @@ def queue_broadcast(job_id: str, data: Dict[str, Any]):
         # Use a new event loop for this operation
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        logger.info("Creating new event loop for broadcast")
         loop.run_until_complete(update_status(job_id, data=data))
+        logger.info("Broadcast queued successfully")
         loop.close()
     except Exception as e:
         print(f"Error queuing broadcast: {e}")

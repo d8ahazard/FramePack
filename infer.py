@@ -21,6 +21,9 @@ from handlers.path import thumbnail_path, upload_path, output_path
 from handlers.socket import process_broadcasts
 from handlers.job_queue import clear_running_jobs
 
+# Set default logging level to INFO
+logging.basicConfig(level=logging.INFO)
+
 logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 
 parser = argparse.ArgumentParser()

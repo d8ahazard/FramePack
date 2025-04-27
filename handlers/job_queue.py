@@ -145,6 +145,7 @@ def save_job_data(job_id, data_dict):
         progress = data_dict.get("progress")
         message = data_dict.get("message")
         # Update with all data for complete information
+        logger.info(f"Broadcasting job update for {job_id}: {status}, {progress}, {message}")
         update_status_sync(job_id, status, progress, message, data_dict)
     except Exception as e:
         logger.error(f"Error queuing job update for broadcast: {e}")

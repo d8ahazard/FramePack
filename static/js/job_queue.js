@@ -103,7 +103,7 @@ function setupJobWebSocketListener() {
     // Register event listener for job status updates
     jobListenerIndex = addJobEventListener(event => {
         // Check if this is a job status update
-        if (event.type === 'job_update') {
+        if (event.type === 'job_update' || event.type === 'status_update') {
             console.log('Job update received via WebSocket:', event);
             
             // Extract job details
