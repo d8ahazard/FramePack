@@ -7,15 +7,11 @@ import {
     showMessage, 
     enforceHorizontalLayout, 
     checkImageExists,
-    connectJobWebsocket,
-    disconnectJobWebsocket,
-    addJobEventListener,
-    removeJobEventListener,
-    JOB_EVENT_TYPES
-} from './common.js';
+    connectJobWebsocket} from './common.js';
 
 import {
-    loadJobQueue
+    loadJobQueue,
+    runJob
 } from './job_queue.js';
 
 // Track current active job ID in the editor
@@ -948,7 +944,14 @@ function startGeneration() {
     
     // Generate a job ID
     const timestamp = Math.floor(Date.now() / 1000);
-    const jobId = `${timestamp}_${Math.floor(Math.random() * 1000)}`;
+    let jobId = `${timestamp}_${Math.floor(Math.random() * 1000)}`;
+    // Use the current job ID if it exists
+    if (window.currentJobId) {
+        jobId = window.currentJobId;
+        console.log('Using existing job ID:', jobId);
+    } else {
+        window.currentJobId = jobId;
+    }
     
     // Set this as the current active job for UI updates
     window.currentActiveJobId = jobId;
@@ -1012,30 +1015,7 @@ function startGeneration() {
     .then(data => {
         console.log('Job saved:', data);
         
-        // Now run the job using the run_job endpoint
-        return fetch(`/api/run_job/${jobId}`, {
-            method: 'POST'
-        });
-    })
-    .then(response => {
-        if (!response.ok) {
-            return response.text().then(text => {
-                throw new Error(`Failed to start generation: ${text}`);
-            });
-        }
-        return response.json();
-    })
-    .then(data => {
-        console.log('Generation started:', data);
-        
-        if (progressStatus) {
-            progressStatus.textContent = 'Generation started! Monitoring progress...';
-        }
-        
-        // Store current job ID
-        const currentJobId = jobId;
-        
-        // Clear the timeline after successfully starting a job
+        // Clear the timeline after successfully saving a job
         // Clear UI
         elements.timelineContainer.innerHTML = '';
         
@@ -1045,14 +1025,19 @@ function startGeneration() {
         // Update status
         updateTimelineStatus();
         
-        // Refresh the job queue
-        loadJobQueue();
+        const originalConfirm = window.confirm;
+        window.confirm = () => true;
         
-        // Connect to WebSocket
-        connectJobWebsocket(currentJobId);
-        
-        // Log that we've started monitoring
-        console.log(`Connected to WebSocket for job ${currentJobId}`);
+        try {
+            runJob(jobId);
+            console.log(`Job ${jobId} started using job_queue.runJob`);
+        } catch (err) {
+            console.error('Error running job from job_queue module:', err);
+            showMessage(`Error starting job: ${err.message}`, 'error');
+        } finally {
+            // Restore original confirm function
+            window.confirm = originalConfirm;
+        }
     })
     .catch(error => {
         console.error('Error starting generation:', error);
@@ -1091,7 +1076,13 @@ function saveJob() {
     
     // Generate a job ID if not provided
     const timestamp = Math.floor(Date.now() / 1000);
-    const jobId = `${timestamp}_${Math.floor(Math.random() * 1000)}`;
+    let jobId = `${timestamp}_${Math.floor(Math.random() * 1000)}`;
+    // Use the current job ID if it exists
+    if (window.currentJobId) {
+        jobId = window.currentJobId;
+    } else {
+        window.currentJobId = jobId;
+    }
     
     // Use common function to prepare the job settings
     const jobSettings = prepareJobPayload();
@@ -1109,7 +1100,7 @@ function saveJob() {
         segments: segmentPaths,
         is_valid: true,
         missing_images: [],
-        job_settings: prepareModuleJobSettings(jobSettings),
+        job_settings: {framepack: jobSettings},
         queue_position: -1,
         created_timestamp: timestamp
     };
@@ -1281,8 +1272,7 @@ function setupJobWebsocketConnection(jobId) {
         return true;
     } catch (error) {
         console.error("Error connecting to job websocket:", error);
-        // Fall back to polling
-        pollJobStatus(jobId);
+        
         return null;
     }
 }
@@ -1419,35 +1409,6 @@ function handleJobCompletion(data) {
     });
 }
 
-// Function to poll job status - preserved for backwards compatibility
-function pollJobStatus(jobId) {
-    // Set up interval for polling the job status
-    const statusInterval = setInterval(async () => {
-        try {
-            const response = await fetch(`/api/job_status/${jobId}`);
-            if (!response.ok) {
-                throw new Error(`Failed to fetch job status: ${response.statusText}`);
-            }
-            
-            const data = await response.json();
-            
-            // Update UI based on job status
-            updateJobUI(data);
-            
-            // Check if job is completed or failed
-            if (data.status === 'completed' || data.status === 'failed') {
-                clearInterval(statusInterval);
-                handleJobCompletion(data);
-            }
-        } catch (error) {
-            console.error('Error polling job status:', error);
-            clearInterval(statusInterval);
-            document.getElementById('progressStatus').textContent = `Error: ${error.message}`;
-            document.getElementById('generateVideoBtn').disabled = false;
-        }
-    }, 2000);
-}
-
 // Function to clear the timeline
 function clearTimeline() {
     if (timeline.length === 0) {
@@ -1463,6 +1424,9 @@ function clearTimeline() {
         
         // Update status
         updateTimelineStatus();
+
+        // Clear the current job ID
+        window.currentJobId = null;
         
         // Show confirmation message
         showMessage('Timeline cleared', 'info');
@@ -1948,7 +1912,6 @@ export {
     deleteCurrentFrame,
     startGeneration,
     saveJob,
-    pollJobStatus,
     uploadModal,
     setupJobWebsocketConnection,
     updateJobUI,

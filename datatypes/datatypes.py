@@ -2,7 +2,7 @@ from abc import ABC
 import json
 import logging
 import time
-from typing import Annotated, List, Optional, Dict, Set
+from typing import List, Optional, Dict, Set
 
 import torch
 from pydantic import BaseModel
@@ -14,8 +14,20 @@ class ConnectionManager:
         # Store active connections by job_id
         self.active_connections: Dict[str, Set[WebSocket]] = {}
 
+    def get_running_job_id(self):
+        # Import from job_queue, and do it here to avoid circular import
+        from handlers.job_queue import job_statuses
+        # Get the first job in the queue that is running
+        for job_id, status in job_statuses.items():
+            if status.status == "running":
+                return job_id
+        return None
+
     async def connect(self, websocket: WebSocket, job_id: str):
         await websocket.accept()
+        # If job_id is "undefined", and there's a running job in the queue, use that job_id
+        if job_id == "undefined":
+            job_id = self.get_running_job_id()
         if job_id not in self.active_connections:
             self.active_connections[job_id] = set()
         self.active_connections[job_id].add(websocket)

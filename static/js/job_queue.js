@@ -1380,17 +1380,38 @@ function displayJobDetails(jobData) {
         reloadBtn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Load to Timeline';
         reloadBtn.onclick = () => loadJobToTimeline(jobData.job_id);
         actionContainer.appendChild(reloadBtn);
+    } else {
+        // Show a warning that it has no settings
+        const noSettingsWarning = document.createElement('div');
+        noSettingsWarning.className = 'alert alert-warning';
+        noSettingsWarning.innerHTML = '<i class="bi bi-exclamation-triangle"></i> This job has no settings. It may not be valid.';
+        jobDetailContainer.appendChild(noSettingsWarning);
     }
     
+    const runBtn = document.createElement('button');
+        runBtn.className = 'btn btn-outline-success';
+        
     // Rerun button for completed or failed jobs (only if images are valid)
-    if ((jobData.status === 'completed' || jobData.status === 'failed' || 
-         jobData.status === 'cancelled' || jobData.status === 'saved') && 
-        jobData.job_settings && jobData.is_valid !== false) {
-        const rerunBtn = document.createElement('button');
-        rerunBtn.className = 'btn btn-outline-success';
-        rerunBtn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Rerun Job';
-        rerunBtn.onclick = () => runJob(jobData.job_id);
-        actionContainer.appendChild(rerunBtn);
+    if (jobData.job_settings && jobData.is_valid !== false) {
+        let runText = 'Run Job';
+        if (jobData.status === 'completed' || jobData.status === 'failed' || 
+         jobData.status === 'cancelled') {
+            runText = 'Rerun Job';
+         }  
+        runBtn.innerHTML = '<i class="bi bi-arrow-repeat"></i> ' + runText;
+        runBtn.onclick = () => runJob(jobData.job_id);
+        actionContainer.appendChild(runBtn);
+    } else {
+        // Show a little warning that the job is invalid if...it's invalid
+        if (jobData.is_valid === false) {
+            const invalidJobWarning = document.createElement('div');
+            invalidJobWarning.className = 'alert alert-warning';
+            invalidJobWarning.innerHTML = '<i class="bi bi-exclamation-triangle"></i> This job is missing images. You can reload the job to timeline but must fix the missing images before rerunning.';
+            jobDetailContainer.appendChild(invalidJobWarning);
+        }
+        runBtn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Run Job';
+        runBtn.onclick = () => runJob(jobData.job_id);
+        actionContainer.appendChild(runBtn);
     }
     
     // Delete button for any job
@@ -1749,6 +1770,9 @@ async function loadJobToTimeline(jobId) {
             }
         }
         
+        // Store the job ID in the window object
+        window.currentJobId = jobId;
+
         // Step 4: Update UI and finish
         editorModule.updateTimelineStatus();
 

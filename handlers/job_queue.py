@@ -879,18 +879,18 @@ def register_api_endpoints(app):
         # Collect images to potentially delete
         image_paths_to_check = set()
 
-        # Add images from job settings
-        if job_data.get("job_settings") and "segments" in job_data["job_settings"]:
-            for segment in job_data["job_settings"]["segments"]:
-                if "image_path" in segment and os.path.exists(segment["image_path"]):
-                    image_paths_to_check.add(segment["image_path"])
+        # # Add images from job settings
+        # if job_data.get("job_settings") and "segments" in job_data["job_settings"]:
+        #     for segment in job_data["job_settings"]["segments"]:
+        #         if "image_path" in segment and os.path.exists(segment["image_path"]):
+        #             image_paths_to_check.add(segment["image_path"])
 
-        # Delete result video if it exists
-        if job_data.get("result_video") and os.path.exists(job_data["result_video"]):
-            try:
-                os.remove(job_data["result_video"])
-            except Exception as e:
-                print(f"Failed to delete video file: {e}")
+        # # Delete result video if it exists
+        # if job_data.get("result_video") and os.path.exists(job_data["result_video"]):
+        #     try:
+        #         os.remove(job_data["result_video"])
+        #     except Exception as e:
+        #         print(f"Failed to delete video file: {e}")
 
         # Delete segment videos if they exist
         for segment in job_data.get("segments", []):
