@@ -79,6 +79,134 @@ function initJobQueue() {
     // Export functions for use in other modules
     window.updateJobInQueue = updateJobInQueue;
     
+    // Define a global updateEditorProgress function that properly targets the editor elements
+    window.updateEditorProgress = function(jobId, status, progress, message, eventData) {
+        // Get the progress container element in the editor tab
+        const progressContainer = document.getElementById('progressContainer');
+        if (!progressContainer) return;
+        
+        // Update the current active job ID
+        window.currentActiveJobId = jobId;
+        
+        // Show the progress container
+        progressContainer.classList.remove('d-none');
+        
+        // Get progress bar element
+        const progressBar = document.getElementById('progressBar');
+        
+        // Update progress bar
+        if (progressBar) {
+            progressBar.style.width = `${progress}%`;
+            progressBar.setAttribute('aria-valuenow', progress);
+            progressBar.textContent = `${progress}%`;
+        }
+        
+        // Get and update status message
+        const progressStatus = document.getElementById('progressStatus');
+        if (progressStatus) {
+            progressStatus.textContent = message || 'Processing...';
+        }
+        
+        // Handle different job statuses
+        if (status === 'completed') {
+            // Show completion message
+            showMessage('Video generation completed!', 'success');
+            
+            // Update UI for completed state
+            if (progressBar) {
+                progressBar.classList.remove('progress-bar-animated', 'progress-bar-striped');
+                progressBar.classList.add('bg-success');
+            }
+            
+            // After a delay, hide the progress container
+            setTimeout(() => {
+                // Switch to the job queue tab to show the completed job
+                const queueTab = document.getElementById('queue-tab');
+                if (queueTab) {
+                    queueTab.click();
+                }
+                
+                // Reset the editor state
+                progressContainer.classList.add('d-none');
+                window.currentActiveJobId = null;
+                
+                // Reload the job queue to see the completed job
+                if (typeof loadJobQueue === 'function') {
+                    loadJobQueue();
+                }
+            }, 3000);
+        } 
+        else if (status === 'failed' || status === 'cancelled') {
+            // Show error message
+            showMessage(`Job ${status}: ${message}`, 'error');
+            
+            // Update UI for failed state
+            if (progressBar) {
+                progressBar.classList.remove('progress-bar-animated', 'progress-bar-striped');
+                progressBar.classList.add('bg-danger');
+            }
+            
+            // After a delay, hide the progress container
+            setTimeout(() => {
+                progressContainer.classList.add('d-none');
+                window.currentActiveJobId = null;
+            }, 5000);
+        } 
+        else if (status === 'running') {
+            // Ensure progress bar is styled correctly for running state
+            if (progressBar) {
+                progressBar.classList.add('progress-bar-animated', 'progress-bar-striped');
+                progressBar.classList.remove('bg-success', 'bg-danger');
+                progressBar.classList.add('bg-primary');
+            }
+            
+            // Update preview image if provided in the event data
+            if (eventData && eventData.current_latents) {
+                updateProgressPreview(eventData.current_latents);
+            } else if (eventData && eventData.segments && eventData.segments.length > 0) {
+                // Try to use the latest segment for preview
+                const latestSegment = eventData.segments[eventData.segments.length - 1];
+                if (latestSegment) {
+                    const segmentPath = typeof latestSegment === 'string' ? 
+                        latestSegment : (latestSegment.image_path || null);
+                    
+                    if (segmentPath) {
+                        const previewUrl = `/api/serve_file?path=${encodeURIComponent(segmentPath)}`;
+                        updateProgressPreview(previewUrl);
+                    }
+                }
+            }
+        }
+    };
+    
+    // Define updateProgressPreview function for editor
+    window.updateProgressPreview = function(previewUrl) {
+        const previewContainer = document.getElementById('previewContainer');
+        const previewImage = document.getElementById('previewImage');
+        
+        if (!previewContainer || !previewImage) return;
+        
+        // Show the preview container
+        previewContainer.classList.remove('d-none');
+        
+        // Format the URL if it's a direct path and not already a server URL
+        let formattedUrl = previewUrl;
+        if (previewUrl && !previewUrl.startsWith('/api/') && !previewUrl.startsWith('http')) {
+            formattedUrl = `/api/serve_file?path=${encodeURIComponent(previewUrl)}`;
+        }
+        
+        // Update the preview image
+        previewImage.src = formattedUrl;
+        
+        // Also update the thumbnail if available
+        const currentJobThumbnail = document.getElementById('currentJobThumbnail');
+        const currentJobImage = document.getElementById('currentJobImage');
+        if (currentJobThumbnail && currentJobImage) {
+            currentJobThumbnail.classList.remove('d-none');
+            currentJobImage.src = formattedUrl;
+        }
+    };
+    
     loadJobQueue();
     
     // Setup job WebSocket listener if not already set up
@@ -115,7 +243,7 @@ function setupJobWebSocketListener() {
             const progress = event.progress;
             const message = event.message;
             
-            // Check for video content in the update
+            // Check for video content or preview images in the update
             const hasVideoContent = 
                 event.result_video || 
                 (event.segments && event.segments.some(seg => 
@@ -128,13 +256,24 @@ function setupJobWebSocketListener() {
                 console.log("WebSocket update contains video content:", event);
             }
             
+            // Check for preview images (latents or segments)
+            const hasPreviewImage = event.current_latents || 
+                (event.segments && event.segments.length > 0);
+                
+            if (hasPreviewImage) {
+                console.log("WebSocket update contains preview images:", 
+                    event.current_latents || 
+                    (event.segments && event.segments.length > 0 ? event.segments[event.segments.length - 1] : null)
+                );
+            }
+            
             // Update the job in the queue UI
             updateJobInQueue(jobId, status, progress, message);
             
             // If this is the currently active job in the editor, update the editor UI
             if (window.currentActiveJobId === jobId) {
                 // Update the editor progress display
-                updateEditorProgress(jobId, status, progress, message);
+                updateEditorProgress(jobId, status, progress, message, event);
             } else if (typeof updateEditorProgress === 'function') {
                 // Even if not active, update editor UI if a job is running
                 // This ensures progress visibility across all tabs

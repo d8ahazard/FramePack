@@ -270,28 +270,6 @@ function uploadFileToServer(file) {
     });
 }
 
-// Set up WebSocket listener for job updates in the editor
-function setupEditorJobListener() {
-    // Connect to WebSocket if not already connected
-    connectJobWebsocket();
-    
-    // Register event listener for job status updates
-    editorJobListenerIndex = addJobEventListener(event => {
-        // Handle job update events
-        if (event.type === 'job_update') {
-            // Extract job details
-            const jobId = event.job_id;
-            const status = event.status;
-            const progress = event.progress;
-            const message = event.message;
-            
-            // Update the editor UI if this is the current job
-            if (window.currentActiveJobId === jobId) {
-                updateEditorProgress(jobId, status, progress, message);
-            }
-        }
-    });
-}
 
 // Update editor UI based on job status
 function updateEditorProgress(jobId, status, progress, message) {
@@ -530,20 +508,6 @@ function initEventListeners() {
             // Insert before the generate button
             generateBtn.parentNode.appendChild(clearBtn);
         }
-    }
-}
-
-// Show upload modal
-function showUploadModal() {
-    // Clear previous uploads
-    if (elements.imageUploadContainer) {
-        elements.imageUploadContainer.innerHTML = '';
-    }
-    selectedFiles = [];
-    
-    // Show the modal
-    if (uploadModal) {
-        uploadModal.show();
     }
 }
 
@@ -1200,28 +1164,20 @@ function prepareJobPayload() {
 }
 
 // Function to connect to job websocket and handle updates
+// NOTE: This function is now simplified to use the central WebSocket handler in job_queue.js
 function setupJobWebsocketConnection(jobId) {
     try {
-        const socket = connectJobWebsocket(jobId);
+        // Set the current active job ID
+        window.currentActiveJobId = jobId;
         
-        // Register a handler for job updates
-        const listenerIndex = addJobEventListener(handleJobUpdate);
+        // The job_queue.js module will handle all the WebSocket updates
+        // via its central listener
+        console.log(`Setting up job connection for job ${jobId} (using central WebSocket handler)`);
         
-        // Process job updates from websocket
-        function handleJobUpdate(data) {
-            if (!data || data.job_id !== jobId) return;
-            
-            updateJobUI(data);
-            
-            // If job is complete or failed, clean up
-            if (data.status === 'completed' || data.status === 'failed') {
-                disconnectJobWebsocket();
-                removeJobEventListener(listenerIndex);
-                handleJobCompletion(data);
-            }
-        }
+        // Just connect to the WebSocket - no need to register our own handler
+        connectJobWebsocket(jobId);
         
-        return socket;
+        return true;
     } catch (error) {
         console.error("Error connecting to job websocket:", error);
         // Fall back to polling
@@ -1231,7 +1187,21 @@ function setupJobWebsocketConnection(jobId) {
 }
 
 // Update the job UI based on status data
+// This function is now primarily for backward compatibility and polling
 function updateJobUI(data) {
+    // If we have a global function, use that instead for consistency
+    if (typeof window.updateEditorProgress === 'function') {
+        window.updateEditorProgress(
+            data.job_id, 
+            data.status, 
+            data.progress, 
+            data.message,
+            data // Pass whole data object as eventData
+        );
+        return;
+    }
+    
+    // Fallback implementation for backwards compatibility
     const progressBar = document.getElementById('progressBar');
     const progressStatus = document.getElementById('progressStatus');
     const progressContainer = document.getElementById('progressContainer');
