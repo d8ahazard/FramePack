@@ -511,7 +511,7 @@ function initEventListeners() {
     }
 }
 
-// Add timeline drop zone for drag & drop from desktop
+// Function to add timeline drop zone for drag & drop from desktop
 function initTimelineDropZone() {
     if (!elements.timelineContainer) return;
     
@@ -522,54 +522,136 @@ function initTimelineDropZone() {
     enforceHorizontalLayout();
     
     elements.timelineContainer.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        
-        // If we're over the empty state dropzone or the container itself
-        const dropzone = elements.timelineContainer.querySelector('.timeline-dropzone');
-        if (dropzone) {
-            dropzone.classList.add('active');
-        } else {
-            elements.timelineContainer.classList.add('active-dropzone');
+        // Only handle file drops when the timeline is empty
+        if (timeline.length === 0) {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            // If we're over the empty state dropzone
+            const dropzone = elements.timelineContainer.querySelector('.timeline-dropzone');
+            if (dropzone) {
+                dropzone.classList.add('active');
+            }
         }
     });
     
     elements.timelineContainer.addEventListener('dragleave', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        
-        // If we're over the empty state dropzone or the container itself
-        const dropzone = elements.timelineContainer.querySelector('.timeline-dropzone');
-        if (dropzone) {
-            dropzone.classList.remove('active');
-        } else {
-            elements.timelineContainer.classList.remove('active-dropzone');
+        // Only handle file drops when the timeline is empty
+        if (timeline.length === 0) {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            // If we're over the empty state dropzone
+            const dropzone = elements.timelineContainer.querySelector('.timeline-dropzone');
+            if (dropzone) {
+                dropzone.classList.remove('active');
+            }
         }
     });
     
     elements.timelineContainer.addEventListener('drop', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        
-        // Remove active classes
-        const dropzone = elements.timelineContainer.querySelector('.timeline-dropzone');
-        if (dropzone) {
-            dropzone.classList.remove('active');
-        } else {
-            elements.timelineContainer.classList.remove('active-dropzone');
-        }
-        
-        // Handle files dropped directly from the desktop
-        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-            // Instead of processing immediately, show the upload modal first
-            if (clearSelectedFiles) clearSelectedFiles(); // Clear any previously selected files
-            if (processSelectedFiles) processSelectedFiles(e.dataTransfer.files);
+        // Only handle file drops when the timeline is empty
+        if (timeline.length === 0) {
+            e.preventDefault();
+            e.stopPropagation();
             
-            // Show the upload modal to allow user to confirm/adjust before adding to timeline
-            if (uploadModal) {
-                uploadModal.show();
+            // Remove active classes
+            const dropzone = elements.timelineContainer.querySelector('.timeline-dropzone');
+            if (dropzone) {
+                dropzone.classList.remove('active');
+            }
+            
+            // Handle files dropped directly from the desktop
+            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                // Instead of processing immediately, show the upload modal first
+                if (clearSelectedFiles) clearSelectedFiles(); // Clear any previously selected files
+                if (processSelectedFiles) processSelectedFiles(e.dataTransfer.files);
+                
+                // Show the upload modal to allow user to confirm/adjust before adding to timeline
+                if (uploadModal) {
+                    uploadModal.show();
+                }
             }
         }
+    });
+}
+
+// Timeline drag and drop event handlers
+function handleDragStart(e) {
+    this.classList.add('dragging');
+    dragSrcEl = this;
+    
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/html', this.innerHTML);
+}
+
+function handleTimelineDragOver(e) {
+    if (e.preventDefault) {
+        e.preventDefault();
+    }
+    
+    e.stopPropagation(); // Stop propagation to prevent container handlers from firing
+    
+    e.dataTransfer.dropEffect = 'move';
+    
+    // Add visual indicator that this is a valid drop target
+    this.classList.add('drag-over');
+    
+    return false;
+}
+
+function handleTimelineDragLeave(e) {
+    e.stopPropagation(); // Stop propagation
+    this.classList.remove('drag-over');
+}
+
+function handleTimelineDrop(e) {
+    if (e.preventDefault) {
+        e.preventDefault();
+    }
+    if (e.stopPropagation) {
+        e.stopPropagation();
+    }
+    
+    this.classList.remove('drag-over');
+    
+    // Only proceed if we're dropping onto a different item
+    if (dragSrcEl !== this) {
+        // Get position of source and target elements
+        const items = Array.from(elements.timelineContainer.querySelectorAll('.timeline-item'));
+        const srcIndex = items.indexOf(dragSrcEl);
+        const targetIndex = items.indexOf(this);
+        
+        // Swap elements in the DOM
+        if (targetIndex < srcIndex) {
+            // Moving left (up in horizontal layout)
+            elements.timelineContainer.insertBefore(dragSrcEl, this);
+        } else {
+            // Moving right (down in horizontal layout)
+            if (this.nextSibling) {
+                elements.timelineContainer.insertBefore(dragSrcEl, this.nextSibling);
+            } else {
+                elements.timelineContainer.appendChild(dragSrcEl);
+            }
+        }
+        
+        // Update the timeline array to match the new order
+        updateTimelineArray();
+        
+        // Update frame numbers and the last frame info
+        updateTimelineStatus();
+    }
+    
+    return false;
+}
+
+function handleDragEnd(e) {
+    // Remove visual styles when drag ends
+    this.classList.remove('dragging');
+    
+    const items = elements.timelineContainer.querySelectorAll('.timeline-item');
+    items.forEach(item => {
+        item.classList.remove('drag-over');
     });
 }
 
@@ -1580,6 +1662,10 @@ async function addItemToTimeline(fileObj) {
         }
     }
     
+    // Generate a unique ID for this timeline item
+    const itemId = `timeline-item-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    timelineItem.setAttribute('data-item-id', itemId);
+    
     timelineItem.innerHTML = `
         <div class="frame-number">${frameNumber}</div>
         <img src="${displaySrc}" class="img-fluid rounded ${invalidImageClass}" alt="${fileObj.name}" title="${serverPath}">
@@ -1669,14 +1755,18 @@ async function addItemToTimeline(fileObj) {
     timelineItem.addEventListener('drop', handleTimelineDrop);
     timelineItem.addEventListener('dragend', handleDragEnd);
     
-    timeline.push({
+    // Store the item ID in the timeline object for later reference
+    const timelineObj = {
+        itemId: itemId,
         src: displaySrc,
         file: fileObj.file,
         serverPath: serverPath,
         duration: frameDuration,
         prompt: fileObj.prompt || '',
         valid: imageExists
-    });
+    };
+    
+    timeline.push(timelineObj);
     
     elements.timelineContainer.appendChild(timelineItem);
     
@@ -1700,122 +1790,6 @@ async function addItemToTimeline(fileObj) {
     }
     
     return timelineItem;
-}
-
-// Timeline drag and drop event handlers
-function handleDragStart(e) {
-    this.classList.add('dragging');
-    dragSrcEl = this;
-    
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/html', this.innerHTML);
-}
-
-function handleTimelineDragOver(e) {
-    if (e.preventDefault) {
-        e.preventDefault();
-    }
-    
-    e.dataTransfer.dropEffect = 'move';
-    
-    // Add visual indicator that this is a valid drop target
-    this.classList.add('drag-over');
-    
-    return false;
-}
-
-function handleTimelineDragLeave(e) {
-    this.classList.remove('drag-over');
-}
-
-function handleTimelineDrop(e) {
-    if (e.stopPropagation) {
-        e.stopPropagation();
-    }
-    
-    this.classList.remove('drag-over');
-    
-    // Only proceed if we're dropping onto a different item
-    if (dragSrcEl !== this) {
-        // Get position of source and target elements
-        const items = Array.from(elements.timelineContainer.querySelectorAll('.timeline-item'));
-        const srcIndex = items.indexOf(dragSrcEl);
-        const targetIndex = items.indexOf(this);
-        
-        // Swap elements in the DOM
-        if (targetIndex < srcIndex) {
-            // Moving left (up in horizontal layout)
-            elements.timelineContainer.insertBefore(dragSrcEl, this);
-        } else {
-            // Moving right (down in horizontal layout)
-            if (this.nextSibling) {
-                elements.timelineContainer.insertBefore(dragSrcEl, this.nextSibling);
-            } else {
-                elements.timelineContainer.appendChild(dragSrcEl);
-            }
-        }
-        
-        // Update the timeline array to match the new order
-        updateTimelineArray();
-        
-        // Update frame numbers and the last frame info
-        updateTimelineStatus();
-    }
-    
-    return false;
-}
-
-function handleDragEnd(e) {
-    // Remove visual styles when drag ends
-    this.classList.remove('dragging');
-    
-    const items = elements.timelineContainer.querySelectorAll('.timeline-item');
-    items.forEach(item => {
-        item.classList.remove('drag-over');
-    });
-}
-
-// Function to update the timeline array based on the DOM order
-function updateTimelineArray() {
-    const newTimeline = [];
-    const items = Array.from(elements.timelineContainer.querySelectorAll('.timeline-item'));
-    
-    items.forEach((item, index) => {
-        const img = item.querySelector('img');
-        const promptText = item.querySelector('.prompt-text');
-        const durationInput = item.querySelector('.duration-input');
-        const includeLastCheckbox = item.querySelector('.include-last-frame-checkbox');
-        
-        // Find matching item in original timeline
-        const originalItem = timeline.find(t => {
-            return t.src === img.src;
-        });
-        
-        if (originalItem) {
-            // CRITICAL: Make sure we preserve the serverPath property
-            newTimeline.push({
-                ...originalItem,
-                prompt: promptText ? promptText.value : '',
-                duration: durationInput ? parseFloat(durationInput.value) : originalItem.duration,
-                // Explicitly include serverPath to ensure it's preserved
-                serverPath: originalItem.serverPath,
-                // Save the checkbox state for the last item
-                includeAsSegment: includeLastCheckbox ? includeLastCheckbox.checked : originalItem.includeAsSegment
-            });
-        }
-    });
-    
-    // Replace timeline with new ordered array
-    timeline.length = 0;
-    newTimeline.forEach(item => timeline.push(item));
-    
-    // Log for debugging
-    console.log('Updated timeline array:', timeline.map(item => ({
-        name: item.file?.name,
-        serverPath: item.serverPath,
-        duration: item.duration,
-        includeAsSegment: item.includeAsSegment
-    })));
 }
 
 // Function to show frame edit modal
@@ -1885,6 +1859,80 @@ function saveFrameChanges() {
     // Close modal
     editItemModal.hide();
     currentEditIndex = -1;
+}
+
+// Function to update the timeline array based on the DOM order
+function updateTimelineArray() {
+    const newTimeline = [];
+    const items = Array.from(elements.timelineContainer.querySelectorAll('.timeline-item'));
+    
+    // Log the number of items found in the DOM for debugging
+    console.log(`Found ${items.length} items in the timeline DOM`);
+    
+    items.forEach((item, index) => {
+        // Get the item ID from the data attribute
+        const itemId = item.getAttribute('data-item-id');
+        const promptText = item.querySelector('.prompt-text');
+        const durationInput = item.querySelector('.duration-input');
+        const includeLastCheckbox = item.querySelector('.include-last-frame-checkbox');
+        
+        // Find matching item in original timeline by item ID
+        const originalItem = timeline.find(t => t.itemId === itemId);
+        
+        if (originalItem) {
+            // Push a copy of the original with updated values
+            newTimeline.push({
+                ...originalItem,
+                prompt: promptText ? promptText.value : originalItem.prompt,
+                duration: durationInput ? parseFloat(durationInput.value) : originalItem.duration,
+                includeAsSegment: includeLastCheckbox ? includeLastCheckbox.checked : originalItem.includeAsSegment
+            });
+        } else {
+            // Fallback to img src if we can't find by ID
+            const img = item.querySelector('img');
+            if (img) {
+                const imgSrc = img.src;
+                const serverPath = img.title;
+                
+                // Try to find by image source
+                const srcMatch = timeline.find(t => t.src === imgSrc);
+                
+                if (srcMatch) {
+                    newTimeline.push({
+                        ...srcMatch,
+                        prompt: promptText ? promptText.value : srcMatch.prompt,
+                        duration: durationInput ? parseFloat(durationInput.value) : srcMatch.duration,
+                        includeAsSegment: includeLastCheckbox ? includeLastCheckbox.checked : srcMatch.includeAsSegment
+                    });
+                } else {
+                    // Last resort: create a new item based on what we can extract
+                    newTimeline.push({
+                        itemId: itemId || `fallback-${Date.now()}-${index}`,
+                        src: imgSrc,
+                        serverPath: serverPath,
+                        duration: durationInput ? parseFloat(durationInput.value) : 3.0,
+                        prompt: promptText ? promptText.value : '',
+                        valid: !img.classList.contains('invalid-image'),
+                        includeAsSegment: includeLastCheckbox ? includeLastCheckbox.checked : false
+                    });
+                }
+            }
+        }
+    });
+    
+    // Clear the timeline array
+    timeline.length = 0;
+    
+    // Add the new items in the updated order
+    newTimeline.forEach(item => timeline.push(item));
+    
+    // Log for debugging
+    console.log('Updated timeline array:', timeline.map(item => ({
+        itemId: item.itemId,
+        serverPath: item.serverPath,
+        duration: item.duration,
+        includeAsSegment: item.includeAsSegment
+    })));
 }
 
 // Update exported functions
