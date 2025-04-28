@@ -190,7 +190,7 @@ function initJobQueue() {
         }
         
         let previewUrl = null;
-        
+        let previewImageUrl = null;
         // Try to extract a preview URL from the event data
         if (eventData) {
             // Option 1: Direct current_latents URL
@@ -209,6 +209,14 @@ function initJobQueue() {
                     previewUrl = latestSegment.image_path;
                     console.log('Using latest segment image_path for preview:', previewUrl);
                 }
+            }
+            if (eventData.result_video) {
+                previewImageUrl = eventData.result_video;
+                // URL encode the preview image URL
+                previewImageUrl = encodeURIComponent(previewImageUrl);
+                // Prepend /api/video_thumbnail?video=
+                previewImageUrl = `/api/video_thumbnail?video=${previewImageUrl}`;
+                console.log('Using result_video for preview:', previewImageUrl);
             }
         }
         
@@ -232,9 +240,9 @@ function initJobQueue() {
         // Also update the thumbnail if available
         const currentJobThumbnail = document.getElementById('currentJobThumbnail');
         const currentJobImage = document.getElementById('currentJobImage');
-        if (currentJobThumbnail && currentJobImage) {
+        if (previewImageUrl) {
             currentJobThumbnail.classList.remove('d-none');
-            currentJobImage.src = formattedUrl;
+            currentJobImage.src = previewImageUrl;
             console.log('Updated thumbnail image as well');
         }
         
@@ -683,7 +691,7 @@ function createJobItem(job) {
                     <div class="text-muted small job-message">${job.message || 'No message'}</div>
                 </div>
                 ${job.status === 'running' ? `
-                <div class="progress mt-2" style="height: 5px;">
+                <div class="progress mt-2" style="height: 20px;">
                     <div class="progress-bar" role="progressbar" style="width: ${job.progress}%" aria-valuenow="${job.progress}" aria-valuemin="0" aria-valuemax="100">${job.progress}%</div>
                 </div>` : ''}
             </div>
