@@ -21,8 +21,22 @@ from handlers.socket import process_broadcasts
 
 # Ensure that /modules and /handlers are in the python path
 import sys
-sys.path.append(os.path.join(app_path, "modules"))
-sys.path.append(os.path.join(app_path, "handlers"))
+
+# Get the absolute path of the project root
+project_root = os.path.dirname(os.path.abspath(__file__))
+
+# Add the project root to the Python path first
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+# Add modules and handlers directories
+modules_path = os.path.join(project_root, "modules")
+handlers_path = os.path.join(project_root, "handlers")
+
+if modules_path not in sys.path:
+    sys.path.insert(0, modules_path)
+if handlers_path not in sys.path:
+    sys.path.insert(0, handlers_path)
 
 # Set default logging level to INFO
 logging.basicConfig(level=logging.INFO)
