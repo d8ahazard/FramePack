@@ -313,7 +313,7 @@ async def run_job(job_id: str):
         for module_name, module_settings in job_settings.items():
             try:
                 # Import the module dynamically
-                module_path = f"modules.{module_name}.module"
+                module_path = f"framepack.modules.{module_name}.module"
                 logger.info(f"Importing module: {module_path}")
                 module = importlib.import_module(module_path)
 
