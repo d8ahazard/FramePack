@@ -411,21 +411,14 @@ def verify_job_images(job_data):
     for segment in segments:
         image_path = segment.get('image_path')
         seg_path = image_path.replace("/uploads/", "") if "/" in image_path else image_path.replace("\\uploads\\", "")
-        seg_path = os.path.join(upload_path, seg_path)
-        logger.info(f"Checking segment path: {seg_path}")
+        image_path = os.path.join(upload_path, seg_path)
+        logger.info(f"Checking segment path: {image_path}")
         if not image_path:
             missing_images.append("Missing path")
             continue
 
-        # Normalize path for cross-platform compatibility
-        norm_path = os.path.normpath(image_path)
-
-        # Handle file:// protocol if present
-        if norm_path.startswith('file://'):
-            norm_path = norm_path[7:]
-
         # Check if the file exists
-        if not os.path.exists(norm_path) or not os.path.isfile(norm_path):
+        if not os.path.exists(image_path) or not os.path.isfile(image_path):
             missing_images.append(image_path)
 
     return len(missing_images) == 0, missing_images
