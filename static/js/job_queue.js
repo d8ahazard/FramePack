@@ -93,8 +93,10 @@ function initJobQueue() {
         
         console.log('Found progressContainer, making visible');
         
-        // Update the current active job ID
-        window.currentActiveJobId = jobId;
+        // Update the current active job ID if status is running, regardless of whether this was the previously active job
+        if (status === 'running') {
+            window.currentActiveJobId = jobId;
+        }
         
         // ALWAYS show the progress container for running jobs
         progressContainer.classList.remove('d-none');
@@ -301,7 +303,7 @@ function setupJobWebSocketListener() {
                 );
             }
             
-            // Update the job in the queue UI
+            // A. Update the job in the queue UI (showing status and progress)
             updateJobInQueue(jobId, status, progress, message);
             
             // IMPORTANT: For running jobs, always update the editor progress display
@@ -314,12 +316,12 @@ function setupJobWebSocketListener() {
             // For completed or failed jobs, only update if it's the active job
             else if (status === 'completed' || status === 'failed') {
                 console.log("Job completed or failed, updating editor UI:", jobId);
-                if (window.currentActiveJobId === jobId || !window.currentActiveJobId) {
+                if (window.currentActiveJobId === jobId) {
                     window.updateEditorProgress(jobId, status, progress, message, event);
                 }
             }
             
-            // If job details are currently displayed, refresh them with new data
+            // B. If job details are currently displayed, refresh them with new data
             if (currentJobId === jobId) {
                 // Always get fresh data from the server to ensure we have complete info
                 fetch(`/api/job_status/${jobId}`)
@@ -404,55 +406,6 @@ function updateJobInQueue(jobId, status, progress, message) {
         }
     }
     
-    // Set up scroll buttons for thumbnails carousel
-    const thumbnailContainer = jobDetailContainer.querySelector('.segment-thumbnails-container');
-    if (thumbnailContainer) {
-        const scrollContainer = thumbnailContainer.querySelector('.segment-thumbnails-scroll');
-        const leftBtn = thumbnailContainer.querySelector('.scroll-indicator-left');
-        const rightBtn = thumbnailContainer.querySelector('.scroll-indicator-right');
-        
-        // Add scroll functionality
-        if (leftBtn && rightBtn && scrollContainer) {
-            // Calculate scroll amount based on container width
-            const scrollAmount = 250; // pixels to scroll
-            
-            // Left scroll button
-            leftBtn.addEventListener('click', () => {
-                scrollContainer.scrollBy({
-                    left: -scrollAmount,
-                    behavior: 'smooth'
-                });
-            });
-            
-            // Right scroll button
-            rightBtn.addEventListener('click', () => {
-                scrollContainer.scrollBy({
-                    left: scrollAmount,
-                    behavior: 'smooth'
-                });
-            });
-            
-            // Show or hide scroll buttons based on scroll position
-            scrollContainer.addEventListener('scroll', () => {
-                const scrollLeft = scrollContainer.scrollLeft;
-                const maxScrollLeft = scrollContainer.scrollWidth - scrollContainer.clientWidth;
-                
-                // Show/hide left button based on scroll position
-                leftBtn.style.opacity = scrollLeft > 10 ? '1' : '0';
-                
-                // Show/hide right button based on scroll position
-                rightBtn.style.opacity = scrollLeft < maxScrollLeft - 10 ? '1' : '0';
-            });
-            
-            // Initial check to see if scroll is needed
-            setTimeout(() => {
-                const isScrollable = scrollContainer.scrollWidth > scrollContainer.clientWidth;
-                rightBtn.style.opacity = isScrollable ? '1' : '0';
-                leftBtn.style.opacity = '0'; // Initially hide left button
-            }, 100);
-        }
-    }
-    
     // Update status message
     const statusMessage = jobItem.querySelector('.job-message');
     if (statusMessage) {
@@ -466,40 +419,6 @@ function updateJobInQueue(jobId, status, progress, message) {
     // we may need to add or remove the progress bar
     if (status !== 'running' && progressBar) {
         progressBar.parentNode.remove();
-    }
-    
-    // If the job details are currently shown for this job, also update them
-    if (currentJobId === jobId) {
-        loadJobDetails(jobId);
-    }
-    
-    // Update the job details if they're visible
-    const jobDetailContainer = document.getElementById('jobDetailContainer');
-    if (jobDetailContainer) {
-        // Check if there's job detail information visible for this job
-        const jobInfoCard = jobDetailContainer.querySelector(`.card[data-job-id="${jobId}"]`);
-        if (jobInfoCard) {
-            // Update status badge in the job info card
-            const detailsStatusBadge = jobInfoCard.querySelector('.badge');
-            if (detailsStatusBadge) {
-                detailsStatusBadge.className = `badge ${getStatusBadgeClass(status)}`;
-                detailsStatusBadge.textContent = status.charAt(0).toUpperCase() + status.slice(1);
-            }
-            
-            // Update progress bar in details view
-            const detailsProgressBar = jobDetailContainer.querySelector('.progress-bar');
-            if (detailsProgressBar) {
-                detailsProgressBar.style.width = `${progress}%`;
-                detailsProgressBar.setAttribute('aria-valuenow', progress);
-                detailsProgressBar.textContent = `${progress}%`;
-            }
-            
-            // Update message in details view
-            const messageElement = jobDetailContainer.querySelector('p:contains("Message:")');
-            if (messageElement) {
-                messageElement.innerHTML = `<strong>Message:</strong> ${message || 'No message'}`;
-            }
-        }
     }
     
     console.log(`Updated job ${jobId} in queue UI: status=${status}, progress=${progress}`);
@@ -1123,6 +1042,7 @@ function displayJobDetails(jobData) {
     // Basic job information card
     const jobInfoCard = document.createElement('div');
     jobInfoCard.className = 'card mb-3';
+    jobInfoCard.setAttribute('data-job-id', jobData.job_id);
     
     // Determine the status badge class
     let statusBadgeClass = 'bg-secondary';
@@ -1258,9 +1178,17 @@ function displayJobDetails(jobData) {
     if (jobData.status === 'running' || jobData.status === 'completed') {
         jobMediaContainer.classList.remove('d-none');
         
-        // Handle video preview
-        const videoContainer = document.createElement('div');
-        videoContainer.className = 'col-md-6';
+        // Check if the container already exists
+        let videoContainer = jobMediaContainer.querySelector('.col-md-6:first-child');
+        let latentsContainer = jobMediaContainer.querySelector('.col-md-6:last-child');
+        let rowContainer = jobMediaContainer.querySelector('.row');
+        
+        // Create the row container if it doesn't exist
+        if (!rowContainer) {
+            rowContainer = document.createElement('div');
+            rowContainer.className = 'row';
+            jobMediaContainer.appendChild(rowContainer);
+        }
         
         // Get available videos from job data
         const availableVideos = extractVideosFromJobData(jobData);
@@ -1278,54 +1206,124 @@ function displayJobDetails(jobData) {
             console.log("Formatted video source:", videoSrc);
         }
         
-        videoContainer.innerHTML = `
-            <div class="card mb-3">
-                <div class="card-header">
-                    <h5 class="card-title mb-0 fs-6">Current Output</h5>
+        // Update or create video container
+        if (!videoContainer) {
+            // Create new video container if it doesn't exist
+            videoContainer = document.createElement('div');
+            videoContainer.className = 'col-md-6';
+            
+            videoContainer.innerHTML = `
+                <div class="card mb-3">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0 fs-6">Current Output</h5>
+                    </div>
+                    <div class="card-body text-center">
+                        ${videoSrc ? 
+                            `<video id="jobCurrentVideo" src="${videoSrc}" controls class="img-fluid rounded"></video>` :
+                            `<div class="text-muted py-5"><i class="bi bi-film me-2"></i>Video not available yet</div>`
+                        }
+                    </div>
                 </div>
-                <div class="card-body text-center">
-                    ${videoSrc ? 
-                        `<video id="jobCurrentVideo" src="${videoSrc}" controls class="img-fluid rounded"></video>` :
-                        `<div class="text-muted py-5"><i class="bi bi-film me-2"></i>Video not available yet</div>`
+            `;
+            
+            rowContainer.appendChild(videoContainer);
+        } else {
+            // Update existing video container if source changed
+            const videoElement = videoContainer.querySelector('video');
+            const noVideoMessage = videoContainer.querySelector('.text-muted');
+            
+            if (videoSrc) {
+                if (videoElement) {
+                    // Only update src if it's different to avoid interrupting playback
+                    if (videoElement.src !== videoSrc) {
+                        console.log("Updating video source from", videoElement.src, "to", videoSrc);
+                        videoElement.src = videoSrc;
                     }
-                </div>
-            </div>
-        `;
+                } else {
+                    // Replace the no-video message with a video element
+                    const cardBody = videoContainer.querySelector('.card-body');
+                    if (cardBody && noVideoMessage) {
+                        cardBody.innerHTML = `<video id="jobCurrentVideo" src="${videoSrc}" controls class="img-fluid rounded"></video>`;
+                    }
+                }
+            } else if (!videoElement && !noVideoMessage) {
+                // If no video source and no message, show the message
+                const cardBody = videoContainer.querySelector('.card-body');
+                if (cardBody) {
+                    cardBody.innerHTML = `<div class="text-muted py-5"><i class="bi bi-film me-2"></i>Video not available yet</div>`;
+                }
+            }
+        }
         
-        // Handle latents preview
-        const latentsContainer = document.createElement('div');
-        latentsContainer.className = 'col-md-6';
-        
-        // Determine which image to show - use the latest segment to avoid duplicates
+        // Determine which image to show for latents - use the latest segment to avoid duplicates
         let latentImageSrc = '';
         if (jobData.current_latents) {
             latentImageSrc = getImageUrl(jobData.current_latents);
         }
         
-        latentsContainer.innerHTML = `
-            <div class="card mb-3">
-                <div class="card-header">
-                    <h5 class="card-title mb-0 fs-6">Current Latents</h5>
+        // Update or create latents container
+        if (!latentsContainer) {
+            // Create new latents container if it doesn't exist
+            latentsContainer = document.createElement('div');
+            latentsContainer.className = 'col-md-6';
+            
+            latentsContainer.innerHTML = `
+                <div class="card mb-3">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0 fs-6">Current Latents</h5>
+                    </div>
+                    <div class="card-body text-center">
+                        ${latentImageSrc ? 
+                            `<img id="jobCurrentLatents" src="${latentImageSrc}" class="img-fluid rounded" alt="Current latents" title="Latent representation (864×64)">` :
+                            `<div class="text-muted py-5"><i class="bi bi-image me-2"></i>Latent image not available yet</div>`
+                        }
+                    </div>
+                    ${latentImageSrc ? `<div class="card-footer p-2 text-center">
+                        <small class="text-muted">Latent dimensions: 864×64 pixels</small>
+                    </div>` : ''}
                 </div>
-                <div class="card-body text-center">
-                    ${latentImageSrc ? 
-                        `<img id="jobCurrentLatents" src="${latentImageSrc}" class="img-fluid rounded" alt="Current latents" title="Latent representation (864×64)">` :
-                        `<div class="text-muted py-5"><i class="bi bi-image me-2"></i>Latent image not available yet</div>`
+            `;
+            
+            rowContainer.appendChild(latentsContainer);
+        } else {
+            // Update existing latents container
+            const latentImage = latentsContainer.querySelector('img');
+            const noLatentMessage = latentsContainer.querySelector('.text-muted');
+            const cardFooter = latentsContainer.querySelector('.card-footer');
+            
+            if (latentImageSrc) {
+                if (latentImage) {
+                    // Always update latent image since it changes frequently
+                    latentImage.src = latentImageSrc;
+                } else {
+                    // Replace the no-latent message with an image
+                    const cardBody = latentsContainer.querySelector('.card-body');
+                    if (cardBody && noLatentMessage) {
+                        cardBody.innerHTML = `<img id="jobCurrentLatents" src="${latentImageSrc}" class="img-fluid rounded" alt="Current latents" title="Latent representation (864×64)">`;
                     }
-                </div>
-                ${latentImageSrc ? `<div class="card-footer p-2 text-center">
-                    <small class="text-muted">Latent dimensions: 864×64 pixels</small>
-                </div>` : ''}
-            </div>
-        `;
-        
-        // Clear existing content and add new containers
-        jobMediaContainer.innerHTML = '';
-        const rowContainer = document.createElement('div');
-        rowContainer.className = 'row';
-        rowContainer.appendChild(videoContainer);
-        rowContainer.appendChild(latentsContainer);
-        jobMediaContainer.appendChild(rowContainer);
+                    
+                    // Add footer if it doesn't exist
+                    if (!cardFooter) {
+                        latentsContainer.querySelector('.card').insertAdjacentHTML('beforeend', `
+                            <div class="card-footer p-2 text-center">
+                                <small class="text-muted">Latent dimensions: 864×64 pixels</small>
+                            </div>
+                        `);
+                    }
+                }
+            } else if (!latentImage && !noLatentMessage) {
+                // If no latent image and no message, show the message
+                const cardBody = latentsContainer.querySelector('.card-body');
+                if (cardBody) {
+                    cardBody.innerHTML = `<div class="text-muted py-5"><i class="bi bi-image me-2"></i>Latent image not available yet</div>`;
+                }
+                
+                // Remove footer if it exists
+                if (cardFooter) {
+                    cardFooter.remove();
+                }
+            }
+        }
     } else {
         jobMediaContainer.classList.add('d-none');
     }

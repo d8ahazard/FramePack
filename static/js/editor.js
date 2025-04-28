@@ -49,8 +49,6 @@ function closeUploadModal() {
     return false;
 }
 
-// Module initialization function
-
 // Function to clear the selectedFiles array
 function clearSelectedFiles() {
     selectedFiles.length = 0;
@@ -266,7 +264,6 @@ function uploadFileToServer(file) {
     });
 }
 
-
 // Update editor UI based on job status
 function updateEditorProgress(jobId, status, progress, message) {
     // Only update if we have a progress container
@@ -373,8 +370,6 @@ function showUploadModal() {
     }
 }
 
-
-
 // Module initialization function
 function initEditor() {
     console.log('Editor module initialized');
@@ -396,8 +391,14 @@ function initEditor() {
     // Initialize timeline drop zone
     initTimelineDropZone();
     
-    // Note: We no longer need to set up a separate WebSocket listener here
-    // as we now use the central WebSocket listener in job_queue.js for all updates
+    // Connect to the job websocket if not already connected
+    // This ensures we'll show any running job's progress in the editor
+    import('./job_queue.js').then(jobQueueModule => {
+        if (typeof jobQueueModule.connectJobWebsocket === 'function') {
+            jobQueueModule.connectJobWebsocket();
+            console.log('Connected to job websocket from editor');
+        }
+    }).catch(err => console.error('Error connecting to job websocket from editor:', err));
     
     // Add sort buttons event listeners
     const sortAscBtn = document.getElementById('sortAscBtn');
