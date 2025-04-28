@@ -1,14 +1,12 @@
-import sys
 import os
+import sys
 
 # Add the modules path to the python path
 sys.path.insert(0, os.path.dirname(__file__))
 import logging
 import shutil
 import subprocess
-import time
 import traceback
-from typing import Union
 
 import einops
 import numpy as np
@@ -23,8 +21,7 @@ from handlers.job_queue import job_statuses, save_job_data
 from handlers.model import check_download_model
 from handlers.path import output_path, upload_path
 from handlers.vram import fake_diffusers_current_device, get_cuda_free_memory_gb, \
-    move_model_to_device_with_memory_preservation, unload_complete_models, load_model_as_complete, gpu, high_vram, \
-    offload_model_from_device_for_memory_preservation
+    move_model_to_device_with_memory_preservation, unload_complete_models, load_model_as_complete, gpu, high_vram
 from modules.framepack.datatypes import FramePackJobSettings
 from modules.framepack.diffusers_helper.bucket_tools import find_nearest_bucket
 from modules.framepack.diffusers_helper.clip_vision import hf_clip_vision_encode
@@ -128,9 +125,11 @@ def load_models():
             m.to(gpu)
 
 
-def update_status(job_id, status, progress: int = None, latent_preview: str = None, video_preview: str = None):
+def update_status(job_id, message, status=None, progress: int = None, latent_preview: str = None, video_preview: str = None):
     job_status = job_statuses.get(job_id, JobStatus(job_id))
-    job_status.status = status
+    job_status.message = message
+    if status is not None:
+        job_status.status = status
     if latent_preview is not None:
         job_status.current_latents = latent_preview
     if video_preview is not None:
@@ -176,7 +175,7 @@ def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_
             unload_complete_models(image_encoder, vae, transformer)
 
         # Text encoding
-        update_status(job_id, "Text encoding ...", 0)
+        update_status(job_id, "Text encoding ...", progress=0)
 
         if not high_vram:
             fake_diffusers_current_device(text_encoder, gpu)  # since we only encode one text - that is one model move and one encode, offload is same time consumption since it is also one load and one encode.
@@ -198,7 +197,7 @@ def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_
         llama_vec_n, llama_attention_mask_n = crop_or_pad_yield_mask(llama_vec_n, length=512)
 
         # Processing input image (start frame)
-        update_status(job_id, "Processing start frame ...", 0)
+        update_status(job_id, "Processing start frame ...", progress=0)
 
         H, W, C = input_image.shape
         height, width = find_nearest_bucket(H, W, resolution=resolution)
@@ -216,7 +215,7 @@ def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_
         end_latent = None
 
         if has_end_image:
-            update_status(job_id, "Processing end frame ...", 0)
+            update_status(job_id, "Processing end frame ...", progress=0)
 
             H_end, W_end, C_end = end_image.shape
             end_image_np = resize_and_center_crop(end_image, target_width=width, target_height=height)
@@ -227,7 +226,7 @@ def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_
             end_image_pt = end_image_pt.permute(2, 0, 1)[None, :, None]
 
         # VAE encoding
-        update_status(job_id, "VAE encoding ...", 0)
+        update_status(job_id, "VAE encoding ...", progress=0)
 
         if not high_vram:
             load_model_as_complete(vae, target_device=gpu)
@@ -238,7 +237,7 @@ def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_
             end_latent = vae_encode(end_image_pt, vae)
 
         # CLIP Vision
-        update_status(job_id, "CLIP Vision encoding ...", 0)
+        update_status(job_id, "CLIP Vision encoding ...", progress=0)
 
         if not high_vram:
             load_model_as_complete(image_encoder, target_device=gpu)
@@ -263,7 +262,7 @@ def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_
         image_encoder_last_hidden_state = image_encoder_last_hidden_state.to(transformer.dtype)
 
         # Sampling
-        update_status(job_id, "Start sampling ...", 0)
+        update_status(job_id, "Start sampling ...", progress=0)
 
         rnd = torch.Generator("cpu").manual_seed(seed)
         num_frames = latent_window_size * 4 - 3
@@ -342,9 +341,9 @@ def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_
                 desc = f'Total generated frames: {int(max(0, total_generated_latent_frames * 4 - 3))}, Video length: {max(0, (total_generated_latent_frames * 4 - 3) / 30) :.2f} seconds (FPS-30). The video is being extended now ...'
                 if preview is not None:
                     # Save the preview image
-                    latent_preview_path = preview.replace('.', f'_latent_preview_{segment_index + 1}.')
+                    latent_preview_path = os.path.join(output_path, f'{job_id}_latent_preview.png')
                     Image.fromarray(preview).save(latent_preview_path)
-                update_status(job_id, desc, percentage, latent_preview=latent_preview_path)
+                update_status(job_id, desc, progress=percentage, latent_preview=latent_preview_path)
                 return
 
             generated_latents = sample_hunyuan(
@@ -407,7 +406,7 @@ def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_
 
             print(f'Decoded. Current latent shape {real_history_latents.shape}; pixel shape {history_pixels.shape}')
             desc = f'Total generated frames: {int(max(0, total_generated_latent_frames * 4 - 3))}, Video length: {max(0, (total_generated_latent_frames * 4 - 3) / 30) :.2f} seconds (FPS-30). The video is being extended now ...'
-            update_status(job_id, desc, 100, None, output_filename)
+            update_status(job_id, desc, progress=100, video_preview=output_filename)
 
             if is_last_section:
                 break
@@ -424,7 +423,7 @@ def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_
     if os.path.exists(os.path.join(output_path, f'{job_id}_end.png')):
         os.remove(os.path.join(output_path, f'{job_id}_end.png'))
 
-    update_status(job_id, "Generation completed", 100)
+    update_status(job_id, "Generation completed", progress=100)
     return output_filename
 
 

@@ -523,14 +523,19 @@ header h3 {
 
 
 /* #region Job Queue */
+
 .job-list {
     max-height: 70vh;
-    overflow-y: auto;
     border: 1px solid #dee2e6;
     border-radius: 6px;
     padding: 10px;
     margin-bottom: 15px;
 }
+
+.job-info-text {
+    max-width: calc(100% - 50px) !important;
+}
+
 .job-item {
     padding: 12px;
     margin-bottom: 10px;

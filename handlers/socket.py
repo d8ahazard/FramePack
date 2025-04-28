@@ -101,22 +101,7 @@ def update_status_sync(job_id: str, status: str = None, progress: int = None, me
     # Queue the update for broadcast using the synchronous method
     # Add to queue in thread-safe manner
     try:
-        # Try to use a running event loop if one exists
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-
-                loop.create_task(message_queue.put(update_data))
-                return
-        except RuntimeError:
-            # No event loop, continue with synchronous approach
-            pass
-            
-        # Use a new event loop for this operation
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(message_queue.put(update_data))
-        loop.close()
+        queue_broadcast(job_id, update_data)
     except Exception as e:
         print(f"Error queuing status update: {e}")
 

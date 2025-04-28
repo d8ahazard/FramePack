@@ -669,7 +669,7 @@ function createJobItem(job) {
             <div class="job-thumbnail me-3">
                 <img src="${thumbnailUrl}" alt="Frame" class="img-fluid rounded shadow-sm">
             </div>
-            <div class="flex-grow-1">
+            <div class="flex-grow-1 job-info-text">
                 <div class="d-flex justify-content-between align-items-center">
                     <div>
                         <div class="fw-bold">ID: ${job.job_id}</div>
@@ -712,25 +712,21 @@ function createJobItem(job) {
 function formatJobTimestamp(jobId) {
     // Check if jobId is undefined or null
     if (!jobId) return 'Unknown';
+
+    // const timestamp = Math.floor(Date.now() / 1000);
+    // let jobId = `${timestamp}_${Math.floor(Math.random() * 1000)}`;
+    const jobIdParts = jobId.split('_');
+    const timestamp = jobIdParts[0];
+    const random = jobIdParts[1];
+    const formattedTimestamp = new Date(parseInt(timestamp) * 1000).toLocaleString('en-US', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+    });
     
-    const parts = jobId.split('_');
-    if (parts.length >= 2) {
-        const dateStr = parts[0];
-        const timeStr = parts[1];
-        
-        if (dateStr.length >= 6 && timeStr.length >= 6) {
-            const day = dateStr.substring(0, 2);
-            const month = dateStr.substring(2, 4);
-            const year = dateStr.substring(4, 6);
-            
-            const hour = timeStr.substring(0, 2);
-            const minute = timeStr.substring(2, 4);
-            const second = timeStr.substring(4, 6);
-            
-            return `${day}/${month}/${year} ${hour}:${minute}:${second}`;
-        }
-    }
-    return jobId;
+    return formattedTimestamp;
 }
 
 // Function to clear all completed jobs

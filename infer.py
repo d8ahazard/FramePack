@@ -24,6 +24,7 @@ logging.basicConfig(level=logging.INFO)
 
 logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--host", type=str, default="0.0.0.0")
 parser.add_argument("--port", type=int, default=8000)
@@ -160,4 +161,4 @@ if __name__ == "__main__":
         model_paths = preload_all_models(use_auth_token=args.hf_token)
 
     # Start the server
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(app, host=args.host, port=args.port, log_level="critical")
