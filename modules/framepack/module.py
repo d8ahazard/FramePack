@@ -131,9 +131,9 @@ def load_models():
 def update_status(job_id, status, progress: int = None, latent_preview: str = None, video_preview: str = None):
     job_status = job_statuses.get(job_id, JobStatus(job_id))
     job_status.status = status
-    if latent_preview:
+    if latent_preview is not None:
         job_status.current_latents = latent_preview
-    if video_preview:
+    if video_preview is not None:
         job_status.result_video = video_preview
     if progress is not None:
         job_status.progress = progress
@@ -340,7 +340,11 @@ def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_
                 percentage = int(100.0 * current_step / steps)
                 hint = f'Sampling {current_step}/{steps}'
                 desc = f'Total generated frames: {int(max(0, total_generated_latent_frames * 4 - 3))}, Video length: {max(0, (total_generated_latent_frames * 4 - 3) / 30) :.2f} seconds (FPS-30). The video is being extended now ...'
-                update_status(job_id, desc, percentage, latent_preview=preview)
+                if preview is not None:
+                    # Save the preview image
+                    latent_preview_path = preview.replace('.', f'_latent_preview_{segment_index + 1}.')
+                    Image.fromarray(preview).save(latent_preview_path)
+                update_status(job_id, desc, percentage, latent_preview=latent_preview_path)
                 return
 
             generated_latents = sample_hunyuan(

@@ -260,6 +260,7 @@ def register_api_endpoints(app):
         """
         Job-specific WebSocket endpoint for targeted updates
         """
+        global job_statuses
         # If job_id is 'undefined', get the first running job if any
         if job_id == "undefined":
             statuses = job_statuses.values()
