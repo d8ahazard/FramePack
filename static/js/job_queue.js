@@ -222,9 +222,7 @@ function initJobQueue() {
         
         // Format the URL if it's a direct path and not already a server URL
         let formattedUrl = previewUrl;
-        if (previewUrl && !previewUrl.startsWith('/api/') && !previewUrl.startsWith('http')) {
-            formattedUrl = `/api/serve_file?path=${encodeURIComponent(previewUrl)}`;
-        }
+        
         
         console.log('Setting preview image src to:', formattedUrl);
         
@@ -1196,14 +1194,7 @@ function displayJobDetails(jobData) {
             videoSrc = availableVideos[0];
             console.log("Using video source:", videoSrc);
         }
-        
-        // Ensure videoSrc is properly formatted for API access if needed
-        if (videoSrc && !videoSrc.startsWith('http') && !videoSrc.startsWith('/api/')) {
-            videoSrc = `/api/serve_file?path=${encodeURIComponent(videoSrc)}`;
-            console.log("Formatted video source:", videoSrc);
-        }
-        
-        // Update or create video container
+                // Update or create video container
         if (!videoContainer) {
             // Create new video container if it doesn't exist
             videoContainer = document.createElement('div');

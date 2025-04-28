@@ -148,9 +148,11 @@ def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_
 
     segment_name = f"{job_id}_segment_{segment_index + 1}" if segment_index is not None else job_id
     output_filename = os.path.join(output_path, f"{segment_name}.mp4")
-
+    
     total_latent_sections = (total_second_length * 30) / (latent_window_size * 4)
     total_latent_sections = int(max(round(total_latent_sections), 1))
+    logger.info(f"Target Output filename: {output_filename}, total_latent_sections: {total_latent_sections}")
+
 
     global adaptive_memory_management, text_encoder, text_encoder_2, image_encoder, vae, transformer, tokenizer, tokenizer_2, feature_extractor
     adaptive_memory_management = enable_adaptive_memory
@@ -339,11 +341,13 @@ def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_
                 percentage = int(100.0 * current_step / steps)
                 hint = f'Sampling {current_step}/{steps}'
                 desc = f'Total generated frames: {int(max(0, total_generated_latent_frames * 4 - 3))}, Video length: {max(0, (total_generated_latent_frames * 4 - 3) / 30) :.2f} seconds (FPS-30). The video is being extended now ...'
+                latent_preview_url = None
                 if preview is not None:
                     # Save the preview image
                     latent_preview_path = os.path.join(output_path, f'{job_id}_latent_preview.png')
                     Image.fromarray(preview).save(latent_preview_path)
-                update_status(job_id, desc, progress=percentage, latent_preview=latent_preview_path)
+                    latent_preview_url = f"/outputs/{os.path.basename(latent_preview_path)}"
+                update_status(job_id, desc, progress=percentage, latent_preview=latent_preview_url)
                 return
 
             generated_latents = sample_hunyuan(
@@ -389,6 +393,10 @@ def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_
             #     load_model_as_complete(vae, target_device=gpu)
 
             real_history_latents = history_latents[:, :, :total_generated_latent_frames, :, :]
+            # Ensure vae is loaded to gpu
+            load_model_as_complete(vae, target_device=gpu)
+
+            update_status(job_id, f"Decoding latent frames ... {total_generated_latent_frames}", progress=0)
 
             if history_pixels is None:
                 history_pixels = vae_decode(real_history_latents, vae).cpu()
@@ -402,11 +410,14 @@ def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_
             # if not high_vram:
             #     unload_complete_models()
 
+            update_status(job_id, f"Saving video ... {output_filename}", progress=0)
             save_bcthw_as_mp4(history_pixels, output_filename, fps=30, crf=mp4_crf)
+            logger.info(f"Saved video to {output_filename}")
 
             print(f'Decoded. Current latent shape {real_history_latents.shape}; pixel shape {history_pixels.shape}')
             desc = f'Total generated frames: {int(max(0, total_generated_latent_frames * 4 - 3))}, Video length: {max(0, (total_generated_latent_frames * 4 - 3) / 30) :.2f} seconds (FPS-30). The video is being extended now ...'
-            update_status(job_id, desc, progress=100, video_preview=output_filename)
+            url_path = f"/outputs/{os.path.basename(output_filename)}"
+            update_status(job_id, desc, progress=100, video_preview=url_path)
 
             if is_last_section:
                 break
@@ -805,12 +816,22 @@ def worker_multi_segment(
     concat_txt = os.path.join(master_temp, "concat_list.txt")
     logger.info(f"Concatenating segments in order: {concat_txt}")
     cat_txt = ""
+    segs = 0
     with open(concat_txt, 'w') as f:
         for seg_no, path in sorted(segment_paths, key=lambda x: x[0]):
+            if not os.path.exists(path):
+                logger.info(f"Segment file {path} does not exist, skipping...")
+                continue
+            segs += 1
             # Ensure an absolute path with proper escaping for FFmpeg
             abs_path = os.path.abspath(path).replace('\\', '/')
             cat_txt += f"file '{abs_path}'\n"
             f.write(f"file '{abs_path}'\n")
+    if segs == 0:
+        job_status.status = "failed"
+        job_status.message = "No segments to concatenate"
+        save_job_data(job_id, job_status.to_dict())
+        return None
     logger.info(f"cat_txt: {cat_txt}")
     final_output = os.path.join(output_path, f"{master_job_id}_final.mp4")
     logger.info(f"Final output: {final_output}")

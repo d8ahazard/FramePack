@@ -169,9 +169,7 @@ def queue_broadcast(job_id: str, data: Dict[str, Any]):
         # Use a new event loop for this operation
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        logger.info("Creating new event loop for broadcast")
         loop.run_until_complete(update_status(job_id, data=data))
-        logger.info("Broadcast queued successfully")
         loop.close()
     except Exception as e:
         print(f"Error queuing broadcast: {e}")

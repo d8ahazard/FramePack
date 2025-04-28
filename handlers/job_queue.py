@@ -57,10 +57,21 @@ def clear_running_jobs():
         job_data = load_job_data(job_id)
         if job_data:
             # Check if the job is running
-            if job_data.get("status") == "running":
+            if job_data.get("status").lower() == "running" or job_data.get("status").lower() == "cancelled":
                 # If so, set it to failed
-                job_data["status"] = "failed"
+                job_data["status"] = "cancelled"
                 job_data["message"] = "Job was interrupted"
+                job_data["progress"] = None
+                save_job_data(job_id, job_data)
+            
+            if job_data.get("status").lower() == "saved":
+                job_data["message"] = "Job Saved"
+                job_data["progress"] = None
+                save_job_data(job_id, job_data)
+            
+            if job_data.get("status").lower() == "completed":
+                job_data["message"] = "Job Completed"
+                job_data["progress"] = None
                 save_job_data(job_id, job_data)
 
     # Clear running jobs set
@@ -144,7 +155,6 @@ def save_job_data(job_id, data_dict):
         progress = data_dict.get("progress")
         message = data_dict.get("message")
         # Update with all data for complete information
-        logger.info(f"Broadcasting job update for {job_id}: {status}, {progress}, {message}")
         update_status_sync(job_id, status, progress, message, data_dict)
     except Exception as e:
         logger.error(f"Error queuing job update for broadcast: {e}")
