@@ -315,25 +315,47 @@ async def run_job(job_id: str):
                 # Import the module dynamically
                 module_path = f"modules.{module_name}.module"
                 logger.info(f"Importing module: {module_path}")
-                # Add the root directory to Python path temporarily
+                
+                # More robust module importing approach for cross-platform compatibility
                 import sys
                 import os
-                # Save original path
-                orig_sys_path = sys.path.copy()
-                # Get the current directory and project root
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-                root_dir = os.path.dirname(current_dir)
-                # Add project root to sys.path to ensure imports within the module work
-                if root_dir not in sys.path:
-                    sys.path.insert(0, root_dir)
+                import types
+                
                 try:
-                    module = importlib.import_module(module_path)
+                    # Get the absolute file path of the module
+                    current_dir = os.path.dirname(os.path.abspath(__file__))
+                    project_root = os.path.dirname(current_dir)
+                    module_file_path = os.path.join(project_root, "modules", module_name, "module.py")
+                    
+                    if not os.path.exists(module_file_path):
+                        raise ImportError(f"Module file not found: {module_file_path}")
+                    
+                    # Create a new module object
+                    module = types.ModuleType(module_path)
+                    
+                    # Set essential module attributes to help with imports
+                    module.__file__ = module_file_path
+                    module.__package__ = f"modules.{module_name}"
+                    # This is critical - add the project root to Python path before executing
+                    original_sys_path = sys.path.copy()
+                    if project_root not in sys.path:
+                        sys.path.insert(0, project_root)
+                        
+                    # Register the module in sys.modules so internal imports can find it
+                    sys.modules[module_path] = module
+                    
+                    # Execute the module code in its own namespace
+                    with open(module_file_path, 'r') as f:
+                        module_code = compile(f.read(), module_file_path, 'exec')
+                        exec(module_code, module.__dict__)
+                    
                 except Exception as e:
                     logger.error(f"Error importing module {module_name}: {e}")
+                    logger.error(traceback.format_exc())
                     raise
                 finally:
-                    # Restore original Python path
-                    sys.path = orig_sys_path
+                    # Restore original sys.path
+                    sys.path = original_sys_path
 
                 process_func = None
                 request_type = None
