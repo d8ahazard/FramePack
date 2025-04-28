@@ -1300,9 +1300,6 @@ function displayJobDetails(jobData) {
         let latentImageSrc = '';
         if (jobData.current_latents) {
             latentImageSrc = getImageUrl(jobData.current_latents);
-        } else if (jobData.segments && jobData.segments.length > 0) {
-            // Use the latest segment to avoid showing duplicates
-            latentImageSrc = getImageUrl(jobData.segments[jobData.segments.length - 1]);
         }
         
         latentsContainer.innerHTML = `
