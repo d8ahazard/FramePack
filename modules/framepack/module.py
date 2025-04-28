@@ -21,7 +21,7 @@ from transformers import LlamaModel, CLIPTextModel, LlamaTokenizerFast, CLIPToke
 from datatypes.datatypes import JobStatus, DynamicSwapInstaller
 from handlers.job_queue import job_statuses, save_job_data
 from handlers.model import check_download_model
-from handlers.path import output_path
+from handlers.path import output_path, upload_path
 from handlers.vram import fake_diffusers_current_device, get_cuda_free_memory_gb, \
     move_model_to_device_with_memory_preservation, unload_complete_models, load_model_as_complete, gpu, high_vram
 from modules.framepack.datatypes import FramePackJobSettings
@@ -989,9 +989,15 @@ def process(request: FramePackJobSettings):
     
     # Convert SegmentConfig objects to dictionaries
     if 'segments' in request_dict and request_dict['segments']:
-        request_dict['segments'] = [
+        segments = request_dict['segments']
+        segments = [
             segment.model_dump() if hasattr(segment, 'model_dump') else segment 
-            for segment in request_dict['segments']
+            for segment in segments
         ]
-    
+        # Replace "/uploads/" with "upload_path" in segments
+        for segment in segments:
+            segment['image_path'] = segment['image_path'].replace("/uploads/", upload_path)
+            # This shouldn't happen, but just in case, handler "\uploads\" to
+            segment['image_path'] = segment['image_path'].replace("\\uploads\\", upload_path)
+        request_dict['segments'] = segments
     return worker_multi_segment(**request_dict)
