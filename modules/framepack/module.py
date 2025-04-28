@@ -996,8 +996,9 @@ def process(request: FramePackJobSettings):
         ]
         # Replace "/uploads/" with "upload_path" in segments
         for segment in segments:
-            segment['image_path'] = segment['image_path'].replace("/uploads/", upload_path)
+            segment['image_path'] = segment['image_path'].replace("/uploads/", "")
             # This shouldn't happen, but just in case, handler "\uploads\" to
-            segment['image_path'] = segment['image_path'].replace("\\uploads\\", upload_path)
+            segment['image_path'] = segment['image_path'].replace("\\uploads\\", "")
+            segment['image_path'] = os.path.join(upload_path, segment['image_path'])
         request_dict['segments'] = segments
     return worker_multi_segment(**request_dict)
