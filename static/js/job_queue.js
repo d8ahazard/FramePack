@@ -269,6 +269,7 @@ function setupJobWebSocketListener() {
     
     // Register event listener for job status updates
     jobListenerIndex = addJobEventListener(event => {
+        console.log("Job msg received via WebSocket:", event);
         // Check if this is a job status update
         if (event.type === 'job_update' || event.type === 'status_update') {
             console.log('Job update received via WebSocket:', event);
@@ -322,17 +323,17 @@ function setupJobWebSocketListener() {
             }
             
             // B. If job details are currently displayed, refresh them with new data
-            if (currentJobId === jobId) {
-                // Always get fresh data from the server to ensure we have complete info
-                fetch(`/api/job_status/${jobId}`)
-                    .then(response => response.json())
-                    .then(jobData => {
-                        console.log("Refreshed job data from API:", jobData);
-                        // Update the job details display
-                        displayJobDetails(jobData);
-                    })
-                    .catch(err => console.error('Error refreshing job details:', err));
-            }
+            // if (currentJobId === jobId) {
+            //     // Always get fresh data from the server to ensure we have complete info
+            //     fetch(`/api/job_status/${jobId}`)
+            //         .then(response => response.json())
+            //         .then(jobData => {
+            //             console.log("Refreshed job data from API:", jobData);
+            //             // Update the job details display
+            //             displayJobDetails(jobData);
+            //         })
+            //         .catch(err => console.error('Error refreshing job details:', err));
+            // }
             
             // For completed or failed jobs, ensure we update the full job list
             if (status === 'completed' || status === 'failed') {

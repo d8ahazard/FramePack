@@ -333,10 +333,6 @@ async def run_job(job_id: str):
                     module_settings["job_id"] = job_id
 
                 if process_func and request_type:
-                    # Convert module_settings to request_type instance
-                    # Instead of creating an empty instance and setting attributes,
-                    # pass the dictionary directly to the model constructor
-                    # Convert module_settings/segments to a list of SegmentConfig instances
                     if "segments" in module_settings:
                         module_settings["segments"] = [SegmentConfig(**segment) for segment in
                                                        module_settings["segments"]]

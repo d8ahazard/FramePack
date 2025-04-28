@@ -260,6 +260,14 @@ def register_api_endpoints(app):
         """
         Job-specific WebSocket endpoint for targeted updates
         """
+        # If job_id is 'undefined', get the first running job if any
+        if job_id == "undefined":
+            statuses = job_statuses.values()
+            running_jobs = [status for status in statuses if status.status == "running"]
+            if running_jobs:
+                job_id = running_jobs[0].job_id
+                logger.info(f"No job_id provided, using first running job: {job_id}")
+
         await job_manager.connect(websocket, job_id)
 
         try:

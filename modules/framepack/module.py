@@ -23,7 +23,8 @@ from handlers.job_queue import job_statuses, save_job_data
 from handlers.model import check_download_model
 from handlers.path import output_path, upload_path
 from handlers.vram import fake_diffusers_current_device, get_cuda_free_memory_gb, \
-    move_model_to_device_with_memory_preservation, unload_complete_models, load_model_as_complete, gpu, high_vram
+    move_model_to_device_with_memory_preservation, unload_complete_models, load_model_as_complete, gpu, high_vram, \
+    offload_model_from_device_for_memory_preservation
 from modules.framepack.datatypes import FramePackJobSettings
 from modules.framepack.diffusers_helper.bucket_tools import find_nearest_bucket
 from modules.framepack.diffusers_helper.clip_vision import hf_clip_vision_encode
@@ -127,61 +128,38 @@ def load_models():
             m.to(gpu)
 
 
+def update_status(job_id, status, progress: int = None, latent_preview: str = None, video_preview: str = None):
+    job_status = job_statuses.get(job_id, JobStatus(job_id))
+    job_status.status = status
+    if latent_preview:
+        job_status.current_latents = latent_preview
+    if video_preview:
+        job_status.result_video = video_preview
+    if progress is not None:
+        job_status.progress = progress
+
+    # Persist updated job status
+    save_job_data(job_id, job_status.to_dict())
+
+
 @torch.no_grad()
-def worker(
-        job_id,
-        input_image,
-        end_image,
-        prompt,
-        n_prompt,
-        seed,
-        total_second_length,
-        latent_window_size,
-        steps,
-        cfg,
-        gs,
-        rs,
-        gpu_memory_preservation,
-        use_teacache,
-        mp4_crf,
-        enable_adaptive_memory,
-        resolution,
-        segment_index=None,
-        master_job_id=None,
-        progress_callback=None
-) -> Union[None, str]:
-    # Import here to avoid circular imports
+def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg,
+           gs, rs,
+           gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory, resolution, segment_index=None, progress_callback=None):
+
+    segment_name = f"{job_id}_segment_{segment_index + 1}" if segment_index is not None else job_id
+    output_filename = os.path.join(output_path, f"{segment_name}.mp4")
+
+    total_latent_sections = (total_second_length * 30) / (latent_window_size * 4)
+    total_latent_sections = int(max(round(total_latent_sections), 1))
 
     global adaptive_memory_management, text_encoder, text_encoder_2, image_encoder, vae, transformer, tokenizer, tokenizer_2, feature_extractor
     adaptive_memory_management = enable_adaptive_memory
     load_models()
-    job_status = job_statuses.get(job_id, JobStatus(job_id))
-    job_status.status = "running"
 
-    # Persist job status to disk
-    save_job_data(job_id, job_status.to_dict())
+    if transformer is None or vae is None or image_encoder is None:
+        raise ValueError("Transformer, VAE, or image encoder is not loaded properly")
 
-    # how many latent sections
-    total_latent_sections = int(
-        max(round((total_second_length * 30) / (latent_window_size * 4)), 1)
-    )
-
-    # decide job_id + base_name
-    if segment_index is not None and master_job_id:
-        job_id = master_job_id
-        segment_number = segment_index + 1
-    else:
-        segment_number = 1
-    timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
-    base_name = f"{job_id}_segment_{segment_number}_{timestamp}"
-    logger.info(f"base_name: {base_name}")
-    output_file = os.path.join(output_path, f"{base_name}.mp4")
-    
-    job_status.message = "Starting..."
-    job_status.progress = 0
-
-    # Persist updated job status
-    save_job_data(job_id, job_status.to_dict())
     if not isinstance(transformer, HunyuanVideoTransformer3DModelPacked):
         raise ValueError("Transformer is not of type HunyuanVideoTransformer3DModelPacked")
 
@@ -191,302 +169,181 @@ def worker(
     if not isinstance(image_encoder, SiglipVisionModel):
         raise ValueError("Image encoder is not of type SiglipVisionModel")
 
+
     try:
-        # -------------------------
-        # Memory management tiers
-        # -------------------------
-        models_to_keep_in_memory = []
-        free_mem_gb = get_cuda_free_memory_gb()
-        if high_vram or adaptive_memory_management:
-            if free_mem_gb >= 26:
-                image_encoder.to(gpu)
-                vae.to(gpu)
-                transformer.to(gpu)
-                models_to_keep_in_memory = [
-                    image_encoder,
-                    vae,
-                    transformer
-                ]
-                logger.info("Ultra high memory mode: Keeping all models")
-            elif free_mem_gb >= 23:
-                transformer.to(gpu)
-                models_to_keep_in_memory = [
-                    transformer,
-                    vae
-                ]
-                logger.info("High memory mode: Keeping transform & text encoders")
-            elif free_mem_gb >= 4:
-                if free_mem_gb >= 6:
-                    image_encoder.to(gpu)
-                    vae.to(gpu)
-                    logger.info("Medium memory mode: + image encoder & VAE")
-                else:
-                    logger.info("Medium memory mode: text encoders only")
-            else:
-                logger.info("Low memory mode: no preloads")
-        else:
-            logger.info("Compatibility mode: unloading all")
-            unload_complete_models(
-                text_encoder,
-                text_encoder_2,
-                image_encoder,
-                vae,
-                transformer
-            )
+        # Clean GPU
+        if not high_vram:
+            unload_complete_models(image_encoder, vae, transformer)
 
-        # -------------------------
         # Text encoding
-        # -------------------------
-        job_status.message = "Text encoding..."
-        job_status.progress = 5
-        save_job_data(job_id, job_status.to_dict())
-        if progress_callback:
-            progress_callback(5)
+        update_status(job_id, "Text encoding ...", 0)
 
-        # We literally only need the TENC once, so just load and unload when done
-        fake_diffusers_current_device(text_encoder, gpu)
-        load_model_as_complete(text_encoder_2, target_device=gpu)
+        if not high_vram:
+            fake_diffusers_current_device(text_encoder, gpu)  # since we only encode one text - that is one model move and one encode, offload is same time consumption since it is also one load and one encode.
+            load_model_as_complete(text_encoder_2, target_device=gpu)
 
-        llama_vec, clip_l_pooler = encode_prompt_conds(
-            prompt,
-            text_encoder,
-            text_encoder_2,
-            tokenizer,
-            tokenizer_2
-        )
+        llama_vec, clip_l_pooler = encode_prompt_conds(prompt, text_encoder, text_encoder_2, tokenizer, tokenizer_2)
+
         if cfg == 1:
-            llama_vec_n = torch.zeros_like(llama_vec)
-            clip_l_pooler_n = torch.zeros_like(clip_l_pooler)
+            llama_vec_n, clip_l_pooler_n = torch.zeros_like(llama_vec), torch.zeros_like(clip_l_pooler)
         else:
-            llama_vec_n, clip_l_pooler_n = encode_prompt_conds(
-                n_prompt,
-                text_encoder,
-                text_encoder_2,
-                tokenizer,
-                tokenizer_2
-            )
+            llama_vec_n, clip_l_pooler_n = encode_prompt_conds(n_prompt, text_encoder, text_encoder_2, tokenizer,
+                                                               tokenizer_2)
+
+        # Unload text encoders
+        load_model_as_complete(text_encoder, unload=True, target_device="cpu")
+        load_model_as_complete(text_encoder_2, unload=True, target_device="cpu")
 
         llama_vec, llama_attention_mask = crop_or_pad_yield_mask(llama_vec, length=512)
         llama_vec_n, llama_attention_mask_n = crop_or_pad_yield_mask(llama_vec_n, length=512)
 
-        # Hot nasty speed
-        unload_complete_models(text_encoder, text_encoder_2)
-
-        # -------------------------
-        # Image processing
-        # -------------------------
-        job_status.message = "Image processing..."
-        job_status.progress = 10
-        save_job_data(job_id, job_status.to_dict())
-        if progress_callback:
-            progress_callback(10)
+        # Processing input image (start frame)
+        update_status(job_id, "Processing start frame ...", 0)
 
         H, W, C = input_image.shape
         height, width = find_nearest_bucket(H, W, resolution=resolution)
-        input_np = resize_and_center_crop(input_image, width, height)
-        Image.fromarray(input_np).save(os.path.join(output_path, f"{job_id}.png"))
-        input_pt = (
-                           torch.from_numpy(input_np).float() / 127.5 - 1
-                   ).permute(2, 0, 1)[None, :, None]
+        input_image_np = resize_and_center_crop(input_image, target_width=width, target_height=height)
 
+        Image.fromarray(input_image_np).save(os.path.join(output_path, f'{job_id}_start.png'))
+
+        input_image_pt = torch.from_numpy(input_image_np).float() / 127.5 - 1
+        input_image_pt = input_image_pt.permute(2, 0, 1)[None, :, None]
+
+        # Processing end image (if provided)
         has_end_image = end_image is not None
-        end_pt = None
-        end_np = None
+        end_image_np = None
+        end_image_pt = None
         end_latent = None
 
         if has_end_image:
-            job_status.message = "Processing end frame..."
-            job_status.progress = 15
-            save_job_data(job_id, job_status.to_dict())
-            if progress_callback:
-                progress_callback(15)
+            update_status(job_id, "Processing end frame ...", 0)
 
-            end_np = resize_and_center_crop(end_image, width, height)
-            Image.fromarray(end_np).save(os.path.join(output_path, f"{job_id}_end.png"))
-            end_pt = (
-                             torch.from_numpy(end_np).float() / 127.5 - 1
-                     ).permute(2, 0, 1)[None, :, None]
+            H_end, W_end, C_end = end_image.shape
+            end_image_np = resize_and_center_crop(end_image, target_width=width, target_height=height)
 
-        # -------------------------
+            Image.fromarray(end_image_np).save(os.path.join(output_path, f'{job_id}_end.png'))
+
+            end_image_pt = torch.from_numpy(end_image_np).float() / 127.5 - 1
+            end_image_pt = end_image_pt.permute(2, 0, 1)[None, :, None]
+
         # VAE encoding
-        # -------------------------
-        job_status.message = "VAE encoding..."
-        job_status.progress = 20
-        save_job_data(job_id, job_status.to_dict())
-        if progress_callback:
-            progress_callback(20)
+        update_status(job_id, "VAE encoding ...", 0)
 
-        if vae not in models_to_keep_in_memory:
+        if not high_vram:
             load_model_as_complete(vae, target_device=gpu)
 
-        start_latent = vae_encode(input_pt, vae)
+        start_latent = vae_encode(input_image_pt, vae)
+
         if has_end_image:
-            end_latent = vae_encode(end_pt, vae)
+            end_latent = vae_encode(end_image_pt, vae)
 
-        # -------------------------
-        # CLIP Vision encoding
-        # -------------------------
-        job_status.message = "CLIP Vision encoding..."
-        job_status.progress = 25
-        save_job_data(job_id, job_status.to_dict())
-        if progress_callback:
-            progress_callback(25)
+        # CLIP Vision
+        update_status(job_id, "CLIP Vision encoding ...", 0)
 
-        load_model_as_complete(image_encoder, target_device=gpu)
-
-        vis_out = hf_clip_vision_encode(input_np, feature_extractor, image_encoder)
-        image_emb = vis_out.last_hidden_state
-        if has_end_image:
-            end_vis = hf_clip_vision_encode(end_np, feature_extractor, image_encoder)
-            image_emb = (image_emb + end_vis.last_hidden_state) / 2
-
-        # Unload image_encoder if not high VRAM
         if not high_vram:
-            unload_complete_models(image_encoder)
+            load_model_as_complete(image_encoder, target_device=gpu)
 
-        # cast dtypes
+        image_encoder_output = hf_clip_vision_encode(input_image_np, feature_extractor, image_encoder)
+        image_encoder_last_hidden_state = image_encoder_output.last_hidden_state
+
+        if has_end_image:
+            end_image_encoder_output = hf_clip_vision_encode(end_image_np, feature_extractor, image_encoder)
+            end_image_encoder_last_hidden_state = end_image_encoder_output.last_hidden_state
+            # Combine both image embeddings or use a weighted approach
+            image_encoder_last_hidden_state = (image_encoder_last_hidden_state + end_image_encoder_last_hidden_state) / 2
+
+        # Unload image encoder and feature extractor
+        load_model_as_complete(image_encoder, unload=True, target_device="cpu")
+
+        # Dtype
         llama_vec = llama_vec.to(transformer.dtype)
         llama_vec_n = llama_vec_n.to(transformer.dtype)
         clip_l_pooler = clip_l_pooler.to(transformer.dtype)
         clip_l_pooler_n = clip_l_pooler_n.to(transformer.dtype)
-        image_emb = image_emb.to(transformer.dtype)
+        image_encoder_last_hidden_state = image_encoder_last_hidden_state.to(transformer.dtype)
 
-        # -------------------------
         # Sampling
-        # -------------------------
-        job_status.message = "Start sampling..."
-        job_status.progress = 30
-        save_job_data(job_id, job_status.to_dict())
-        if progress_callback:
-            progress_callback(30)
+        update_status(job_id, "Start sampling ...", 0)
 
         rnd = torch.Generator("cpu").manual_seed(seed)
         num_frames = latent_window_size * 4 - 3
-        history_latents = torch.zeros(
-            (1, 16, 1 + 2 + 16, height // 8, width // 8),
-            dtype=torch.float32
-        ).cpu()
-        history_pixels = None
-        total_generated = 0
 
+        history_latents = torch.zeros(size=(1, 16, 1 + 2 + 16, height // 8, width // 8), dtype=torch.float32).cpu()
+        history_pixels = None
+        total_generated_latent_frames = 0
+
+        # 将迭代器转换为列表
         latent_paddings = list(reversed(range(total_latent_sections)))
+
         if total_latent_sections > 4:
+            # In theory the latent_paddings should follow the above sequence, but it seems that duplicating some
+            # items looks better than expanding it when total_latent_sections > 4
+            # One can try to remove below trick and just
+            # use `latent_paddings = list(reversed(range(total_latent_sections)))` to compare
             latent_paddings = [3] + [2] * (total_latent_sections - 3) + [1, 0]
 
-        # ensure transformer on GPU if needed
-        if transformer not in models_to_keep_in_memory:
-            preserved = gpu_memory_preservation
-            if use_teacache:
-                preserved = max(preserved, 8)
-            move_model_to_device_with_memory_preservation(
-                transformer,
-                target_device=gpu,
-                preserved_memory_gb=preserved
-            )
+        for latent_padding in latent_paddings:
+            is_last_section = latent_padding == 0
+            is_first_section = latent_padding == latent_paddings[0]
+            latent_padding_size = latent_padding * latent_window_size
 
-        # init teaCache
-        if use_teacache:
-            transformer.initialize_teacache(enable_teacache=True, num_steps=min(steps, 20))
-        else:
-            transformer.initialize_teacache(enable_teacache=False)
+            # Check for job cancellation
+            job_status = job_statuses.get(job_id)
+            if job_status and job_status.status == "cancelled":
+                logger.info(f"Job {job_id} was cancelled during processing")
+                # This will cause the sampling to stop at the current step
+                raise KeyboardInterrupt('User ends the task.')
 
-        # Calculate sampling progress contribution
+            print(
+                f'latent_padding_size = {latent_padding_size}, is_last_section = {is_last_section}, is_first_section = {is_first_section}')
 
-        # Total progress steps from all latent sections
+            indices = torch.arange(0, sum([1, latent_padding_size, latent_window_size, 1, 2, 16])).unsqueeze(0)
+            clean_latent_indices_pre, blank_indices, latent_indices, clean_latent_indices_post, clean_latent_2x_indices, clean_latent_4x_indices = indices.split(
+                [1, latent_padding_size, latent_window_size, 1, 2, 16], dim=1)
+            clean_latent_indices = torch.cat([clean_latent_indices_pre, clean_latent_indices_post], dim=1)
 
-        for pad_idx, pad in enumerate(latent_paddings):
-            is_last = (pad == 0)
-            is_first = (pad == latent_paddings[0])
-            pad_size = pad * latent_window_size
+            clean_latents_pre = start_latent.to(history_latents)
+            clean_latents_post, clean_latents_2x, clean_latents_4x = history_latents[:, :, :1 + 2 + 16, :, :].split(
+                [1, 2, 16], dim=2)
+            clean_latents = torch.cat([clean_latents_pre, clean_latents_post], dim=2)
 
-            # build indices
-            total_len = 1 + pad_size + latent_window_size + 1 + 2 + 16
-            indices = torch.arange(0, total_len).unsqueeze(0)
-            (clean_pre,
-             blank,
-             latent_indices,
-             clean_post,
-             clean2x_idx,
-             clean4x_idx) = indices.split(
-                [1, pad_size, latent_window_size, 1, 2, 16], dim=1
-            )
-            clean_indices = torch.cat([clean_pre, clean_post], dim=1)
+            # Use end image latent for the first section if provided
+            if has_end_image and is_first_section and end_latent is not None:
+                clean_latents_post = end_latent.to(history_latents)
+                clean_latents = torch.cat([clean_latents_pre, clean_latents_post], dim=2)
 
-            # build clean_latents
-            clean_pre_latents = start_latent.to(history_latents)
-            pre, two, sixteen = history_latents[:, :, :1 + 2 + 16].split([1, 2, 16], dim=2)
-            clean_latents = torch.cat([clean_pre_latents, pre], dim=2)
+            if not high_vram:
+                unload_complete_models()
+                move_model_to_device_with_memory_preservation(transformer, target_device=gpu,
+                                                              preserved_memory_gb=gpu_memory_preservation)
 
-            if has_end_image and is_first:
-                clean_post_latents = end_latent.to(history_latents)
-                clean_latents = torch.cat([clean_pre_latents, clean_post_latents], dim=2)
-
-            # re-init teaCache each loop
             if use_teacache:
                 transformer.initialize_teacache(enable_teacache=True, num_steps=steps)
             else:
                 transformer.initialize_teacache(enable_teacache=False)
 
             def callback(d):
-                # Get denoised latents
-                step = d.get('step', 0)
+                preview = d['denoised']
+                preview = vae_decode_fake(preview)
 
-                # Process every 5th step
-                if step % 5 == 0 or step == steps - 1:
-                    try:
-                        denoised = d['denoised']
+                preview = (preview * 255.0).detach().cpu().numpy().clip(0, 255).astype(np.uint8)
+                preview = einops.rearrange(preview, 'b c t h w -> (b h) (t w) c')
 
-                        # Create preview using vae_decode_fake (faster)
-                        preview = vae_decode_fake(denoised)
-                        preview = (preview * 255.0).detach().cpu().numpy().clip(0, 255).astype(np.uint8)
-                        preview = einops.rearrange(preview, 'b c t h w -> (b h) (t w) c')
+                # Check if the job has been cancelled
+                job_status = job_statuses.get(job_id)
+                if job_status and job_status.status == "cancelled":
+                    logger.info(f"Job {job_id} was cancelled during processing")
+                    # This will cause the sampling to stop at the current step
+                    raise KeyboardInterrupt('User ends the task.')
 
-                        preview_filename = os.path.join("uploads", f"{job_id}_latent_{step}.jpg")
-                        # Save the latent as an image
-                        Image.fromarray(preview).save(preview_filename)
+                current_step = d['i'] + 1
+                percentage = int(100.0 * current_step / steps)
+                hint = f'Sampling {current_step}/{steps}'
+                desc = f'Total generated frames: {int(max(0, total_generated_latent_frames * 4 - 3))}, Video length: {max(0, (total_generated_latent_frames * 4 - 3) / 30) :.2f} seconds (FPS-30). The video is being extended now ...'
+                update_status(job_id, desc, percentage, latent_preview=preview)
+                return
 
-                        # Update job status with latest latent preview
-                        status_obj = job_statuses.get(job_id)
-                        if status_obj:
-                            logger.info(f"Updating job status with latent preview: {preview_filename}")
-                            # Use a consistent path that doesn't include the step number
-                            status_obj.current_latents = preview_filename
-                            # Add a cache-busting parameter to force browser refresh
-                            status_obj.current_latents += f"?step={step}&t={int(time.time())}"
-
-                            # Check if this segment is already in the list (avoid duplicates)
-                            segment_paths = status_obj.segments
-                            segment_path = status_obj.current_latents
-
-                            # Clear previous segments if this is the first step
-                            if step == 0:
-                                segment_paths = []
-
-                            # Replace the last segment or add a new one
-                            if segment_paths and segment_path.split('?')[0] == segment_paths[-1].split('?')[0]:
-                                segment_paths[-1] = segment_path
-                            else:
-                                segment_paths.append(segment_path)
-
-                            status_obj.segments = segment_paths
-
-                            # Save updated status to disk
-                            save_job_data(job_id, status_obj.to_dict())
-                        else:
-                            logger.info(f"Job status object not found for job_id {job_id}")
-                    except Exception as e:
-                        logger.info(f"Error saving latent preview: {e}")
-
-                    # Check if the job has been cancelled
-                    status_obj = job_statuses.get(job_id)
-                    if status_obj and status_obj.status == "cancelled":
-                        logger.info(f"Job {job_id} was cancelled during processing")
-                        # This will cause the sampling to stop at the current step
-                        d['stop'] = True
-
-                    return
-
-            generated = sample_hunyuan(
+            generated_latents = sample_hunyuan(
                 transformer=transformer,
                 sampler='unipc',
                 width=width,
@@ -495,6 +352,7 @@ def worker(
                 real_guidance_scale=cfg,
                 distilled_guidance_scale=gs,
                 guidance_rescale=rs,
+                # shift=3.0,
                 num_inference_steps=steps,
                 generator=rnd,
                 prompt_embeds=llama_vec,
@@ -505,88 +363,65 @@ def worker(
                 negative_prompt_poolers=clip_l_pooler_n,
                 device=gpu,
                 dtype=torch.bfloat16,
-                image_embeddings=image_emb,
+                image_embeddings=image_encoder_last_hidden_state,
                 latent_indices=latent_indices,
                 clean_latents=clean_latents,
-                clean_latent_indices=clean_indices,
-                clean_latents_2x=two,
-                clean_latent_2x_indices=clean2x_idx,
-                clean_latents_4x=sixteen,
-                clean_latent_4x_indices=clean4x_idx,
-                callback=callback
+                clean_latent_indices=clean_latent_indices,
+                clean_latents_2x=clean_latents_2x,
+                clean_latent_2x_indices=clean_latent_2x_indices,
+                clean_latents_4x=clean_latents_4x,
+                clean_latent_4x_indices=clean_latent_4x_indices,
+                callback=callback,
             )
 
-            if is_last:
-                generated = torch.cat([start_latent.to(generated), generated], dim=2)
+            if is_last_section:
+                generated_latents = torch.cat([start_latent.to(generated_latents), generated_latents], dim=2)
 
-            total_generated += generated.shape[2]
-            history_latents = torch.cat([generated.to(history_latents), history_latents], dim=2)
+            total_generated_latent_frames += int(generated_latents.shape[2])
+            history_latents = torch.cat([generated_latents.to(history_latents), history_latents], dim=2)
 
-            load_model_as_complete(vae, target_device=gpu)
+            # See if we can just keep the VAE and transformer on GPU
+            # if not high_vram:
+            #     offload_model_from_device_for_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=8)
+            #     load_model_as_complete(vae, target_device=gpu)
 
-            # decode frames
-            real = history_latents[:, :, :total_generated]
+            real_history_latents = history_latents[:, :, :total_generated_latent_frames, :, :]
+
             if history_pixels is None:
-                history_pixels = vae_decode(real, vae).cpu()
+                history_pixels = vae_decode(real_history_latents, vae).cpu()
             else:
-                frames_count = latent_window_size * 2 + (1 if is_last else 0)
-                overlap = latent_window_size * 4 - 3
-                curr_pix = vae_decode(real[:, :, :frames_count], vae).cpu()
-                history_pixels = soft_append_bcthw(curr_pix, history_pixels, overlap)
+                section_latent_frames = (latent_window_size * 2 + 1) if is_last_section else (latent_window_size * 2)
+                overlapped_frames = latent_window_size * 4 - 3
 
-            # overwrite segment file
-            save_bcthw_as_mp4(history_pixels, output_file, fps=30, crf=mp4_crf)
-            # Unload VAE if not high VRAM
-            if not high_vram:
-                unload_complete_models(vae)
+                current_pixels = vae_decode(real_history_latents[:, :, :section_latent_frames], vae).cpu()
+                history_pixels = soft_append_bcthw(current_pixels, history_pixels, overlapped_frames)
 
-            job_status.segments.append(output_file)
-            # Save updated status to disk
-            save_job_data(job_id, job_status.to_dict())
+            # if not high_vram:
+            #     unload_complete_models()
 
-            if is_last:
+            save_bcthw_as_mp4(history_pixels, output_filename, fps=30, crf=mp4_crf)
+
+            print(f'Decoded. Current latent shape {real_history_latents.shape}; pixel shape {history_pixels.shape}')
+            desc = f'Total generated frames: {int(max(0, total_generated_latent_frames * 4 - 3))}, Video length: {max(0, (total_generated_latent_frames * 4 - 3) / 30) :.2f} seconds (FPS-30). The video is being extended now ...'
+            update_status(job_id, desc, 100, None, output_filename)
+
+            if is_last_section:
                 break
-
-        job_status.status = "completed"
-        job_status.progress = 100
-        job_status.message = "Generation completed"
-        job_status.result_video = output_file
-        logger.info(f"job_status: {job_status}")
-        # Delete the latent preview image
-        output_filename = f"uploads/{job_id}_latent.jpg"
-
-        if os.path.exists(output_filename):
-            os.remove(output_filename)
-        # Save final status to disk
-        save_job_data(job_id, job_status.to_dict())
-        if progress_callback:
-            progress_callback(100)
-        logger.info(f"Generation completed")
-
-    except Exception as e:
-        job_status.status = "failed"
-        job_status.message = str(e)
-        # Save error status to disk
-        save_job_data(job_id, job_status.to_dict())
+    except:
         traceback.print_exc()
-        if not os.path.exists(output_file):
-            output_file = None
 
-    if not high_vram and segment_index is None:
-        unload_complete_models(
-            text_encoder,
-            text_encoder_2,
-            image_encoder,
-            vae,
-            transformer
-        )
-    if not os.path.exists(output_file):
-        output_file = None
-    logger.info(f"Returning output_file: {output_file}")
-    return output_file
+        # if not high_vram:
+            # unload_complete_models(
+            #     text_encoder, text_encoder_2, image_encoder, vae, transformer
+            # )
+    # Clean up start and end images, if they exist
+    if os.path.exists(os.path.join(output_path, f'{job_id}_start.png')):
+        os.remove(os.path.join(output_path, f'{job_id}_start.png'))
+    if os.path.exists(os.path.join(output_path, f'{job_id}_end.png')):
+        os.remove(os.path.join(output_path, f'{job_id}_end.png'))
 
-
-
+    update_status(job_id, "Generation completed", 100)
+    return output_filename
 
 
 @torch.no_grad()
@@ -618,7 +453,7 @@ def worker_multi_segment(
         elif isinstance(segment, dict) and hasattr(segment, 'get'):
             return segment.get(key, default)
         return default
-        
+
     # Import here to avoid circular imports
     load_models()
     job_status = job_statuses.get(job_id, JobStatus(job_id))
@@ -640,7 +475,7 @@ def worker_multi_segment(
     # Each segment takes steps * frames_per_segment amount of work
     total_steps = 0
     segment_workloads = []
-
+    segment_dims = []
     for segment in segments:
         segment_duration = get_segment_value(segment, 'duration', 1.0)
         segment_frames = int(segment_duration * 30)
@@ -648,6 +483,45 @@ def worker_multi_segment(
         segment_workload = segment_steps * segment_frames
         segment_workloads.append(segment_workload)
         total_steps += segment_workload
+        segment_image = get_segment_value(segment, 'image_path')
+        # Open the image and get the dimensions
+        image = Image.open(segment_image)
+        bucket = find_nearest_bucket(image.width, image.height, resolution)
+        segment_dims.append((image.width, image.height, bucket))
+
+    # Find the bucket dim for each segment, get a common one, and if they don't all match, resize and replace the path
+    # Get the most common bucket dimensions
+    bucket_counts = {}
+    for _, _, bucket in segment_dims:
+        if bucket in bucket_counts:
+            bucket_counts[bucket] += 1
+        else:
+            bucket_counts[bucket] = 1
+    
+    # Find the most common bucket
+    common_bucket = max(bucket_counts.items(), key=lambda x: x[1])[0]
+    
+    # Resize images if needed
+    for i, segment in enumerate(segments):
+        w, h, bucket = segment_dims[i]
+        if bucket != common_bucket:
+            # Need to resize this image
+            segment_image = get_segment_value(segment, 'image_path')
+            image = Image.open(segment_image)
+            
+            # Resize to the common bucket
+            common_width, common_height = common_bucket
+            resized_image = resize_and_center_crop(np.array(image), common_width, common_height)
+            
+            # Save the resized image with a new name
+            resized_path = segment_image.replace('.', f'_resized_{common_width}x{common_height}.')
+            Image.fromarray(resized_image).save(resized_path)
+            
+            # Update the segment path
+            if hasattr(segment, 'image_path'):
+                segment.image_path = resized_path
+            elif isinstance(segment, dict):
+                segment['image_path'] = resized_path
 
     # Set up progress tracking variables
     completed_steps = 0
@@ -745,7 +619,6 @@ def worker_multi_segment(
                 enable_adaptive_memory=enable_adaptive_memory,
                 resolution=resolution,
                 segment_index=0,
-                master_job_id=master_job_id,
                 progress_callback=progress_callback
             )
 
@@ -909,7 +782,6 @@ def worker_multi_segment(
             enable_adaptive_memory=enable_adaptive_memory,
             resolution=resolution,
             segment_index=seg_no,
-            master_job_id=master_job_id,
             progress_callback=progress_callback
         )
 
@@ -922,7 +794,7 @@ def worker_multi_segment(
             job_status.message = f"Failed to generate segment {seg_no}"
             save_job_data(job_id, job_status.to_dict())
             return None
-            
+
         # Increment segment number
         seg_no += 1
 
@@ -986,12 +858,12 @@ def worker_multi_segment(
 @torch.no_grad()
 def process(request: FramePackJobSettings):
     request_dict = request.model_dump()
-    
+
     # Convert SegmentConfig objects to dictionaries
     if 'segments' in request_dict and request_dict['segments']:
         segments = request_dict['segments']
         segments = [
-            segment.model_dump() if hasattr(segment, 'model_dump') else segment 
+            segment.model_dump() if hasattr(segment, 'model_dump') else segment
             for segment in segments
         ]
         # Replace "/uploads/" with "upload_path" in segments

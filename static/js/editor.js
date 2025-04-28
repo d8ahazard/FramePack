@@ -977,10 +977,6 @@ function startGeneration() {
     // Use common function to prepare the job payload
     const payload = prepareJobPayload();
     
-    // Ensure job_settings has the proper ModuleJobSettings structure
-    payload.job_settings = prepareModuleJobSettings(payload.job_settings);
-    
-    console.log('Preparing job with settings:', JSON.stringify(payload, null, 2));
     
     // First save the job
     const savePayload = {
@@ -992,7 +988,7 @@ function startGeneration() {
         segments: timeline.map(item => item.serverPath),
         is_valid: true,
         missing_images: [],
-        job_settings: payload.job_settings,
+        job_settings: {'framepack': payload},
         queue_position: -1,
         created_timestamp: timestamp
     };
