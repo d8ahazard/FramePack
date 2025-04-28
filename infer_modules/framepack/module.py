@@ -24,13 +24,13 @@ from handlers.model import check_download_model
 from handlers.path import output_path
 from handlers.vram import fake_diffusers_current_device, get_cuda_free_memory_gb, \
     move_model_to_device_with_memory_preservation, unload_complete_models, load_model_as_complete, gpu, high_vram
-from modules.framepack.datatypes import FramePackJobSettings
-from modules.framepack.diffusers_helper.bucket_tools import find_nearest_bucket
-from modules.framepack.diffusers_helper.clip_vision import hf_clip_vision_encode
-from modules.framepack.diffusers_helper.hunyuan import encode_prompt_conds, vae_encode, vae_decode_fake, vae_decode
-from modules.framepack.diffusers_helper.models.hunyuan_video_packed import HunyuanVideoTransformer3DModelPacked
-from modules.framepack.diffusers_helper.pipelines.k_diffusion_hunyuan import sample_hunyuan
-from modules.framepack.diffusers_helper.utils import crop_or_pad_yield_mask, resize_and_center_crop, soft_append_bcthw, \
+from infer_modules.framepack.datatypes import FramePackJobSettings
+from infer_modules.framepack.diffusers_helper.bucket_tools import find_nearest_bucket
+from infer_modules.framepack.diffusers_helper.clip_vision import hf_clip_vision_encode
+from infer_modules.framepack.diffusers_helper.hunyuan import encode_prompt_conds, vae_encode, vae_decode_fake, vae_decode
+from infer_modules.framepack.diffusers_helper.models.hunyuan_video_packed import HunyuanVideoTransformer3DModelPacked
+from infer_modules.framepack.diffusers_helper.pipelines.k_diffusion_hunyuan import sample_hunyuan
+from infer_modules.framepack.diffusers_helper.utils import crop_or_pad_yield_mask, resize_and_center_crop, soft_append_bcthw, \
     save_bcthw_as_mp4
 
 logger = logging.getLogger(__name__)

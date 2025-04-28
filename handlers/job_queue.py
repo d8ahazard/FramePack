@@ -313,7 +313,9 @@ async def run_job(job_id: str):
         for module_name, module_settings in job_settings.items():
             try:
                 # Import the module dynamically
-                module_path = f"modules.{module_name}.module"
+                module_path = f"infer_modules.{module_name}.module"
+                # Get the base "package" name
+                #this_package = module_path.split(".")[0]
                 module = importlib.import_module(module_path)
                 process_func = None
                 request_type = None
