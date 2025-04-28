@@ -410,9 +410,9 @@ def verify_job_images(job_data):
 
     for segment in segments:
         image_path = segment.get('image_path')
-        path_parts = image_path.split('/') if '/' in image_path else image_path.split('\\')
-        if path_parts[0] == "uploads":
-            image_path = os.path.join(upload_path, *path_parts[1:])
+        seg_path = image_path.replace("/uploads/", "") if "/" in image_path else image_path.replace("\\uploads\\", "")
+        seg_path = os.path.join(upload_path, seg_path)
+        logger.info(f"Checking segment path: {seg_path}")
         if not image_path:
             missing_images.append("Missing path")
             continue
