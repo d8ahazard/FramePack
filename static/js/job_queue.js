@@ -30,7 +30,7 @@ function getImageUrl(path) {
     const cleanPath = path.split('?')[0];
     
     // Use the serve_file API endpoint to serve the image
-    return `/api/serve_file?path=${encodeURIComponent(cleanPath)}`;
+    return path;
 }
 
 // Module initialization function
@@ -47,7 +47,7 @@ function getThumbnailUrl(job, frameIndex = 0) {
         job.job_settings.framepack.segments.length > 0) {
         
         const segmentPath = job.job_settings.framepack.segments[frameIndex % job.job_settings.framepack.segments.length].image_path;
-        return `/api/serve_file?path=${encodeURIComponent(segmentPath)}`;
+        return segmentPath;
     }
     
     // Then check if job has frames (processed frames)
@@ -59,14 +59,14 @@ function getThumbnailUrl(job, frameIndex = 0) {
         
         const framePath = job.frames[frameIndex].image_path;
         if (framePath) {
-            return `/api/serve_file?path=${encodeURIComponent(framePath)}`;
+            return framePath;
         }
     }
     
     // Last resort - use latent previews for running jobs that don't have other images
     if (job.segments && job.segments.length > 0) {
         // Use the first segment for thumbnail (not the last which would be latest latent)
-        return `/api/serve_file?path=${encodeURIComponent(job.segments[0])}`;
+        return job.segments[0];
     }
     
     // Default placeholder
@@ -1749,7 +1749,7 @@ async function loadJobToTimeline(jobId) {
             const fileName = segmentPath.split('\\').pop().split('/').pop(); // Extract filename (works for both / and \ paths)
             
             // Create URL to load the image through server API instead of direct file path
-            const imageUrl = `/api/serve_file?path=${encodeURIComponent(segmentPath)}`;
+            const imageUrl = segmentPath;
             
             const fileObj = {
                 serverPath: segmentPath,
