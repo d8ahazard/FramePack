@@ -16,6 +16,8 @@ from handlers.path import output_path, thumbnail_path, upload_path
 logger = logging.getLogger(__name__)
 
 
+
+
 def generate_thumbnail(video_path):
     """
     Generate a thumbnail for the given video file.

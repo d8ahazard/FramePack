@@ -1,4 +1,7 @@
+import os
 import torch
+
+from handlers.path import output_path
 
 from diffusers.pipelines.hunyuan_video.pipeline_hunyuan_video import DEFAULT_PROMPT_TEMPLATE
 from diffusers import AutoencoderKLHunyuanVideo
@@ -71,15 +74,15 @@ def vae_decode_fake(latents):
         [-0.0646, -0.0422, -0.0400],
         [-0.0696, -0.0595, -0.0894],
         [-0.0799, -0.0208, -0.0375],
-        [0.1166, 0.1627, 0.0962],
-        [0.1165, 0.0432, 0.0407],
-        [-0.2315, -0.1920, -0.1355],
-        [-0.0270, 0.0401, -0.0821],
+        [0.1876, 0.2337, 0.1672],
+        [0.2330, 0.1597, 0.1572],
+        [0.1085, 0.1480, 0.2045],
+        [0.0580, 0.1251, 0.0029],
         [-0.0616, -0.0997, -0.0727],
-        [0.0249, -0.0469, -0.1703]
+        [0.0249, -0.0469, -0.1703],
     ]  # From comfyui
 
-    latent_rgb_factors_bias = [0.0259, -0.0192, -0.0761]
+    latent_rgb_factors_bias = [0.4679, 0.4228, 0.3659]
 
     weight = torch.tensor(latent_rgb_factors, device=latents.device, dtype=latents.dtype).transpose(0, 1)[:, :, None, None, None]
     bias = torch.tensor(latent_rgb_factors_bias, device=latents.device, dtype=latents.dtype)
