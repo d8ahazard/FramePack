@@ -247,7 +247,7 @@ function uploadFileToServer(file) {
         .then(data => {
             if (data.success) {
                 // Use the full server path returned from the API
-                const serverPath = data.path;
+                const serverPath = data.upload_url;
                 
                 if (!serverPath) {
                     throw new Error('No valid file path returned from server');
