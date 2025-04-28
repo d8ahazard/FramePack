@@ -56,23 +56,24 @@ def clear_running_jobs():
     for job_id in saved_jobs:
         job_data = load_job_data(job_id)
         if job_data:
+            # Set the current latents to None
+            job_data["current_latents"] = None
             # Check if the job is running
             if job_data.get("status").lower() == "running" or job_data.get("status").lower() == "cancelled":
                 # If so, set it to failed
                 job_data["status"] = "cancelled"
                 job_data["message"] = "Job was interrupted"
-                job_data["progress"] = None
-                save_job_data(job_id, job_data)
+                job_data["progress"] = 0
             
             if job_data.get("status").lower() == "saved":
                 job_data["message"] = "Job Saved"
-                job_data["progress"] = None
-                save_job_data(job_id, job_data)
+                job_data["progress"] = 0
             
             if job_data.get("status").lower() == "completed":
                 job_data["message"] = "Job Completed"
-                job_data["progress"] = None
-                save_job_data(job_id, job_data)
+                job_data["progress"] = 100
+            
+            save_job_data(job_id, job_data)
 
     # Clear running jobs set
     running_job_ids.clear()

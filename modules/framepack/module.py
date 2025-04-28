@@ -469,20 +469,14 @@ def worker_multi_segment(
         return default
 
     # Import here to avoid circular imports
+    update_status(job_id, "Loading models...", progress=0)
     load_models()
     job_status = job_statuses.get(job_id, JobStatus(job_id))
-    job_status.status = "running"
-    job_status.message = "Starting multi-segment generation..."
-    job_status.progress = 0
-    job_statuses[job_id] = job_status
-
-    # Save initial status to disk
-    save_job_data(job_id, job_status.to_dict())
+    
+    update_status(job_id, "Checking segments...", progress=0)
 
     if not segments:
-        job_status.status = "failed"
-        job_status.message = "No segments provided"
-        save_job_data(job_id, job_status.to_dict())
+        update_status(job_id, "No segments provided", progress=100)
         return None
 
     # Calculate total generation effort
@@ -517,7 +511,7 @@ def worker_multi_segment(
     
     # Resize images if needed
     for i, segment in enumerate(segments):
-        w, h, bucket = segment_dims[i]
+        _, _, bucket = segment_dims[i]
         if bucket != common_bucket:
             # Need to resize this image
             segment_image = get_segment_value(segment, 'image_path')
@@ -557,9 +551,7 @@ def worker_multi_segment(
 
     # Single segment case - simple animation from one image
     if len(segments) == 1:
-        job_status.message = "Processing single image video..."
-        save_job_data(job_id, job_status.to_dict())
-
+        update_status(job_id, "Processing single segment...", progress=0)
         current_segment = segments[0]
 
         try:
@@ -596,22 +588,7 @@ def worker_multi_segment(
             # Custom callback to update master progress
             def progress_callback(segment_progress):
                 overall_progress = int((segment_progress / 100) * 100)
-                job_status.progress = overall_progress
-
-                # Update job status in filesystem
-                save_job_data(job_id, job_status.to_dict())
-
-                # Directly update UI via websocket for more immediate feedback
-                try:
-                    from handlers.socket import update_status
-                    update_status(
-                        job_id=job_id,
-                        status=job_status.status,
-                        progress=overall_progress,
-                        message=job_status.message
-                    )
-                except Exception as e:
-                    logger.info(f"Error updating status via websocket: {e}")
+                update_status(job_id, f"Processing single segment... {overall_progress}%", progress=overall_progress)
 
             # Generate the video with the single image
             segment_output = worker(
@@ -637,36 +614,31 @@ def worker_multi_segment(
             )
 
             if segment_output:
+                video_url = f"/outputs/{os.path.basename(segment_output)}"
+                update_status(job_id, "Single image video generation completed!", progress=100, video_preview=video_url, status="completed")
                 job_status.status = "completed"
                 job_status.progress = 100
                 job_status.message = "Single image video generation completed!"
                 job_status.result_video = segment_output
+                job_status.video_preview = video_url
                 save_job_data(job_id, job_status.to_dict())
                 return segment_output
             else:
-                job_status.status = "failed"
-                job_status.message = "Failed to generate video from single image"
-                save_job_data(job_id, job_status.to_dict())
+                update_status(job_id, "Failed to generate single image video", progress=100, status="failed")
                 return None
 
         except Exception as e:
             error_msg = f"Error processing single image: {str(e)}"
             logger.info(error_msg)
-            job_status.status = "failed"
-            job_status.message = error_msg
-            save_job_data(job_id, job_status.to_dict())
+            update_status(job_id, error_msg, progress=100, status="failed")
             return None
 
-    job_status.message = "Processing multi-segment video..."
-    save_job_data(job_id, job_status.to_dict())
+    update_status(job_id, "Processing multi-segment...", progress=0, status="running")
     num_segments = len(segments)
     last_segment = segments[-1]
     use_last_frame = get_segment_value(last_segment, 'use_last_frame', False)
     logger.info(f"use_last_frame: {use_last_frame}")
-    # framepack_settings = job_status.job_settings.get('framepack', {})
-    # use_last_frame = framepack_settings.get('include_last_frame',
-    #                                         False) if job_status.job_settings else False
-
+    
     segment_pairs = []
     if len(segments) > 1:
         for i in range(num_segments - 1):
