@@ -410,6 +410,12 @@ def verify_job_images(job_data):
 
     for segment in segments:
         image_path = segment.get('image_path')
+        # If the image path starts with uploads/, replace it with the upload path
+        if image_path.startswith("uploads/"):
+            image_path = os.path.join(upload_path, image_path.replace("uploads/", ""))
+        # If the image path starts with uploads\, replace it with the upload path
+        if image_path.startswith("uploads\\"):
+            image_path = os.path.join(upload_path, image_path.replace("uploads\\", ""))
         if not image_path:
             missing_images.append("Missing path")
             continue
