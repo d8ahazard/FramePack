@@ -1,6 +1,5 @@
 import argparse
 import asyncio
-import importlib
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -13,13 +12,17 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
-import modules
 from datatypes.datatypes import EndpointFilter
 from handlers.file import cleanup_thumbnail_cache
+from handlers.job_queue import clear_running_jobs
 from handlers.model import preload_all_models
 from handlers.path import thumbnail_path, upload_path, output_path, app_path
 from handlers.socket import process_broadcasts
-from handlers.job_queue import clear_running_jobs
+
+# Ensure that /modules and /handlers are in the python path
+import sys
+sys.path.append(os.path.join(app_path, "modules"))
+sys.path.append(os.path.join(app_path, "handlers"))
 
 # Set default logging level to INFO
 logging.basicConfig(level=logging.INFO)

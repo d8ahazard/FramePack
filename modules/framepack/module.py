@@ -1,4 +1,4 @@
-import asyncio
+import logging
 import os
 import shutil
 import subprocess
@@ -14,9 +14,8 @@ from diffusers import AutoencoderKLHunyuanVideo
 from transformers import LlamaModel, CLIPTextModel, LlamaTokenizerFast, CLIPTokenizer, SiglipImageProcessor, \
     SiglipVisionModel
 
-import handlers.vram
 from datatypes.datatypes import JobStatus, DynamicSwapInstaller
-from handlers.job_queue import process_queue, job_statuses, save_job_data
+from handlers.job_queue import job_statuses, save_job_data
 from handlers.model import check_download_model
 from handlers.path import output_path
 from handlers.vram import fake_diffusers_current_device, get_cuda_free_memory_gb, \
@@ -29,8 +28,6 @@ from modules.framepack.diffusers_helper.models.hunyuan_video_packed import Hunyu
 from modules.framepack.diffusers_helper.pipelines.k_diffusion_hunyuan import sample_hunyuan
 from modules.framepack.diffusers_helper.utils import crop_or_pad_yield_mask, resize_and_center_crop, soft_append_bcthw, \
     save_bcthw_as_mp4
-
-import logging
 
 logger = logging.getLogger(__name__)
 text_encoder = None
