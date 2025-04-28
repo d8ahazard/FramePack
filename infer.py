@@ -19,25 +19,6 @@ from handlers.model import preload_all_models
 from handlers.path import thumbnail_path, upload_path, output_path, app_path
 from handlers.socket import process_broadcasts
 
-# Ensure that /modules and /handlers are in the python path
-import sys
-
-# Get the absolute path of the project root
-project_root = os.path.dirname(os.path.abspath(__file__))
-
-# Add the project root to the Python path first
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
-# Add modules and handlers directories
-modules_path = os.path.join(project_root, "modules")
-handlers_path = os.path.join(project_root, "handlers")
-
-if modules_path not in sys.path:
-    sys.path.insert(0, modules_path)
-if handlers_path not in sys.path:
-    sys.path.insert(0, handlers_path)
-
 # Set default logging level to INFO
 logging.basicConfig(level=logging.INFO)
 
