@@ -315,7 +315,25 @@ async def run_job(job_id: str):
                 # Import the module dynamically
                 module_path = f"modules.{module_name}.module"
                 logger.info(f"Importing module: {module_path}")
-                module = importlib.import_module(module_path)
+                # Add the root directory to Python path temporarily
+                import sys
+                import os
+                # Save original path
+                orig_sys_path = sys.path.copy()
+                # Get the current directory and project root
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                root_dir = os.path.dirname(current_dir)
+                # Add project root to sys.path to ensure imports within the module work
+                if root_dir not in sys.path:
+                    sys.path.insert(0, root_dir)
+                try:
+                    module = importlib.import_module(module_path)
+                except Exception as e:
+                    logger.error(f"Error importing module {module_name}: {e}")
+                    raise
+                finally:
+                    # Restore original Python path
+                    sys.path = orig_sys_path
 
                 process_func = None
                 request_type = None
@@ -890,7 +908,7 @@ def register_api_endpoints(app):
 
         # Delete segment videos if they exist
         for segment in job_data.get("segments", []):
-            if os.path.exists(segment):
+            if os.path.exists(segment) and os.path.isfile(segment):
                 try:
                     os.remove(segment)
                 except Exception as e:
