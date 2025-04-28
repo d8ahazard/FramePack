@@ -4,7 +4,7 @@ import logging
 import os
 import time
 import traceback
-from typing import List, Union, Set
+from typing import List, Union
 from typing import Optional
 
 import torch
@@ -17,8 +17,6 @@ from datatypes.datatypes import JobStatusResponse, ErrorResponse
 from datatypes.datatypes import SaveJobRequest
 from handlers.path import job_path
 from handlers.path import upload_path
-
-#from infer import manager
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -45,6 +43,7 @@ def get_available_gpu_count():
         return 1
 
     return torch.cuda.device_count()
+
 
 # Run this at app start in case we terminated/failed
 def clear_running_jobs():
@@ -97,7 +96,7 @@ def save_job_data(job_id, data_dict):
     # Create job path if not exists
     job_file = os.path.join(job_path, f"{job_id}.json")
     os.makedirs(os.path.dirname(job_file), exist_ok=True)
-    
+
     # For compatibility: convert different types of input to dict
     if isinstance(data_dict, JobStatus):
         data_dict = data_dict.to_dict()
@@ -107,15 +106,15 @@ def save_job_data(job_id, data_dict):
     elif hasattr(data_dict, "dict"):
         # Handle older Pydantic models
         data_dict = data_dict.dict()
-    
+
     # Ensure job_id is consistent
     if isinstance(data_dict, dict):
         data_dict["job_id"] = job_id
-        
+
         # Add timestamp if missing
         if "created_timestamp" not in data_dict:
             data_dict["created_timestamp"] = int(time.time())
-            
+
         # Handle SegmentConfig objects in job_settings
         if 'job_settings' in data_dict and data_dict['job_settings']:
             job_settings = data_dict['job_settings']
@@ -124,11 +123,11 @@ def save_job_data(job_id, data_dict):
                 if 'segments' in module_settings:
                     if len(module_settings['segments']) > 0:
                         if isinstance(module_settings['segments'][0], SegmentConfig):
-                            module_settings['segments'] = [segment.model_dump() for segment in module_settings['segments']]
+                            module_settings['segments'] = [segment.model_dump() for segment in
+                                                           module_settings['segments']]
                 new_settings[module_name] = module_settings
             data_dict['job_settings'] = new_settings
-                    
-    
+
     try:
         with open(job_file, "w") as f:
             json.dump(data_dict, f, indent=4)
@@ -239,6 +238,7 @@ async def process_queue():
             # Start the job in a separate task
             asyncio.create_task(run_job_and_process_next(job_id))
 
+
 async def run_job_and_process_next(job_id: str):
     """
     Run a job and then process the next job in the queue.
@@ -313,9 +313,8 @@ async def run_job(job_id: str):
         for module_name, module_settings in job_settings.items():
             try:
                 # Import the module dynamically
-                module_path = f"infer_modules.{module_name}.module"
+                module_path = f"modules.{module_name}.module"
                 # Get the base "package" name
-                #this_package = module_path.split(".")[0]
                 module = importlib.import_module(module_path)
                 process_func = None
                 request_type = None
@@ -329,7 +328,6 @@ async def run_job(job_id: str):
                         request_type = process_func.__annotations__["request"]
                         logger.info(f"Request type: {request_type}")
 
-
                 # Add job_id to the settings if not present
                 if isinstance(module_settings, dict) and "job_id" not in module_settings:
                     module_settings["job_id"] = job_id
@@ -340,7 +338,8 @@ async def run_job(job_id: str):
                     # pass the dictionary directly to the model constructor
                     # Convert module_settings/segments to a list of SegmentConfig instances
                     if "segments" in module_settings:
-                        module_settings["segments"] = [SegmentConfig(**segment) for segment in module_settings["segments"]]
+                        module_settings["segments"] = [SegmentConfig(**segment) for segment in
+                                                       module_settings["segments"]]
 
                     request_instance = request_type(**module_settings)
 
@@ -394,17 +393,17 @@ def verify_job_images(job_data):
         return False, []
 
     missing_images = []
-    
+
     # Check for different job settings structures
     segments = None
-    
+
     # Direct segments structure
     if 'segments' in job_data:
         segments = job_data['segments']
     # Nested framepack structure
     elif 'framepack' in job_data and 'segments' in job_data['framepack']:
         segments = job_data['framepack']['segments']
-    
+
     if not segments:
         return False, []
 

@@ -14,7 +14,7 @@ from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.utils import logging
 
-from infer_modules.framepack.diffusers_helper.dit_common import LayerNorm
+from modules.framepack.diffusers_helper.dit_common import LayerNorm
 
 enabled_backends = []
 
