@@ -125,7 +125,7 @@ def load_models():
             m.to(gpu)
 
 
-def update_status(job_id, message, status=None, progress: int = None, latent_preview: str = None, video_preview: str = None):
+def update_status(job_id, message, status="running", progress: int = None, latent_preview: str = None, video_preview: str = None):
     job_status = job_statuses.get(job_id, JobStatus(job_id))
     job_status.message = message
     if status is not None:
