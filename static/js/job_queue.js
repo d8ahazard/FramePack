@@ -191,6 +191,7 @@ function initJobQueue() {
         
         let previewUrl = null;
         let previewImageUrl = null;
+        let previewVideoTimestamp = null;
         // Try to extract a preview URL from the event data
         if (eventData) {
             // Option 1: Direct current_latents URL
@@ -212,6 +213,7 @@ function initJobQueue() {
             }
             if (eventData.result_video) {
                 previewImageUrl = eventData.result_video;
+                previewVideoTimestamp = eventData.video_timestamp;
                 // URL encode the preview image URL
                 previewImageUrl = encodeURIComponent(previewImageUrl);
                 // Prepend /api/video_thumbnail?video=
@@ -242,8 +244,16 @@ function initJobQueue() {
         const currentJobImage = document.getElementById('currentJobImage');
         if (previewImageUrl) {
             currentJobThumbnail.classList.remove('d-none');
-            currentJobImage.src = previewImageUrl;
-            console.log('Updated thumbnail image as well');
+            // Get the data-timestamp attribute from the thumbnail image    
+            const thumbnailTimestamp = currentJobThumbnail.getAttribute('data-timestamp');
+            if (thumbnailTimestamp && previewVideoTimestamp && thumbnailTimestamp < previewVideoTimestamp) {
+                // Update the thumbnail image
+                currentJobImage.src = previewImageUrl;
+                // Update the data-timestamp attribute
+                currentJobImage.setAttribute('data-timestamp', previewVideoTimestamp);
+                console.log('Updated thumbnail image as well');
+                loadOutputs();
+            }
         }
         
         return true;
@@ -328,18 +338,6 @@ function setupJobWebSocketListener() {
                 }
             }
             
-            // B. If job details are currently displayed, refresh them with new data
-            // if (currentJobId === jobId) {
-            //     // Always get fresh data from the server to ensure we have complete info
-            //     fetch(`/api/job_status/${jobId}`)
-            //         .then(response => response.json())
-            //         .then(jobData => {
-            //             console.log("Refreshed job data from API:", jobData);
-            //             // Update the job details display
-            //             displayJobDetails(jobData);
-            //         })
-            //         .catch(err => console.error('Error refreshing job details:', err));
-            // }
             
             // For completed or failed jobs, ensure we update the full job list
             if (status === 'completed' || status === 'failed') {
@@ -1012,28 +1010,6 @@ function extractVideosFromJobData(jobData) {
         videos.push(jobData.result_video);
     }
     
-    // Check segments
-    if (jobData.segments && Array.isArray(jobData.segments)) {
-        jobData.segments.forEach(segment => {
-            if (typeof segment === 'string') {
-                // Direct string path
-                if (segment.toLowerCase().endsWith('.mp4')) {
-                    videos.push(segment);
-                }
-            } else if (segment && typeof segment === 'object') {
-                // Check for image_path property
-                if (segment.image_path && segment.image_path.toLowerCase().endsWith('.mp4')) {
-                    videos.push(segment.image_path);
-                }
-            }
-        });
-    }
-    
-    // Check for current_video which might be set by backend
-    if (jobData.current_video) {
-        videos.push(jobData.current_video);
-    }
-    
     // Log what we found
     if (videos.length > 0) {
         console.log(`Found ${videos.length} videos in job data:`, videos);
@@ -1202,15 +1178,9 @@ function displayJobDetails(jobData) {
         }
         
         // Get available videos from job data
-        const availableVideos = extractVideosFromJobData(jobData);
-        
-        // Get the video source - use the first available video
-        let videoSrc = '';
-        if (availableVideos.length > 0) {
-            videoSrc = availableVideos[0];
-            console.log("Using video source:", videoSrc);
-        }
-                // Update or create video container
+        const videoSrc = jobData.result_video;
+        const videoTimestamp = jobData.video_timestamp;
+        // Update or create video container
         if (!videoContainer) {
             // Create new video container if it doesn't exist
             videoContainer = document.createElement('div');
@@ -1238,10 +1208,15 @@ function displayJobDetails(jobData) {
             
             if (videoSrc) {
                 if (videoElement) {
-                    // Only update src if it's different to avoid interrupting playback
-                    if (videoElement.src !== videoSrc) {
-                        console.log("Updating video source from", videoElement.src, "to", videoSrc);
+                    // Get the data-timestamp attribute from the video element
+                    const elementTimestamp = videoElement.getAttribute('data-timestamp');
+                    if (elementTimestamp && videoTimestamp && elementTimestamp < videoTimestamp) {      
+                        // Update the video source
                         videoElement.src = videoSrc;
+                        // Update the data-timestamp attribute
+                        videoElement.setAttribute('data-timestamp', videoTimestamp);
+                        // Refresh the output tab
+                        loadOutputs();
                     }
                 } else {
                     // Replace the no-video message with a video element

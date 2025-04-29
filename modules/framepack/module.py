@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 
 from handlers.llm import caption_auto
 
@@ -137,6 +138,7 @@ def update_status(job_id, message, status="running", progress: int = None, laten
     if video_preview is not None:
         video_url = f"/outputs/{os.path.basename(video_preview)}"
         job_status.result_video = video_url
+        job_status.video_timestamp = time.time()
     if progress is not None:
         job_status.progress = progress
 
@@ -625,12 +627,6 @@ def worker_multi_segment(
             if segment_output:
                 video_url = f"/outputs/{os.path.basename(segment_output)}"
                 update_status(job_id, "Single image video generation completed!", progress=100, video_preview=video_url, status="completed")
-                job_status.status = "completed"
-                job_status.progress = 100
-                job_status.message = "Single image video generation completed!"
-                job_status.result_video = video_url
-                job_status.video_preview = video_url
-                save_job_data(job_id, job_status.to_dict())
                 return segment_output
             else:
                 update_status(job_id, "Failed to generate single image video", progress=100, status="failed")

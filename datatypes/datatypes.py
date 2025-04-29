@@ -154,6 +154,7 @@ class JobStatus:
         self.progress = 0
         self.message = ""
         self.result_video = None
+        self.video_timestamp = None
         self.segments = []
         self.current_latents = None
         self.is_valid = True
