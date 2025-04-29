@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+import shutil
 
 import uvicorn
 from fastapi import FastAPI
@@ -35,6 +36,9 @@ args = parser.parse_args()
 print(args)
 
 os.makedirs("static/images", exist_ok=True)
+# If apikeys.json doesn't exist, copy apikeys_sample.json to it
+if not os.path.exists("apikeys.json"):
+    shutil.copy("apikeys_sample.json", "apikeys.json")
 
 
 # ----------------------------------------
