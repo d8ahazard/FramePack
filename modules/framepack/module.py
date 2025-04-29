@@ -146,29 +146,33 @@ def update_status(job_id, message, status="running", progress: int = None, laten
     save_job_data(job_id, job_status.to_dict())
 
 @torch.no_grad()
-def worker_end_frame(input_image, end_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs,
-           gpu_memory_preservation, use_teacache, mp4_crf):
+def worker_end_frame(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs,
+           gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory, resolution, segment_index=None, progress_callback=None):
+    
+    segment_name = f"{job_id}_segment_{segment_index + 1}" if segment_index is not None else job_id
+    output_filename = os.path.join(output_path, f"{segment_name}.mp4")
+    
     total_latent_sections = (total_second_length * 30) / (latent_window_size * 4)
     total_latent_sections = int(max(round(total_latent_sections), 1))
+    logger.info(f"Target Output filename: {output_filename}, total_latent_sections: {total_latent_sections}")
 
-    job_id = generate_timestamp()
+    global adaptive_memory_management, text_encoder, text_encoder_2, image_encoder, vae, transformer, tokenizer, tokenizer_2, feature_extractor
+    adaptive_memory_management = enable_adaptive_memory
+    load_models()
 
-    stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Starting ...'))))
+    if transformer is None or vae is None or image_encoder is None:
+        raise ValueError("Transformer, VAE, or image encoder is not loaded properly")
 
     try:
         # Clean GPU
         if not high_vram:
-            unload_complete_models(
-                text_encoder, text_encoder_2, image_encoder, vae, transformer
-            )
+            unload_complete_models(image_encoder, vae, transformer)
 
         # Text encoding
-
-        stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Text encoding ...'))))
+        update_status(job_id, "Text encoding ...", progress=0)
 
         if not high_vram:
-            fake_diffusers_current_device(text_encoder,
-                                          gpu)  # since we only encode one text - that is one model move and one encode, offload is same time consumption since it is also one load and one encode.
+            fake_diffusers_current_device(text_encoder, gpu)
             load_model_as_complete(text_encoder_2, target_device=gpu)
 
         llama_vec, clip_l_pooler = encode_prompt_conds(prompt, text_encoder, text_encoder_2, tokenizer, tokenizer_2)
@@ -179,36 +183,42 @@ def worker_end_frame(input_image, end_image, prompt, n_prompt, seed, total_secon
             llama_vec_n, clip_l_pooler_n = encode_prompt_conds(n_prompt, text_encoder, text_encoder_2, tokenizer,
                                                                tokenizer_2)
 
+        # Unload text encoders
+        load_model_as_complete(text_encoder, unload=True, target_device="cpu")
+        load_model_as_complete(text_encoder_2, unload=True, target_device="cpu")
+
         llama_vec, llama_attention_mask = crop_or_pad_yield_mask(llama_vec, length=512)
         llama_vec_n, llama_attention_mask_n = crop_or_pad_yield_mask(llama_vec_n, length=512)
 
         # Processing input image (start frame)
-        stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Processing start frame ...'))))
+        update_status(job_id, "Processing start frame ...", progress=0)
 
         H, W, C = input_image.shape
-        height, width = find_nearest_bucket(H, W, resolution=640)
+        height, width = find_nearest_bucket(H, W, resolution=resolution)
         input_image_np = resize_and_center_crop(input_image, target_width=width, target_height=height)
 
-        Image.fromarray(input_image_np).save(os.path.join(outputs_folder, f'{job_id}_start.png'))
+        Image.fromarray(input_image_np).save(os.path.join(output_path, f'{job_id}_start.png'))
 
         input_image_pt = torch.from_numpy(input_image_np).float() / 127.5 - 1
         input_image_pt = input_image_pt.permute(2, 0, 1)[None, :, None]
 
         # Processing end image (if provided)
         has_end_image = end_image is not None
-        if has_end_image:
-            stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Processing end frame ...'))))
+        end_image_np = None
+        end_image_pt = None
+        end_latent = None
 
-            H_end, W_end, C_end = end_image.shape
+        if has_end_image:
+            update_status(job_id, "Processing end frame ...", progress=0)
             end_image_np = resize_and_center_crop(end_image, target_width=width, target_height=height)
 
-            Image.fromarray(end_image_np).save(os.path.join(outputs_folder, f'{job_id}_end.png'))
+            Image.fromarray(end_image_np).save(os.path.join(output_path, f'{job_id}_end.png'))
 
             end_image_pt = torch.from_numpy(end_image_np).float() / 127.5 - 1
             end_image_pt = end_image_pt.permute(2, 0, 1)[None, :, None]
 
         # VAE encoding
-        stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'VAE encoding ...'))))
+        update_status(job_id, "VAE encoding ...", progress=0)
 
         if not high_vram:
             load_model_as_complete(vae, target_device=gpu)
@@ -219,7 +229,7 @@ def worker_end_frame(input_image, end_image, prompt, n_prompt, seed, total_secon
             end_latent = vae_encode(end_image_pt, vae)
 
         # CLIP Vision
-        stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'CLIP Vision encoding ...'))))
+        update_status(job_id, "CLIP Vision encoding ...", progress=0)
 
         if not high_vram:
             load_model_as_complete(image_encoder, target_device=gpu)
@@ -230,10 +240,13 @@ def worker_end_frame(input_image, end_image, prompt, n_prompt, seed, total_secon
         if has_end_image:
             end_image_encoder_output = hf_clip_vision_encode(end_image_np, feature_extractor, image_encoder)
             end_image_encoder_last_hidden_state = end_image_encoder_output.last_hidden_state
-            # Keep separate embeddings for better control
+            # Keep separate embeddings for better control (unlike the simple averaging in worker)
             image_encoder_last_hidden_state = start_image_encoder_last_hidden_state.clone()
         else:
             image_encoder_last_hidden_state = start_image_encoder_last_hidden_state
+
+        # Unload image encoder
+        load_model_as_complete(image_encoder, unload=True, target_device="cpu")
 
         # Dtype
         llama_vec = llama_vec.to(transformer.dtype)
@@ -245,7 +258,7 @@ def worker_end_frame(input_image, end_image, prompt, n_prompt, seed, total_secon
             end_image_encoder_last_hidden_state = end_image_encoder_last_hidden_state.to(transformer.dtype)
 
         # Sampling
-        stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Start sampling ...'))))
+        update_status(job_id, "Start sampling ...", progress=0)
 
         rnd = torch.Generator("cpu").manual_seed(seed)
         num_frames = latent_window_size * 4 - 3
@@ -269,14 +282,22 @@ def worker_end_frame(input_image, end_image, prompt, n_prompt, seed, total_secon
             is_first_section = latent_padding == latent_paddings[0]
             latent_padding_size = latent_padding * latent_window_size
 
-            if stream.input_queue.top() == 'end':
-                stream.output_queue.push(('end', None))
-                return
+            # Check for job cancellation
+            job_status = job_statuses.get(job_id)
+            if job_status and job_status.status == "cancelled":
+                logger.info(f"Job {job_id} was cancelled during processing")
+                try:
+                    unload_complete_models(
+                        text_encoder, text_encoder_2, image_encoder, vae, transformer
+                    )
+                except:
+                    traceback.print_exc()
+                raise KeyboardInterrupt('User ends the task.')
 
             # Calculate temporal position in the video for this section
             # Last section (0) is the beginning of the video, first section is the end
             temporal_position = section_idx / (len(latent_paddings) - 1) if len(latent_paddings) > 1 else 0
-            print(f'latent_padding_size = {latent_padding_size}, is_last_section = {is_last_section}, is_first_section = {is_first_section}, temporal_position = {temporal_position}')
+            logger.info(f'Section {section_idx}, latent_padding_size = {latent_padding_size}, is_last_section = {is_last_section}, is_first_section = {is_first_section}, temporal_position = {temporal_position}')
 
             indices = torch.arange(0, sum([1, latent_padding_size, latent_window_size, 1, 2, 16])).unsqueeze(0)
             clean_latent_indices_pre, blank_indices, latent_indices, clean_latent_indices_post, clean_latent_2x_indices, clean_latent_4x_indices = indices.split(
@@ -294,14 +315,20 @@ def worker_end_frame(input_image, end_image, prompt, n_prompt, seed, total_secon
                 weight = 1.0 - temporal_position
                 
                 # Create a weighted latent for the post latent based on position in sequence
-                weighted_latent = weight * start_latent.to(history_latents) + (1 - weight) * end_latent.to(history_latents)
+                # Ensure consistent dtypes for tensor operations
+                start_latent_device = start_latent.to(history_latents)
+                end_latent_device = end_latent.to(history_latents)
+                weighted_latent = (weight * start_latent_device + (1 - weight) * end_latent_device).to(dtype=start_latent_device.dtype)
                 
                 # Always use the weighted latent for conditioning
                 clean_latents_pre = weighted_latent
                 clean_latents = torch.cat([clean_latents_pre, clean_latents_post], dim=2)
                 
                 # Also create a weighted image embedding for this section
-                image_encoder_last_hidden_state = weight * start_image_encoder_last_hidden_state + (1 - weight) * end_image_encoder_last_hidden_state
+                # Make sure both embeddings are the same dtype (transformer.dtype) before interpolation
+                start_emb = start_image_encoder_last_hidden_state.to(dtype=transformer.dtype)
+                end_emb = end_image_encoder_last_hidden_state.to(dtype=transformer.dtype)
+                image_encoder_last_hidden_state = (weight * start_emb + (1 - weight) * end_emb).to(dtype=transformer.dtype)
 
             if not high_vram:
                 unload_complete_models()
@@ -320,15 +347,26 @@ def worker_end_frame(input_image, end_image, prompt, n_prompt, seed, total_secon
                 preview = (preview * 255.0).detach().cpu().numpy().clip(0, 255).astype(np.uint8)
                 preview = einops.rearrange(preview, 'b c t h w -> (b h) (t w) c')
 
-                if stream.input_queue.top() == 'end':
-                    stream.output_queue.push(('end', None))
+                # Check if the job has been cancelled
+                job_status = job_statuses.get(job_id)
+                if job_status and job_status.status == "cancelled":
+                    logger.info(f"Job {job_id} was cancelled during processing")
+                    # This will cause the sampling to stop at the current step
                     raise KeyboardInterrupt('User ends the task.')
 
                 current_step = d['i'] + 1
                 percentage = int(100.0 * current_step / steps)
                 hint = f'Sampling {current_step}/{steps}'
                 desc = f'Total generated frames: {int(max(0, total_generated_latent_frames * 4 - 3))}, Video length: {max(0, (total_generated_latent_frames * 4 - 3) / 30) :.2f} seconds (FPS-30). The video is being extended now ...'
-                stream.output_queue.push(('progress', (preview, desc, make_progress_bar_html(percentage, hint))))
+                
+                # Save the preview image
+                latent_preview_url = None
+                if preview is not None:
+                    latent_preview_path = os.path.join(output_path, f'{job_id}_latent_preview.png')
+                    Image.fromarray(preview).save(latent_preview_path)
+                    latent_preview_url = f"/outputs/{os.path.basename(latent_preview_path)}"
+                
+                update_status(job_id, desc, progress=percentage, latent_preview=latent_preview_url)
                 return
 
             generated_latents = sample_hunyuan(
@@ -368,11 +406,12 @@ def worker_end_frame(input_image, end_image, prompt, n_prompt, seed, total_secon
             total_generated_latent_frames += int(generated_latents.shape[2])
             history_latents = torch.cat([generated_latents.to(history_latents), history_latents], dim=2)
 
-            if not high_vram:
-                offload_model_from_device_for_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=8)
-                load_model_as_complete(vae, target_device=gpu)
-
             real_history_latents = history_latents[:, :, :total_generated_latent_frames, :, :]
+            
+            # Ensure vae is loaded to gpu
+            load_model_as_complete(vae, target_device=gpu)
+
+            update_status(job_id, f"Decoding latent frames ... {total_generated_latent_frames}", progress=0)
 
             if history_pixels is None:
                 history_pixels = vae_decode(real_history_latents, vae).cpu()
@@ -383,28 +422,28 @@ def worker_end_frame(input_image, end_image, prompt, n_prompt, seed, total_secon
                 current_pixels = vae_decode(real_history_latents[:, :, :section_latent_frames], vae).cpu()
                 history_pixels = soft_append_bcthw(current_pixels, history_pixels, overlapped_frames)
 
-            if not high_vram:
-                unload_complete_models()
-
-            output_filename = os.path.join(outputs_folder, f'{job_id}_{total_generated_latent_frames}.mp4')
-
+            update_status(job_id, f"Saving video ... {output_filename}", progress=0)
             save_bcthw_as_mp4(history_pixels, output_filename, fps=30, crf=mp4_crf)
+            logger.info(f"Saved video to {output_filename}")
 
-            print(f'Decoded. Current latent shape {real_history_latents.shape}; pixel shape {history_pixels.shape}')
-
-            stream.output_queue.push(('file', output_filename))
+            logger.info(f'Decoded. Current latent shape {real_history_latents.shape}; pixel shape {history_pixels.shape}')
+            desc = f'Total generated frames: {int(max(0, total_generated_latent_frames * 4 - 3))}, Video length: {max(0, (total_generated_latent_frames * 4 - 3) / 30) :.2f} seconds (FPS-30). The video is being extended now ...'
+            url_path = f"/outputs/{os.path.basename(output_filename)}"
+            update_status(job_id, desc, progress=100, video_preview=url_path)
 
             if is_last_section:
                 break
-    except:
+    except Exception as e:
         traceback.print_exc()
+        logger.error(f"Error in worker_end_frame: {str(e)}")
 
-        if not high_vram:
-            unload_complete_models(
-                text_encoder, text_encoder_2, image_encoder, vae, transformer
-            )
+    # Clean up start and end images, if they exist
+    if os.path.exists(os.path.join(output_path, f'{job_id}_start.png')):
+        os.remove(os.path.join(output_path, f'{job_id}_start.png'))
+    if os.path.exists(os.path.join(output_path, f'{job_id}_end.png')):
+        os.remove(os.path.join(output_path, f'{job_id}_end.png'))
 
-    
+    update_status(job_id, "Generation completed", progress=100)
     return output_filename
 
 
@@ -1013,28 +1052,54 @@ def worker_multi_segment(
                 )
 
         logger.info(f"Generating segment {seg_no} with length {segment_duration} seconds...")
-        # Generate this segment
-        segment_output = worker(
-            job_id=master_job_id,
-            input_image=start_image,
-            end_image=end_image,
-            prompt=combined_prompt,
-            n_prompt=negative_prompt,
-            seed=seed,
-            total_second_length=segment_duration,
-            latent_window_size=latent_window_size,
-            steps=steps,
-            cfg=guidance_scale,
-            gs=guidance_scale,
-            rs=rs,
-            gpu_memory_preservation=gpu_memory_preservation,
-            use_teacache=use_teacache,
-            mp4_crf=mp4_crf,
-            enable_adaptive_memory=enable_adaptive_memory,
-            resolution=resolution,
-            segment_index=seg_no,
-            progress_callback=progress_callback
-        )
+        
+        # Choose the right worker based on whether we have an end image
+        if end_image is not None:
+            # Use worker_end_frame for two-image segments to get smooth transitions
+            segment_output = worker_end_frame(
+                job_id=master_job_id,
+                input_image=start_image,
+                end_image=end_image,
+                prompt=combined_prompt,
+                n_prompt=negative_prompt,
+                seed=seed,
+                total_second_length=segment_duration,
+                latent_window_size=latent_window_size,
+                steps=steps,
+                cfg=guidance_scale,
+                gs=guidance_scale,
+                rs=rs,
+                gpu_memory_preservation=gpu_memory_preservation,
+                use_teacache=use_teacache,
+                mp4_crf=mp4_crf,
+                enable_adaptive_memory=enable_adaptive_memory,
+                resolution=resolution,
+                segment_index=seg_no,
+                progress_callback=progress_callback
+            )
+        else:
+            # Use normal worker for single image segments
+            segment_output = worker(
+                job_id=master_job_id,
+                input_image=start_image,
+                end_image=end_image,
+                prompt=combined_prompt,
+                n_prompt=negative_prompt,
+                seed=seed,
+                total_second_length=segment_duration,
+                latent_window_size=latent_window_size,
+                steps=steps,
+                cfg=guidance_scale,
+                gs=guidance_scale,
+                rs=rs,
+                gpu_memory_preservation=gpu_memory_preservation,
+                use_teacache=use_teacache,
+                mp4_crf=mp4_crf,
+                enable_adaptive_memory=enable_adaptive_memory,
+                resolution=resolution,
+                segment_index=seg_no,
+                progress_callback=progress_callback
+            )
 
         if segment_output:
             logger.info(f"Segment {seg_no} generated: {segment_output}")

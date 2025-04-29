@@ -64,6 +64,11 @@ async def lifespan(app: FastAPI):
     await asyncio.wait_for(asyncio.gather(*[event() for event in shutdown_events]), timeout=5)
     # Run cleanup on startup with a max age of 30 days
     cleanup_thumbnail_cache(30)
+    # REALLY terminate all asyncio tasks
+    # for task in asyncio.all_tasks():
+    #     task.cancel()
+    # await asyncio.gather(*asyncio.all_tasks())
+    logging.info("All tasks terminated")
 
 
 app = FastAPI(
