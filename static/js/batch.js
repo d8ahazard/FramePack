@@ -23,7 +23,6 @@ export function initBatch() {
     console.log('Initializing batch processing module');
     
     // Get DOM elements
-    batchDropArea = document.getElementById('batchDropArea');
     batchFileInput = document.getElementById('batchFileInput');
     batchImagesContainer = document.getElementById('batchImagesContainer');
     batchProcessBtn = document.getElementById('batchProcessBtn');
@@ -32,13 +31,6 @@ export function initBatch() {
     batchSettingsForm = document.getElementById('batchSettingsForm');
     
     // Set up event listeners
-    if (batchDropArea) {
-        batchDropArea.addEventListener('dragover', handleDragOver);
-        batchDropArea.addEventListener('dragleave', handleDragLeave);
-        batchDropArea.addEventListener('drop', handleBatchDrop);
-        batchDropArea.addEventListener('click', () => batchFileInput.click());
-    }
-    
     if (batchFileInput) {
         batchFileInput.addEventListener('change', handleBatchFileSelect);
     }
@@ -54,39 +46,66 @@ export function initBatch() {
     if (batchProcessBtn) {
         batchProcessBtn.addEventListener('click', processBatch);
     }
-}
-
-// Event Handlers
-function handleDragOver(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    this.classList.add('drag-over');
-}
-
-function handleDragLeave(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    this.classList.remove('drag-over');
-}
-
-function handleBatchDrop(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    this.classList.remove('drag-over');
     
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-        handleBatchFiles(e.dataTransfer.files);
+    // Add drag/drop handling to the batch container
+    if (batchImagesContainer) {
+        batchImagesContainer.addEventListener('dragover', (e) => {
+            // Only handle file drops when the container has the dropzone or is empty
+            e.preventDefault();
+            e.stopPropagation();
+            
+            // If we're over the empty state dropzone
+            const dropzone = batchImagesContainer.querySelector('.timeline-dropzone');
+            if (dropzone) {
+                dropzone.classList.add('active');
+            }
+        });
+        
+        batchImagesContainer.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            // If we're over the empty state dropzone
+            const dropzone = batchImagesContainer.querySelector('.timeline-dropzone');
+            if (dropzone) {
+                dropzone.classList.remove('active');
+            }
+        });
+        
+        batchImagesContainer.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            // Remove active classes
+            const dropzone = batchImagesContainer.querySelector('.timeline-dropzone');
+            if (dropzone) {
+                dropzone.classList.remove('active');
+            }
+            
+            // Handle files dropped directly from the desktop
+            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                handleBatchFiles(e.dataTransfer.files);
+            }
+        });
     }
+    
+    // Initialize batch container with empty state
+    updateBatchStatus();
 }
 
-function handleBatchFileSelect(e) {
+// Handle file selection
+function handleBatchFileSelect(e) { 
+    console.log('handleBatchFileSelect');
     if (e.target.files && e.target.files.length > 0) {
         handleBatchFiles(e.target.files);
+        // Update batch display and status
+        updateBatchStatus();
     }
 }
 
 // Process the selected files for batch
 function handleBatchFiles(files) {
+    console.log('handleBatchFiles');
     const imageFiles = Array.from(files).filter(file => file.type.startsWith('image/'));
     
     if (imageFiles.length === 0) {
@@ -95,20 +114,10 @@ function handleBatchFiles(files) {
         return;
     }
     
-    // Clear the alert if it exists
-    const alertElement = batchImagesContainer.querySelector('.alert');
-    if (alertElement) {
-        alertElement.remove();
-    }
-    
     // Add image files to batch
     imageFiles.forEach(file => {
         addImageToBatch(file);
     });
-    
-    // Enable process and clear buttons
-    batchProcessBtn.disabled = batchImages.length === 0;
-    clearBatchBtn.disabled = batchImages.length === 0;
 }
 
 // Add an image to the batch
@@ -160,11 +169,18 @@ function addImageToBatch(file) {
         }
         
         // Enable process and clear buttons
-        batchProcessBtn.disabled = false;
-        clearBatchBtn.disabled = false;
+        updateButtonStates();
+        updateBatchStatus();
     };
     
     reader.readAsDataURL(file);
+}
+
+// Update button states
+function updateButtonStates() {
+    // Enable/disable process and clear buttons based on whether there are images
+    batchProcessBtn.disabled = batchImages.length === 0;
+    clearBatchBtn.disabled = batchImages.length === 0;
 }
 
 // Remove an image from the batch
@@ -181,17 +197,122 @@ function removeImageFromBatch(imageId) {
         thumbnailElement.remove();
     }
     
-    // Disable buttons if no images
-    batchProcessBtn.disabled = batchImages.length === 0;
-    clearBatchBtn.disabled = batchImages.length === 0;
-    
-    // Show info message if no images
+    // Update batch status (will show empty state if no images left)
+    updateBatchStatus();
+}
+
+// Function to update batch display status based on content
+function updateBatchStatus() {
+    // Enable/disable buttons based on whether there are images
+    updateButtonStates();
+    console.log('Batch images:', batchImages);
+    // Show message when batch is empty
     if (batchImages.length === 0) {
+        // Clear the container and add the primary dropzone
         batchImagesContainer.innerHTML = `
-            <div class="alert alert-info">
-                <i class="bi bi-info-circle me-2"></i> Upload one or more images to process in batch. Each image will be processed with the same settings.
+            <div class="timeline-dropzone">
+                <div class="text-center py-5">
+                    <i class="bi bi-images fs-1 mb-3"></i>
+                    <h5 class="fw-bold mb-3">Add Images to Batch</h5>
+                    <p class="text-muted mb-4">Upload one or more images to process with the same settings</p>
+                    <button class="btn btn-primary mt-2 px-4 py-2" id="dropzoneBatchUploadBtn">
+                        <i class="bi bi-upload me-2"></i> Browse for Images
+                    </button>
+                </div>
             </div>
         `;
+        
+        // Add click event for the upload button
+        const dropzoneUploadBtn = document.getElementById('dropzoneBatchUploadBtn');
+        if (dropzoneUploadBtn) {
+            dropzoneUploadBtn.addEventListener('click', () => batchFileInput.click());
+        }
+        
+        // Remove any secondary drop zone when empty
+        const secondaryDropZone = document.getElementById('batchSecondaryDropZone');
+        if (secondaryDropZone) {
+            secondaryDropZone.remove();
+        }
+    } else {
+        // Clear the container and re-add all images
+        batchImagesContainer.innerHTML = '';
+        
+        // Re-add all batch images to the container
+        batchImages.forEach(image => {
+            const thumbnailCol = document.createElement('div');
+            thumbnailCol.className = 'col-6 col-md-4 col-lg-3';
+            thumbnailCol.dataset.imageId = image.id;
+            
+            thumbnailCol.innerHTML = `
+                <div class="card h-100">
+                    <img src="${image.dataUrl}" class="card-img-top" alt="${image.file.name}">
+                    <div class="card-body p-2">
+                        <p class="card-text small text-truncate">${image.file.name}</p>
+                    </div>
+                    <div class="card-footer p-1 text-end">
+                        <button class="btn btn-sm btn-outline-danger remove-batch-image" data-image-id="${image.id}">
+                            <i class="bi bi-x"></i>
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            batchImagesContainer.appendChild(thumbnailCol);
+            
+            // Add click handler for remove button
+            const removeBtn = thumbnailCol.querySelector('.remove-batch-image');
+            if (removeBtn) {
+                removeBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    removeImageFromBatch(image.id);
+                });
+            }
+        });
+        
+        // Add a secondary drop zone AFTER the container when items exist
+        if (!document.getElementById('batchSecondaryDropZone')) {
+            const secondaryDropZone = document.createElement('div');
+            secondaryDropZone.id = 'batchSecondaryDropZone';
+            secondaryDropZone.className = 'timeline-dropzone mt-4';
+            secondaryDropZone.innerHTML = `
+                <div class="text-center py-3">
+                    <i class="bi bi-plus-circle fs-2 mb-2"></i>
+                    <h6 class="fw-bold mb-2">Add More Images</h6>
+                    <p class="text-muted small mb-0">Drag and drop more images here</p>
+                </div>
+            `;
+            
+            // Add event listeners for the secondary drop zone
+            secondaryDropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                secondaryDropZone.classList.add('active');
+            });
+            
+            secondaryDropZone.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                secondaryDropZone.classList.remove('active');
+            });
+            
+            secondaryDropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                secondaryDropZone.classList.remove('active');
+                
+                // Handle files dropped on the secondary zone
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    handleBatchFiles(e.dataTransfer.files);
+                }
+            });
+            
+            secondaryDropZone.addEventListener('click', () => {
+                batchFileInput.click();
+            });
+            
+            // Append the secondary drop zone AFTER the batch images container
+            batchImagesContainer.after(secondaryDropZone);
+        }
     }
 }
 
@@ -200,16 +321,8 @@ function clearBatchImages() {
     // Clear array
     batchImages.length = 0;
     
-    // Clear DOM
-    batchImagesContainer.innerHTML = `
-        <div class="alert alert-info">
-            <i class="bi bi-info-circle me-2"></i> Upload one or more images to process in batch. Each image will be processed with the same settings.
-        </div>
-    `;
-    
-    // Disable buttons
-    batchProcessBtn.disabled = true;
-    clearBatchBtn.disabled = true;
+    // Update batch status to show empty state
+    updateBatchStatus();
 }
 
 // Process the batch

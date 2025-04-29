@@ -169,21 +169,12 @@
                                 </button>
                             </div>
                             
-                            <!-- Batch drop area -->
-                            <div id="batchDropArea" class="upload-drop-area mb-3">
-                                <div class="upload-message">
-                                    <i class="bi bi-cloud-arrow-up fs-1"></i>
-                                    <p>Drag & drop images here or click to browse</p>
-                                    <input type="file" id="batchFileInput" accept="image/*" multiple class="file-input">
-                                </div>
-                            </div>
+                            <!-- Hidden file input -->
+                            <input type="file" id="batchFileInput" accept="image/*" multiple class="d-none">
                             
                             <!-- Batch images container -->
                             <div id="batchImagesContainer" class="row g-3">
-                                <!-- Batch images will be added here -->
-                                <div class="alert alert-info">
-                                    <i class="bi bi-info-circle me-2"></i> Upload one or more images to process in batch. Each image will be processed with the same settings.
-                                </div>
+                                <!-- Batch images will be added here by JavaScript -->
                             </div>
                         </div>
                         
