@@ -159,7 +159,6 @@ def queue_broadcast(job_id: str, data: Dict[str, Any]):
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                logger.info("Using existing event loop for broadcast")
                 loop.create_task(update_status(job_id, data=data))
                 return
         except RuntimeError:

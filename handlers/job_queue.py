@@ -99,8 +99,11 @@ def add_to_queue(job_id: str, position: Optional[int] = None):
     # Update all queue positions
     update_queue_positions()
 
-    # Start queue processing if needed
-    asyncio.create_task(process_queue())
+    # Only start processing if nothing is running
+    if not running_job_ids:
+        # Start queue processing if needed
+        asyncio.create_task(process_queue())
+    # Otherwise, let the running jobs handle continuing the queue
 
 
 def save_job_data(job_id, data_dict):
@@ -233,19 +236,37 @@ async def process_queue():
         jobs_to_start = min(available_slots, len(job_queue))
         logger.info(f"Starting {jobs_to_start} new job(s)")
 
+        jobs_started = []
+        
         for _ in range(jobs_to_start):
             if not job_queue:
                 break
 
             # Get the next job
             job_id = job_queue.pop(0)
-
+            
+            # Verify job data before starting
+            job_data = load_job_data(job_id)
+            if not job_data:
+                logger.error(f"Job {job_id} data not found when trying to start")
+                continue
+                
             # Add to running jobs set
             running_job_ids.add(job_id)
+            jobs_started.append(job_id)
 
-            # Update queue positions
-            update_queue_positions()
+            # Update status to running
+            if job_id in job_statuses:
+                job_status = job_statuses[job_id]
+                job_status.status = "running"
+                job_status.message = "Starting job..."
+                save_job_data(job_id, job_status.to_dict())
 
+        # Update queue positions
+        update_queue_positions()
+        
+        # Start the jobs outside the loop to reduce lock holding time
+        for job_id in jobs_started:
             # Start the job in a separate task
             asyncio.create_task(run_job_and_process_next(job_id))
 
@@ -267,19 +288,24 @@ async def run_job_and_process_next(job_id: str):
         logger.error(traceback.format_exc())
 
         # Update job status to failed if it's still in the running state
-        if job_id in job_statuses:
-            job_status = job_statuses[job_id]
-            if job_status.status == "running":
-                job_status.status = "failed"
-                job_status.message = f"Job failed with error: {str(e)}"
-                save_job_data(job_id, job_status.to_dict())
+        # Use lock to avoid race conditions
+        async with job_processing_lock:
+            if job_id in job_statuses:
+                job_status = job_statuses[job_id]
+                if job_status.status == "running":
+                    job_status.status = "failed"
+                    job_status.message = f"Job failed with error: {str(e)}"
+                    save_job_data(job_id, job_status.to_dict())
     finally:
-        # Remove from running jobs set
-        running_job_ids.discard(job_id)
+        # Use lock for cleanup operations
+        async with job_processing_lock:
+            # Remove from running jobs set
+            running_job_ids.discard(job_id)
 
-        # Process next job if there are more in the queue
-        if job_queue:
-            await process_queue()
+            # Process next job if there are more in the queue
+            if job_queue:
+                # Don't await here to avoid blocking
+                asyncio.create_task(process_queue())
 
 
 async def run_job(job_id: str):
@@ -829,26 +855,27 @@ def register_api_endpoints(app):
             return ErrorResponse(
                 error=f"Cannot run job: {len(missing_images)} missing images: {', '.join(missing_images[:3])}")
 
-        # Create or update job status
-        job_status = job_statuses.get(job_id, JobStatus(job_id))
+        # Create or update job status - get lock for consistency
+        async with job_processing_lock:
+            job_status = job_statuses.get(job_id, JobStatus(job_id))
 
-        # Update status
-        job_status.status = "queued"
-        job_status.progress = 0
-        job_status.message = "Waiting in queue"
-        job_status.result_video = ""  # Clear previous result
+            # Update status
+            job_status.status = "queued"
+            job_status.progress = 0
+            job_status.message = "Waiting in queue"
+            job_status.result_video = ""  # Clear previous result
 
-        # Ensure job settings are in the right format
-        job_status.job_settings = job_settings
+            # Ensure job settings are in the right format
+            job_status.job_settings = job_settings
 
-        # Save to memory cache
-        job_statuses[job_id] = job_status
+            # Save to memory cache
+            job_statuses[job_id] = job_status
 
-        # Save to disk
-        save_job_data(job_id, job_status.to_dict())
+            # Save to disk
+            save_job_data(job_id, job_status.to_dict())
 
-        # Add job to the queue
-        add_to_queue(job_id)
+            # Add job to the queue
+            add_to_queue(job_id)
 
         return GenerateResponse(job_id=job_id)
 
