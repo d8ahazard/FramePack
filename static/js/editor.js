@@ -782,7 +782,7 @@ function updateTimelineStatus() {
         });
         
         // Add note and checkbox to the last item
-        if (lastIndex >= 0) {
+        if (lastIndex > 0) {
             const lastItem = timelineItems[lastIndex];
             const durationSection = lastItem.querySelector('.timeline-item-duration');
             
