@@ -384,20 +384,11 @@ function initEditor() {
             console.log('Valid LLM providers:', validProviders);
             // If there are no valid providers, hide the batchAutoCaptionImage and autoCaptionImage checkboxes
             if (validProviders.length === 0) {
-                const batchAutoCaptionImage = document.getElementById('batchAutoCaptionImage');
-                const autoCaptionImage = document.getElementById('autoCaptionImage');
-                if (batchAutoCaptionImage) {
-                    batchAutoCaptionImage.disabled = true;
-                    batchAutoCaptionImage.checked = false;
-                    // HIDE IT
-                    batchAutoCaptionImage.style.display = 'none';
-                }
-                if (autoCaptionImage) {
-                    autoCaptionImage.disabled = true;
-                    autoCaptionImage.checked = false;
-                    // HIDE IT
-                    autoCaptionImage.style.display = 'none';
-                }
+                // Hide the autoCaptionGroups
+                const autoCaptionGroups = document.querySelectorAll('.autoCaptionGroup');
+                autoCaptionGroups.forEach(group => {
+                    group.style.display = 'none';
+                });
             }
         })
         .catch(error => console.error('Error fetching LLM providers:', error));
