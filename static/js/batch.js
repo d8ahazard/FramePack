@@ -10,6 +10,11 @@ let uploadBatchImagesBtn;
 let clearBatchBtn;
 let batchSettingsForm;
 
+import {
+    runJob
+} from './job_queue.js';
+
+
 // State
 const batchImages = [];
 
@@ -209,8 +214,10 @@ function clearBatchImages() {
 
 // Process the batch
 function processBatch() {
-    // Implement batch processing logic here
-    console.log('Processing batch of', batchImages.length, 'images');
+    if (batchImages.length === 0) {
+        alert('Please add at least one image before processing.');
+        return;
+    }
     
     // Get settings from form
     const settings = {
@@ -222,13 +229,99 @@ function processBatch() {
         guidanceScale: document.getElementById('batchGuidanceScale').value,
         useTeacache: document.getElementById('batchUseTeacache').checked,
         enableAdaptiveMemory: document.getElementById('batchEnableAdaptiveMemory').checked,
-        outputFormat: document.getElementById('batchOutputFormat').value
+        outputFormat: document.getElementById('batchOutputFormat').value,
+        duration: document.getElementById('batchDuration').value
     };
     
-    // For now, just log the settings and images
     console.log('Batch settings:', settings);
     console.log('Batch images:', batchImages);
     
+    // Disable the process button while batch is processing
+    batchProcessBtn.disabled = true;
+    
+    // Process each image as a separate job
     for (const image of batchImages) {
+        // Generate a job ID
+        const timestamp = Math.floor(Date.now() / 1000);
+        const jobId = `batch_${timestamp}_${Math.floor(Math.random() * 1000)}`;
+        
+        // Prepare job payload - simplified version of prepareJobPayload()
+        const payload = {
+            frames: [{
+                imageData: image.dataUrl,
+                duration: parseFloat(settings.duration),
+                transition: 0 // No transition since it's a single image
+            }],
+            settings: {
+                autoCaptionImage: settings.autoCaptionImage,
+                globalPrompt: settings.globalPrompt,
+                negativePrompt: settings.negativePrompt,
+                resolution: parseInt(settings.resolution),
+                steps: parseInt(settings.steps),
+                guidanceScale: parseFloat(settings.guidanceScale),
+                useTeacache: settings.useTeacache,
+                enableAdaptiveMemory: settings.enableAdaptiveMemory,
+                outputFormat: settings.outputFormat
+            }
+        };
+        
+        // Create save payload similar to startGeneration
+        const savePayload = {
+            job_id: jobId,
+            status: "saved",
+            progress: 0,
+            message: "Batch job saved",
+            result_video: "",
+            segments: [image.file.name], // Single segment with filename
+            is_valid: true,
+            missing_images: [],
+            job_settings: {'framepack': payload},
+            queue_position: -1,
+            created_timestamp: timestamp
+        };
+        
+        // Save and run the job
+        submitBatchJob(jobId, savePayload);
     }
+    
+    // Show feedback that batch has been submitted
+    alert(`Submitted ${batchImages.length} image(s) for processing. You can monitor progress in the Job Queue tab.`);
+    
+    // Re-enable the process button
+    batchProcessBtn.disabled = false;
+}
+
+// Helper function to submit a batch job
+function submitBatchJob(jobId, savePayload) {
+    // Save the job
+    fetch(`/api/save_job/${jobId}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(savePayload)
+    })
+    .then(response => {
+        if (!response.ok) {
+            return response.text().then(text => {
+                throw new Error(`Failed to save job: ${text}`);
+            });
+        }
+        return response.json();
+    })
+    .then(data => {
+        console.log('Batch job saved:', data);
+        
+        try {
+            // Assuming runJob is available globally
+            runJob(jobId);
+            console.log(`Batch job ${jobId} started using job_queue.runJob`);
+        } catch (err) {
+            console.error('Error running batch job:', err);
+            showMessage(`Error starting batch job: ${err.message}`, 'error');
+        }
+    })
+    .catch(error => {
+        console.error('Error submitting batch job:', error);
+    });
 } 
