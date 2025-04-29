@@ -133,7 +133,8 @@ def update_status(job_id, message, status="running", progress: int = None, laten
     if latent_preview is not None:
         job_status.current_latents = latent_preview
     if video_preview is not None:
-        job_status.result_video = video_preview
+        video_url = f"/outputs/{os.path.basename(video_preview)}"
+        job_status.result_video = video_url
     if progress is not None:
         job_status.progress = progress
 
@@ -619,7 +620,7 @@ def worker_multi_segment(
                 job_status.status = "completed"
                 job_status.progress = 100
                 job_status.message = "Single image video generation completed!"
-                job_status.result_video = segment_output
+                job_status.result_video = video_url
                 job_status.video_preview = video_url
                 save_job_data(job_id, job_status.to_dict())
                 return segment_output
@@ -845,7 +846,8 @@ def worker_multi_segment(
     job_status.status = "completed"
     job_status.progress = 100
     job_status.message = "Video generation completed!"
-    job_status.result_video = final_output
+    video_url = f"/outputs/{os.path.basename(final_output)}"
+    job_status.result_video = video_url
     save_job_data(job_id, job_status.to_dict())
 
     return final_output
