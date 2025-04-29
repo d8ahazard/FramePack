@@ -14,7 +14,7 @@ class FramePackJobSettings(ModuleJobSettings):
     guidance_scale: float = 10.0
     use_teacache: bool = True
     enable_adaptive_memory: bool = True
-    resolution: int = 640
+    resolution: int = 720
     mp4_crf: int = 16
     gpu_memory_preservation: float = 6.0
     include_last_frame: bool = False  # Control whether to generate a segment for the last frame

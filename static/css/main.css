@@ -343,14 +343,6 @@ body {
     min-height: 220px;
 }
 
-.timeline-item img {
-    width: 100%;
-    height: auto;
-    max-height: 80px;
-    object-fit: cover;
-    border-radius: 4px;
-    margin-bottom: 8px;
-}
 
 .timeline-item .item-controls {
     display: flex;
