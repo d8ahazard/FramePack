@@ -223,8 +223,6 @@ def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_
 
         if has_end_image:
             update_status(job_id, "Processing end frame ...", progress=0)
-
-            H_end, W_end, C_end = end_image.shape
             end_image_np = resize_and_center_crop(end_image, target_width=width, target_height=height)
 
             Image.fromarray(end_image_np).save(os.path.join(output_path, f'{job_id}_end.png'))
