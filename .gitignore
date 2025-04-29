@@ -6,7 +6,7 @@ uploads/
 thumbnails/
 jobs/
 .cache/
-
+apikeys.json
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
