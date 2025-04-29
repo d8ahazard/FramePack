@@ -29,6 +29,24 @@ job_processing_lock = asyncio.Lock()
 # Global job tracking
 job_statuses = {}
 
+async def startup_event():
+    clear_running_jobs()
+
+
+async def shutdown_event():
+    global job_queue, running_job_ids, job_statuses
+    for job_id in running_job_ids:
+        job_status = job_statuses.get(job_id)
+        if job_status:
+            job_status.status = "cancelled"
+            job_status.message = "Job was interrupted"
+            save_job_data(job_id, job_status.to_dict())
+    job_queue.clear()
+    running_job_ids.clear()
+    job_statuses.clear()
+    clear_running_jobs()
+    logger.info("Shutdown event complete for job queue")
+
 
 # Get the number of available GPUs
 def get_available_gpu_count():

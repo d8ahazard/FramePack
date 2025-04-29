@@ -14,5 +14,6 @@ torch>=2.6.0
 torchvision>=0.21.0
 transformers>=4.46.2
 uvicorn>=0.22.0
+watchdog
 xformers>=0.0.29.post3
 --extra-index-url https://download.pytorch.org/whl/cu126

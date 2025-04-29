@@ -509,15 +509,18 @@ async function loadJobQueue() {
         }
         
         // Create section for queued jobs with drag-and-drop support
+        // Only show the button if there are no running jobs
         if (queuedJobs.length > 0) {
             const queuedSection = document.createElement('div');
             queuedSection.className = 'mb-3';
             queuedSection.innerHTML = `
                 <div class="d-flex justify-content-between align-items-center mb-2">
                     <h6 class="fw-bold mb-0">Queued</h6>
-                    <button id="runAllQueued" class="btn btn-sm btn-primary">
-                        <i class="bi bi-play-fill"></i> Run All
-                    </button>
+                    ${runningJobs.length > 0 ? '' : `
+                        <button id="runAllQueued" class="btn btn-sm btn-primary">
+                            <i class="bi bi-play-fill"></i> Run All
+                        </button>
+                    `}
                 </div>
             `;
             
@@ -540,11 +543,13 @@ async function loadJobQueue() {
             initDragAndDrop();
             
             // Run all button event listener
-            document.getElementById('runAllQueued').addEventListener('click', () => {
-                if (confirm(`Run all ${queuedJobs.length} queued jobs?`)) {
-                    processQueue();
-                }
-            });
+            if (runningJobs.length === 0) {
+                document.getElementById('runAllQueued').addEventListener('click', () => {
+                    if (confirm(`Run all ${queuedJobs.length} queued jobs?`)) {
+                        processQueue();
+                    }
+                });
+            }
         }
         
         // Other job sections (completed, failed, cancelled)
@@ -718,7 +723,10 @@ function createJobItem(job) {
 function formatJobTimestamp(jobId) {
     // Check if jobId is undefined or null
     if (!jobId) return 'Unknown';
-
+    // If the jobId starts with batch_, remove the batch_ prefix
+    if (jobId.startsWith('batch_')) {
+        jobId = jobId.slice(6);
+    }
     // const timestamp = Math.floor(Date.now() / 1000);
     // let jobId = `${timestamp}_${Math.floor(Math.random() * 1000)}`;
     const jobIdParts = jobId.split('_');
@@ -1493,12 +1501,12 @@ async function cancelJob(jobId) {
 }
 
 // Run a job (fresh execution)
-async function runJob(jobId) {
+async function runJob(jobId, skipConfirmation = false) {
     try {
         console.log(`Attempting to run job: ${jobId}`);
         
         // Confirm with user
-        if (!confirm('Are you sure you want to run this job?')) {
+        if (!skipConfirmation && !confirm('Are you sure you want to run this job?')) {
             console.log('Job run cancelled by user');
             return;
         }

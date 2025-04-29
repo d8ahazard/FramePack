@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 # Create connection manager instances
 global_manager = ConnectionManager()  # For broadcasts to all clients
 job_manager = ConnectionManager()  # For job-specific broadcasts
+terminate_process = False
 
 # Store active websocket connections
 active_connections: List[WebSocket] = []
@@ -26,9 +27,23 @@ manager = ConnectionManager()
 # Create a queue for broadcasting job updates
 broadcast_queue = queue.Queue()
 
+async def startup_event():
+    await process_broadcasts()
+
+async def shutdown_event():
+    global broadcaster_task
+    global terminate_process
+    terminate_process = True
+    if broadcaster_task:
+        broadcaster_task.cancel()
+        try:
+            await broadcaster_task
+        except asyncio.CancelledError:
+            pass
+    logger.info("Shutdown event complete for socket")
 
 async def process_broadcasts():
-    while True:
+    while not terminate_process:
         try:
             # Check if there are any pending broadcasts
             if not broadcast_queue.empty():
@@ -47,7 +62,7 @@ async def websocket_broadcaster():
     """
     Background task to broadcast messages to all connected websocket clients.
     """
-    while True:
+    while not terminate_process:
         # Get message from queue
         message = await message_queue.get()
 

@@ -20,6 +20,7 @@ from handlers.model import preload_all_models
 from handlers.path import thumbnail_path, upload_path, output_path, app_path
 from handlers.socket import process_broadcasts
 
+
 # Set default logging level to INFO
 logging.basicConfig(level=logging.INFO)
 
@@ -35,6 +36,9 @@ args = parser.parse_args()
 
 print(args)
 
+startup_events = []
+shutdown_events = []
+
 os.makedirs("static/images", exist_ok=True)
 # If apikeys.json doesn't exist, copy apikeys_sample.json to it
 if not os.path.exists("apikeys.json"):
@@ -49,14 +53,17 @@ if not os.path.exists("apikeys.json"):
 async def lifespan(app: FastAPI):
     # Load the ML model
     # Start the broadcast processing task
-    asyncio.create_task(process_broadcasts())
+    for event in startup_events:
+        print(f"Running startup event: {event}")
+        asyncio.create_task(event())
+    #asyncio.create_task(process_broadcasts())
     # Run cleanup on startup with a max age of 30 days
     cleanup_thumbnail_cache(30)
-    clear_running_jobs()
     yield
+    # Run shutdown events with a 5 second timeout
+    await asyncio.wait_for(asyncio.gather(*[event() for event in shutdown_events]), timeout=5)
     # Run cleanup on startup with a max age of 30 days
     cleanup_thumbnail_cache(30)
-    clear_running_jobs()
 
 
 app = FastAPI(
@@ -129,13 +136,17 @@ def register_all_endpoints():
     # Enumerate all modules in handlers. If they have a register_api_endpoints function, call it
     import handlers
     import pkgutil
-
+    global startup_events, shutdown_events
     def try_register(module_name):
         try:
             module = __import__(module_name, fromlist=[''])
             if hasattr(module, "register_api_endpoints"):
                 print(f"Registering API endpoints from {module_name}")
                 module.register_api_endpoints(app)
+            if hasattr(module, "startup_event"):
+                startup_events.append(module.startup_event)
+            if hasattr(module, "shutdown_event"):
+                shutdown_events.append(module.shutdown_event)
         except Exception as e:
             print(f"Error registering API endpoints from {module_name}: {e}")
 

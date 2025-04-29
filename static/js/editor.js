@@ -982,8 +982,11 @@ function startGeneration() {
         window.currentJobId = jobId;
     }
     
-    // Set this as the current active job for UI updates
-    window.currentActiveJobId = jobId;
+
+    // Set this as the current active job for UI updates only if there's not already an active job
+    if (!window.currentActiveJobId) {
+        window.currentActiveJobId = jobId;
+    }
     
     // Show progress UI
     const progressContainer = document.getElementById('progressContainer');
@@ -1172,7 +1175,7 @@ function saveJob() {
 }
 
 // Function to prepare job payload from timeline
-function prepareJobPayload() {
+function prepareJobPayload(batch = false) {
     // Collect segments data
     const segments = [];
     let includeLastFrame = false;
@@ -1263,6 +1266,15 @@ function prepareJobPayload() {
         firstImageName = segments[0].image_path.split('\\').pop().split('.')[0];
     }
 
+    let autoCaption = false;
+    let autoCaptionElement = null;
+    if (batch) {
+        autoCaptionElement = document.getElementById('autoCaptionImageBatch');
+    } else {
+        autoCaptionElement = document.getElementById('autoCaptionImage');
+    }
+    autoCaptionElement = document.getElementById('autoCaptionImage');
+
     // Create the payload with all form settings
     return {
         global_prompt: elements.globalPrompt ? elements.globalPrompt.value : "",
@@ -1276,7 +1288,8 @@ function prepareJobPayload() {
         resolution: elements.resolution ? parseInt(elements.resolution.value) : 640,
         mp4_crf: 16,
         gpu_memory_preservation: 6.0,
-        include_last_frame: includeLastFrame || false
+        include_last_frame: includeLastFrame || false,
+        auto_prompt: autoCaption || false
     };
 }
 

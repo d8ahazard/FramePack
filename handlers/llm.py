@@ -8,6 +8,11 @@ from openai import OpenAI
 import anthropic
 from groq import Groq
 from handlers.path import app_path
+from watchdog.events import FileSystemEvent, FileSystemEventHandler
+from watchdog.observers import Observer
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Load API keys
 key_file = os.path.join(app_path, "apikeys.json")
@@ -15,6 +20,8 @@ supported_providers = ["openai", "anthropic", "deepseek", "gemini", "groq", "ope
 keys_validated = False
 validated_keys = {}
 invalid_keys = {}
+active_keys = {}
+observer = None
 
 IMAGE_PROMPT = """
 You are an assistant that writes short, motion-focused prompts for animating images.
@@ -29,27 +36,10 @@ If there is something that can dance (like a man, girl, robot, etc.), then prefe
 
 Stay in a loop: one image in, one motion prompt out. Do not explain, ask questions, or generate multiple options."""
 
-try:
-    with open(key_file, "r") as f:
-        keys = json.load(f)
-except FileNotFoundError:
-    keys = {}
-
-active_keys = {}
-for provider, key in keys.items():
-    if provider not in supported_providers:
-        raise ValueError(f"Unsupported provider: {provider}")
-    if key == "" or key is None:
-        env_var = f"{provider.upper()}_API_KEY"
-        key = os.getenv(env_var, None)
-    if key:
-        active_keys[provider] = key
-
-# Key validation
-def validate_llm_key(provider: str, key: str) -> bool:
-    if provider in validated_keys:
+def validate_llm_key(provider: str, key: str, refresh: bool = False) -> bool:
+    if provider in validated_keys and not refresh:
         return True
-    if provider in invalid_keys:
+    if provider in invalid_keys and not refresh:
         return False
     if key == "" or key is None:
         return False
@@ -81,15 +71,71 @@ def validate_llm_key(provider: str, key: str) -> bool:
         pass
     return False
 
+class MyEventHandler(FileSystemEventHandler):
+    def on_any_event(self, event: FileSystemEvent) -> None:
+        global active_keys
+        print(event)
+        # Only re-validate keys if the file has been modified
+        if event.event_type == "modified":
+            try:
+                with open(key_file, "r") as f:
+                    keys = json.load(f)
+            except FileNotFoundError:
+                keys = {}
+
+            active_keys = {}
+            for provider, key in keys.items():
+                if provider not in supported_providers:
+                    raise ValueError(f"Unsupported provider: {provider}")
+                if key == "" or key is None:
+                    env_var = f"{provider.upper()}_API_KEY"
+                    key = os.getenv(env_var, None)
+                if key:
+                    active_keys[provider] = key
+
+            for provider in active_keys:
+                validate_llm_key(provider, active_keys[provider], refresh=True) 
 
 
-if not keys_validated:
-    for provider, key in active_keys.items():
-        if validate_llm_key(provider, key):
-            validated_keys[provider] = key
-        else:
-            invalid_keys[provider] = key
-    keys_validated = True
+
+
+async def startup_event():
+    global active_keys, keys_validated, observer
+    try:
+        with open(key_file, "r") as f:
+            keys = json.load(f)
+    except FileNotFoundError:
+        keys = {}
+
+    active_keys = {}
+    for provider, key in keys.items():
+        if provider not in supported_providers:
+            raise ValueError(f"Unsupported provider: {provider}")
+        if key == "" or key is None:
+            env_var = f"{provider.upper()}_API_KEY"
+            key = os.getenv(env_var, None)
+        if key:
+            active_keys[provider] = key
+
+    # Key validation
+    if not keys_validated:
+        for provider, key in active_keys.items():
+            if validate_llm_key(provider, key):
+                validated_keys[provider] = key
+            else:
+                invalid_keys[provider] = key
+        keys_validated = True
+
+    observer = Observer()
+    observer.schedule(MyEventHandler(), key_file, recursive=False)
+    observer.start()
+
+async def shutdown_event():
+    global observer
+    if observer:
+        observer.stop()
+        observer.join()
+    logger.info("Shutdown event complete for LLM")
 
 # Caption functions
 def caption_openai(image_path: str, prompt: str) -> str:
@@ -226,6 +272,19 @@ def caption_openwebui(image_path: str, prompt: str) -> str:
     }
     r = requests.post(url, json=payload, headers=headers)
     return r.json()["choices"][0]["message"]["content"]
+
+def caption_auto(image_path: str, prompt: str = IMAGE_PROMPT) -> str:
+    for prov in supported_providers:
+        if prov in active_keys:
+            try:
+                cap = globals()[f"caption_{prov}"](image_path, prompt)
+                return {"provider": prov, "caption": cap}
+            except:
+                traceback.print_exc()
+                continue
+    logger.error(f"No available LLM providers to caption the image: {image_path}")
+    return None
+
 
 # Register endpoints
 def register_api_endpoints(app):

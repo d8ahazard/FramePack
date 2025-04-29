@@ -234,94 +234,199 @@ function processBatch() {
     };
     
     console.log('Batch settings:', settings);
-    console.log('Batch images:', batchImages);
+    console.log('Processing batch images:', batchImages.length);
     
     // Disable the process button while batch is processing
     batchProcessBtn.disabled = true;
+    batchProcessBtn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i> Uploading...';
     
-    // Process each image as a separate job
-    for (const image of batchImages) {
-        // Generate a job ID
-        const timestamp = Math.floor(Date.now() / 1000);
-        const jobId = `batch_${timestamp}_${Math.floor(Math.random() * 1000)}`;
-        
-        // Prepare job payload - simplified version of prepareJobPayload()
-        const payload = {
-            frames: [{
-                imageData: image.dataUrl,
-                duration: parseFloat(settings.duration),
-                transition: 0 // No transition since it's a single image
-            }],
-            settings: {
-                autoCaptionImage: settings.autoCaptionImage,
-                globalPrompt: settings.globalPrompt,
-                negativePrompt: settings.negativePrompt,
-                resolution: parseInt(settings.resolution),
-                steps: parseInt(settings.steps),
-                guidanceScale: parseFloat(settings.guidanceScale),
-                useTeacache: settings.useTeacache,
-                enableAdaptiveMemory: settings.enableAdaptiveMemory,
-                outputFormat: settings.outputFormat
+    // First, upload all images to the server
+    const uploadPromises = batchImages.map(image => {
+        // Return a promise for each file upload
+        return uploadFileToServer(image.file)
+            .then(serverPath => {
+                // Store the server path with the image entry for later use
+                return {
+                    id: image.id,
+                    file: image.file,
+                    serverPath: serverPath
+                };
+            });
+    });
+    
+    // Process all uploads
+    Promise.all(uploadPromises)
+        .then(uploadedImages => {
+            console.log('All batch images uploaded successfully:', uploadedImages);
+            
+            // Update status message
+            batchProcessBtn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i> Creating Jobs...';
+            
+            // Process each uploaded image as a separate job
+            const jobPromises = uploadedImages.map(image => {
+                // Generate a job ID
+                const timestamp = Math.floor(Date.now() / 1000);
+                const jobId = `batch_${timestamp}_${Math.floor(Math.random() * 1000)}`;
+                
+                // Each image is a single segment in the job
+                const imageDuration = parseFloat(settings.duration) || 3.0;
+                
+                // Create the job payload similar to editor.js's prepareJobPayload
+                const jobPayload = {
+                    global_prompt: settings.globalPrompt || "",
+                    negative_prompt: settings.negativePrompt || "",
+                    segments: [
+                        {
+                            // Now use the server path instead of data URL
+                            image_path: image.serverPath,
+                            prompt: "",  // Individual image prompts not supported in batch mode
+                            duration: imageDuration
+                        }
+                    ],
+                    seed: Math.floor(Math.random() * 100000),
+                    steps: parseInt(settings.steps) || 25,
+                    guidance_scale: parseFloat(settings.guidanceScale) || 10.0,
+                    use_teacache: settings.useTeacache,
+                    enable_adaptive_memory: settings.enableAdaptiveMemory,
+                    resolution: parseInt(settings.resolution) || 640,
+                    mp4_crf: 16,
+                    gpu_memory_preservation: 6.0,
+                    include_last_frame: false,
+                    auto_prompt: settings.autoCaptionImage
+                };
+                
+                // Create save payload similar to startGeneration in editor.js
+                const savePayload = {
+                    job_id: jobId,
+                    status: "saved",
+                    progress: 0,
+                    message: "Batch job saved",
+                    result_video: "",
+                    segments: [image.serverPath], // Now use actual server path for segments
+                    is_valid: true,
+                    missing_images: [],
+                    job_settings: {'framepack': jobPayload},
+                    queue_position: -1,
+                    created_timestamp: timestamp
+                };
+                
+                // Return a promise for saving and running the job
+                return submitBatchJob(jobId, savePayload);
+            });
+            
+            // Wait for all jobs to be submitted
+            return Promise.all(jobPromises);
+        })
+        .then(jobResults => {
+            console.log('All batch jobs submitted:', jobResults);
+            
+            // Show feedback that batch has been submitted
+            alert(`Submitted ${batchImages.length} image(s) for processing. You can monitor progress in the Job Queue tab.`);
+            
+            // Switch to the job queue tab to show progress
+            const queueTab = document.getElementById('queue-tab');
+            if (queueTab) {
+                bootstrap.Tab.getOrCreateInstance(queueTab).show();
             }
-        };
+            
+            // Try to refresh the job queue
+            try {
+                import('./job_queue.js').then(jobQueueModule => {
+                    if (typeof jobQueueModule.loadJobQueue === 'function') {
+                        jobQueueModule.loadJobQueue();
+                    }
+                });
+            } catch (err) {
+                console.error('Error refreshing job queue:', err);
+            }
+            
+            // Clear the batch images since they've been processed
+            clearBatchImages();
+        })
+        .catch(error => {
+            console.error('Error processing batch:', error);
+            alert('Error processing batch: ' + error.message);
+        })
+        .finally(() => {
+            // Re-enable the process button
+            batchProcessBtn.disabled = false;
+            batchProcessBtn.innerHTML = 'Process Batch';
+        });
+}
+
+// Helper function to upload a file to the server
+function uploadFileToServer(file) {
+    return new Promise((resolve, reject) => {
+        const formData = new FormData();
+        formData.append('file', file);
         
-        // Create save payload similar to startGeneration
-        const savePayload = {
-            job_id: jobId,
-            status: "saved",
-            progress: 0,
-            message: "Batch job saved",
-            result_video: "",
-            segments: [image.file.name], // Single segment with filename
-            is_valid: true,
-            missing_images: [],
-            job_settings: {'framepack': payload},
-            queue_position: -1,
-            created_timestamp: timestamp
-        };
-        
-        // Save and run the job
-        submitBatchJob(jobId, savePayload);
-    }
-    
-    // Show feedback that batch has been submitted
-    alert(`Submitted ${batchImages.length} image(s) for processing. You can monitor progress in the Job Queue tab.`);
-    
-    // Re-enable the process button
-    batchProcessBtn.disabled = false;
+        fetch('/api/upload_image', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Failed to upload file');
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (data.success) {
+                // Use the full server path returned from the API
+                const serverPath = data.upload_url;
+                
+                if (!serverPath) {
+                    throw new Error('No valid file path returned from server');
+                }
+                
+                console.log(`File uploaded: ${serverPath}`);
+                resolve(serverPath);
+            } else {
+                reject(new Error(data.error || 'Unknown error uploading file'));
+            }
+        })
+        .catch(error => {
+            console.error('Error uploading file:', error);
+            reject(error);
+        });
+    });
 }
 
 // Helper function to submit a batch job
 function submitBatchJob(jobId, savePayload) {
-    // Save the job
-    fetch(`/api/save_job/${jobId}`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(savePayload)
-    })
-    .then(response => {
-        if (!response.ok) {
-            return response.text().then(text => {
-                throw new Error(`Failed to save job: ${text}`);
-            });
-        }
-        return response.json();
-    })
-    .then(data => {
-        console.log('Batch job saved:', data);
-        
-        try {
-            // Assuming runJob is available globally
-            runJob(jobId);
-            console.log(`Batch job ${jobId} started using job_queue.runJob`);
-        } catch (err) {
-            console.error('Error running batch job:', err);
-            showMessage(`Error starting batch job: ${err.message}`, 'error');
-        }
-    })
-    .catch(error => {
-        console.error('Error submitting batch job:', error);
+    return new Promise((resolve, reject) => {
+        // Save the job
+        fetch(`/api/save_job/${jobId}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(savePayload)
+        })
+        .then(response => {
+            if (!response.ok) {
+                return response.text().then(text => {
+                    throw new Error(`Failed to save job: ${text}`);
+                });
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log('Batch job saved:', data);
+            
+            try {
+                // Run the job
+                runJob(jobId, true); // Pass true to indicate this is a batch job
+                console.log(`Batch job ${jobId} started using job_queue.runJob`);
+                resolve(jobId); // Resolve with the job ID
+            } catch (err) {
+                console.error('Error running batch job:', err);
+                reject(err);
+            }
+        })
+        .catch(error => {
+            console.error('Error submitting batch job:', error);
+            reject(error);
+        });
     });
 } 

@@ -18,5 +18,5 @@ class FramePackJobSettings(ModuleJobSettings):
     mp4_crf: int = 16
     gpu_memory_preservation: float = 6.0
     include_last_frame: bool = False  # Control whether to generate a segment for the last frame
-
+    auto_prompt: bool = False
 

@@ -1,6 +1,8 @@
 import os
 import sys
 
+from handlers.llm import caption_auto
+
 # Add the modules path to the python path
 sys.path.insert(0, os.path.dirname(__file__))
 import logging
@@ -294,6 +296,12 @@ def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_
             if job_status and job_status.status == "cancelled":
                 logger.info(f"Job {job_id} was cancelled during processing")
                 # This will cause the sampling to stop at the current step
+                try:
+                    unload_complete_models(
+                        text_encoder, text_encoder_2, image_encoder, vae, transformer
+                    )
+                except:
+                    traceback.print_exc()
                 raise KeyboardInterrupt('User ends the task.')
 
             print(
@@ -856,7 +864,9 @@ def worker_multi_segment(
 @torch.no_grad()
 def process(request: FramePackJobSettings):
     request_dict = request.model_dump()
-
+    auto_prompt = request_dict.get('auto_prompt', False)
+    # Pop auto_prompt from request_dict
+    auto_prompt = request_dict.pop('auto_prompt', False)
     # Convert SegmentConfig objects to dictionaries
     if 'segments' in request_dict and request_dict['segments']:
         segments = request_dict['segments']
@@ -870,5 +880,22 @@ def process(request: FramePackJobSettings):
             # This shouldn't happen, but just in case, handler "\uploads\" to
             segment['image_path'] = segment['image_path'].replace("\\uploads\\", "")
             segment['image_path'] = os.path.join(upload_path, segment['image_path'])
+            prompts_updated = False
+            if auto_prompt:
+                try:
+                    logger.info(f"Auto-captioning segment {segment['image_path']}")
+                    if segment['prompt'] == "":
+                        caption = caption_auto(segment['image_path'])
+                        if caption:
+                            segment['prompt'] = caption['caption']
+                            logger.info(f"Auto-captioned segment {segment['image_path']}: {caption['caption']}")
+                            prompts_updated = True
+                        else:
+                            logger.error(f"Failed to caption segment {segment['image_path']}")
+                except Exception as e:
+                    logger.error(f"Error auto-captioning segment {segment['image_path']}: {e}")
+            if prompts_updated:
+                logger.info(f"Updated prompts for segment {segment['image_path']}")
+                #save_job_data(job_id, job_status.to_dict())
         request_dict['segments'] = segments
     return worker_multi_segment(**request_dict)
