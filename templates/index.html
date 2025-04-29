@@ -33,6 +33,11 @@
                     </button>
                 </li>
                 <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="batch-tab" data-bs-toggle="tab" data-bs-target="#batch-tab-pane" type="button" role="tab" aria-controls="batch-tab-pane" aria-selected="false">
+                        <i class="bi bi-collection me-1"></i> Batch
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
                     <button class="nav-link" id="queue-tab" data-bs-toggle="tab" data-bs-target="#queue-tab-pane" type="button" role="tab" aria-controls="queue-tab-pane" aria-selected="false">
                         <i class="bi bi-hourglass-split me-1"></i> Job Queue
                     </button>
@@ -99,6 +104,10 @@
                             <div class="card">
                                 <div class="card-body">
                                     <form id="settingsForm">
+                                        <div class="mb-3 form-check">
+                                            <input type="checkbox" class="form-check-input" id="autoCaptionImage">
+                                            <label class="form-check-label" for="autoCaptionImage">Auto Caption Image</label>
+                                        </div>
                                         <div class="mb-3">
                                             <label for="globalPrompt" class="form-label">Global Prompt</label>
                                             <textarea class="form-control" id="globalPrompt" rows="2" placeholder="Prompt that applies to all frames..."></textarea>
@@ -131,6 +140,94 @@
                                         <div class="mb-3">
                                             <label for="outputFormat" class="form-label">Output Format</label>
                                             <select class="form-select" id="outputFormat">
+                                                <option value="mp4">MP4 (H.264)</option>
+                                                <option value="webm">WebM (VP9)</option>
+                                                <option value="gif">GIF</option>
+                                            </select>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Batch Tab -->
+                <div class="tab-pane fade" id="batch-tab-pane" role="tabpanel" aria-labelledby="batch-tab" tabindex="0">
+                    <div class="row mb-4">
+                        <div class="col-md-8">
+                            <h2 class="fs-5 mb-3">Batch Processing</h2>
+                            <div class="d-flex mb-3">
+                                <button id="batchProcessBtn" class="btn btn-success me-2" disabled>
+                                    <i class="bi bi-play-fill"></i> Process Batch
+                                </button>
+                                <button id="uploadBatchImagesBtn" class="btn btn-primary me-2">
+                                    <i class="bi bi-upload"></i> Upload Images
+                                </button>
+                                <button id="clearBatchBtn" class="btn btn-outline-danger me-2" disabled>
+                                    <i class="bi bi-trash"></i> Clear All
+                                </button>
+                            </div>
+                            
+                            <!-- Batch drop area -->
+                            <div id="batchDropArea" class="upload-drop-area mb-3">
+                                <div class="upload-message">
+                                    <i class="bi bi-cloud-arrow-up fs-1"></i>
+                                    <p>Drag & drop images here or click to browse</p>
+                                    <input type="file" id="batchFileInput" accept="image/*" multiple class="file-input">
+                                </div>
+                            </div>
+                            
+                            <!-- Batch images container -->
+                            <div id="batchImagesContainer" class="row g-3">
+                                <!-- Batch images will be added here -->
+                                <div class="alert alert-info">
+                                    <i class="bi bi-info-circle me-2"></i> Upload one or more images to process in batch. Each image will be processed with the same settings.
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-4">
+                            <h2 class="fs-5 mb-3">Batch Settings</h2>
+                            <div class="card">
+                                <div class="card-body">
+                                    <form id="batchSettingsForm">
+                                        <div class="mb-3 form-check">
+                                            <input type="checkbox" class="form-check-input" id="batchAutoCaptionImage">
+                                            <label class="form-check-label" for="batchAutoCaptionImage">Auto Caption Image</label>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="batchGlobalPrompt" class="form-label">Global Prompt</label>
+                                            <textarea class="form-control" id="batchGlobalPrompt" rows="2" placeholder="Prompt that applies to all images..."></textarea>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="batchNegativePrompt" class="form-label">Negative Prompt</label>
+                                            <textarea class="form-control" id="batchNegativePrompt" rows="2" placeholder="Things to avoid in the video..."></textarea>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="batchResolution" class="form-label">Resolution</label>
+                                            <input type="number" class="form-control" id="batchResolution" min="240" max="720" step="16" value="640">
+                                            <small class="form-text text-muted">Target resolution for video (automatically determines width and height while maintaining aspect ratio)</small>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="batchSteps" class="form-label">Sampling Steps</label>
+                                            <input type="number" class="form-control" id="batchSteps" min="5" max="100" step="1" value="25">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="batchGuidanceScale" class="form-label">Guidance Scale</label>
+                                            <input type="number" class="form-control" id="batchGuidanceScale" min="1" max="20" step="0.1" value="10.0">
+                                        </div>
+                                        <div class="mb-3 form-check">
+                                            <input type="checkbox" class="form-check-input" id="batchUseTeacache" checked>
+                                            <label class="form-check-label" for="batchUseTeacache">Use TeaCache (faster but slightly lower quality)</label>
+                                        </div>
+                                        <div class="mb-3 form-check">
+                                            <input type="checkbox" class="form-check-input" id="batchEnableAdaptiveMemory" checked>
+                                            <label class="form-check-label" for="batchEnableAdaptiveMemory">Enable Adaptive Memory Management</label>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="batchOutputFormat" class="form-label">Output Format</label>
+                                            <select class="form-select" id="batchOutputFormat">
                                                 <option value="mp4">MP4 (H.264)</option>
                                                 <option value="webm">WebM (VP9)</option>
                                                 <option value="gif">GIF</option>

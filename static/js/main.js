@@ -9,6 +9,7 @@ import {
 import { initEditor } from './editor.js';
 import { initJobQueue } from './job_queue.js';
 import { initOutputs } from './outputs.js';
+import { initBatch } from './batch.js';
 
 // Theme-related functions
 function initTheme() {
@@ -72,6 +73,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initEditor();
     
     // Then initialize other modules
+    initBatch();
     initJobQueue();
     initOutputs();
     

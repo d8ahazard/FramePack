@@ -373,6 +373,34 @@ function showUploadModal() {
 // Module initialization function
 function initEditor() {
     console.log('Editor module initialized');
+
+    // Send a GET request to the API to see if we have any valid LLM keys
+    fetch('/api/llm/providers')
+        .then(response => response.json())
+        .then(data => {
+            console.log('LLM providers:', data);
+            // Check each array in the list and see if the 'valid' key is true
+            const validProviders = data.filter(provider => provider.valid);
+            console.log('Valid LLM providers:', validProviders);
+            // If there are no valid providers, hide the batchAutoCaptionImage and autoCaptionImage checkboxes
+            if (validProviders.length === 0) {
+                const batchAutoCaptionImage = document.getElementById('batchAutoCaptionImage');
+                const autoCaptionImage = document.getElementById('autoCaptionImage');
+                if (batchAutoCaptionImage) {
+                    batchAutoCaptionImage.disabled = true;
+                    batchAutoCaptionImage.checked = false;
+                    // HIDE IT
+                    batchAutoCaptionImage.style.display = 'none';
+                }
+                if (autoCaptionImage) {
+                    autoCaptionImage.disabled = true;
+                    autoCaptionImage.checked = false;
+                    // HIDE IT
+                    autoCaptionImage.style.display = 'none';
+                }
+            }
+        })
+        .catch(error => console.error('Error fetching LLM providers:', error));
     
     // Initialize modals
     const uploadModalElement = document.getElementById('uploadImagesModal');

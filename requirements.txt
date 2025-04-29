@@ -1,10 +1,12 @@
+anthropic>=0.50.0
 diffusers>=0.33.1
 einops>=0.6.0
 fastapi>=0.95.0
-flash_attn
+groq>=0.23.1
 huggingface-hub>=0.30.2
 jinja2>=3.1.2
 numpy>=1.24.0
+openai>=1.76.0
 pillow>=9.4.0
 python-multipart>=0.0.6
 sageattention
