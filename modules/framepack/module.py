@@ -1056,7 +1056,7 @@ def worker_multi_segment(
         # Choose the right worker based on whether we have an end image
         if end_image is not None:
             # Use worker_end_frame for two-image segments to get smooth transitions
-            segment_output = worker_end_frame(
+            segment_output = worker(
                 job_id=master_job_id,
                 input_image=start_image,
                 end_image=end_image,
