@@ -31,6 +31,7 @@ const JOB_EVENT_TYPES = {
 // DOM elements shared across modules
 const elements = {
     // Inputs & controls
+    autoPrompt: null,
     globalPrompt: null,
     negativePrompt: null,
     seedInput: null,
@@ -305,6 +306,7 @@ function initElements() {
     elements.previewImage = document.getElementById('previewImage');
     
     // Form inputs
+    elements.autoPrompt = document.getElementById('autoPrompt');
     elements.globalPrompt = document.getElementById('globalPrompt');
     elements.negativePrompt = document.getElementById('negativePrompt');
     elements.resolution = document.getElementById('resolution');

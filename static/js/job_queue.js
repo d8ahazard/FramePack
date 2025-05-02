@@ -1181,125 +1181,147 @@ function displayJobDetails(jobData) {
         const videoSrc = jobData.result_video;
         const videoTimestamp = jobData.video_timestamp;
         // Update or create video container
-        if (!videoContainer) {
-            // Create new video container if it doesn't exist
-            videoContainer = document.createElement('div');
-            videoContainer.className = 'col-md-6';
-            
-            videoContainer.innerHTML = `
-                <div class="card mb-3">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0 fs-6">Current Output</h5>
+        if (videoSrc) {
+            if (!videoContainer) {
+                // Create new video container if it doesn't exist
+                videoContainer = document.createElement('div');
+                videoContainer.className = 'col-md-6';
+                
+                videoContainer.innerHTML = `
+                    <div class="card mb-3">
+                        <div class="card-header">
+                            <h5 class="card-title mb-0 fs-6">Current Output</h5>
+                        </div>
+                        <div class="card-body text-center">
+                            ${videoSrc ? 
+                                `<video id="jobCurrentVideo" src="${videoSrc}" controls class="img-fluid rounded"></video>` :
+                                `<div class="text-muted py-5"><i class="bi bi-film me-2"></i>Video not available yet</div>`
+                            }
+                        </div>
                     </div>
-                    <div class="card-body text-center">
-                        ${videoSrc ? 
-                            `<video id="jobCurrentVideo" src="${videoSrc}" controls class="img-fluid rounded"></video>` :
-                            `<div class="text-muted py-5"><i class="bi bi-film me-2"></i>Video not available yet</div>`
+                `;
+                
+                rowContainer.appendChild(videoContainer);
+            } else {
+                // Update existing video container if source changed
+                const videoElement = videoContainer.querySelector('video');
+                const noVideoMessage = videoContainer.querySelector('.text-muted');
+                
+                if (videoSrc) {
+                    if (videoElement) {
+                        // Get the data-timestamp attribute from the video element
+                        const elementTimestamp = videoElement.getAttribute('data-timestamp');
+                        if (elementTimestamp && videoTimestamp && elementTimestamp < videoTimestamp) {      
+                            // Update the video source
+                            videoElement.src = videoSrc;
+                            // Update the data-timestamp attribute
+                            videoElement.setAttribute('data-timestamp', videoTimestamp);
+                            // Refresh the output tab
+                            loadOutputs();
                         }
-                    </div>
-                </div>
-            `;
-            
-            rowContainer.appendChild(videoContainer);
-        } else {
-            // Update existing video container if source changed
-            const videoElement = videoContainer.querySelector('video');
-            const noVideoMessage = videoContainer.querySelector('.text-muted');
-            
-            if (videoSrc) {
-                if (videoElement) {
-                    // Get the data-timestamp attribute from the video element
-                    const elementTimestamp = videoElement.getAttribute('data-timestamp');
-                    if (elementTimestamp && videoTimestamp && elementTimestamp < videoTimestamp) {      
-                        // Update the video source
-                        videoElement.src = videoSrc;
-                        // Update the data-timestamp attribute
-                        videoElement.setAttribute('data-timestamp', videoTimestamp);
-                        // Refresh the output tab
-                        loadOutputs();
+                    } else {
+                        // Replace the no-video message with a video element
+                        const cardBody = videoContainer.querySelector('.card-body');
+                        if (cardBody && noVideoMessage) {
+                            cardBody.innerHTML = `<video id="jobCurrentVideo" src="${videoSrc}" controls class="img-fluid rounded"></video>`;
+                        }
+                    }
+                } else if (!videoElement && !noVideoMessage) {
+                    // If no video source and no message, show the message
+                    const cardBody = videoContainer.querySelector('.card-body');
+                    if (cardBody) {
+                        cardBody.innerHTML = `<div class="text-muted py-5"><i class="bi bi-film me-2"></i>Video not available yet</div>`;
                     }
                 } else {
-                    // Replace the no-video message with a video element
-                    const cardBody = videoContainer.querySelector('.card-body');
-                    if (cardBody && noVideoMessage) {
-                        cardBody.innerHTML = `<video id="jobCurrentVideo" src="${videoSrc}" controls class="img-fluid rounded"></video>`;
-                    }
-                }
-            } else if (!videoElement && !noVideoMessage) {
-                // If no video source and no message, show the message
-                const cardBody = videoContainer.querySelector('.card-body');
-                if (cardBody) {
-                    cardBody.innerHTML = `<div class="text-muted py-5"><i class="bi bi-film me-2"></i>Video not available yet</div>`;
+                    // Just remove the card
+                    videoContainer.remove();
                 }
             }
+        } else {
+            if (videoContainer) {  
+                // Just remove the video card
+                videoContainer.remove();
+            }
         }
-        
+
         // Determine which image to show for latents - use the latest segment to avoid duplicates
         let latentImageSrc = '';
         if (jobData.current_latents) {
             latentImageSrc = getImageUrl(jobData.current_latents);
         }
-        
-        // Update or create latents container
-        if (!latentsContainer) {
-            // Create new latents container if it doesn't exist
-            latentsContainer = document.createElement('div');
-            latentsContainer.className = 'col-md-6';
-            
-            latentsContainer.innerHTML = `
-                <div class="card mb-3">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0 fs-6">Current Latents</h5>
-                    </div>
-                    <div class="card-body text-center">
-                        ${latentImageSrc ? 
-                            `<img id="jobCurrentLatents" src="${latentImageSrc}" class="img-fluid rounded" alt="Current latents" title="Latent representation (864×64)">` :
-                            `<div class="text-muted py-5"><i class="bi bi-image me-2"></i>Latent image not available yet</div>`
-                        }
-                    </div>
-                    ${latentImageSrc ? `<div class="card-footer p-2 text-center">
-                        <small class="text-muted">Latent dimensions: 864×64 pixels</small>
-                    </div>` : ''}
-                </div>
-            `;
-            
-            rowContainer.appendChild(latentsContainer);
+
+        // If the job is not running, remove the latents container
+        if (jobData.status !== 'running') {
+            if (latentsContainer) {
+                // Just remove the latents card
+                latentsContainer.remove();
+            }
         } else {
-            // Update existing latents container
-            const latentImage = latentsContainer.querySelector('img');
-            const noLatentMessage = latentsContainer.querySelector('.text-muted');
-            const cardFooter = latentsContainer.querySelector('.card-footer');
-            
-            if (latentImageSrc) {
-                if (latentImage) {
-                    // Always update latent image since it changes frequently
-                    latentImage.src = latentImageSrc;
-                } else {
-                    // Replace the no-latent message with an image
+            // Update or create latents container
+        // Update or create latents container
+            if (!latentsContainer) {
+                // Create new latents container if it doesn't exist
+                latentsContainer = document.createElement('div');
+                latentsContainer.className = 'col-md-6';
+                
+                latentsContainer.innerHTML = `
+                    <div class="card mb-3">
+                        <div class="card-header">
+                            <h5 class="card-title mb-0 fs-6">Current Latents</h5>
+                        </div>
+                        <div class="card-body text-center">
+                            ${latentImageSrc ? 
+                                `<img id="jobCurrentLatents" src="${latentImageSrc}" class="img-fluid rounded" alt="Current latents" title="Latent representation (864×64)">` :
+                                `<div class="text-muted py-5"><i class="bi bi-image me-2"></i>Latent image not available yet</div>`
+                            }
+                        </div>
+                        ${latentImageSrc ? `<div class="card-footer p-2 text-center">
+                            <small class="text-muted">Latent dimensions: 864×64 pixels</small>
+                        </div>` : ''}
+                    </div>
+                `;
+                
+                rowContainer.appendChild(latentsContainer);
+            } else {
+                // Update existing latents container
+                const latentImage = latentsContainer.querySelector('img');
+                const noLatentMessage = latentsContainer.querySelector('.text-muted');
+                const cardFooter = latentsContainer.querySelector('.card-footer');
+                
+                if (latentImageSrc) {
+                    if (latentImage) {
+                        // Always update latent image since it changes frequently
+                        latentImage.src = latentImageSrc;
+                    } else {
+                        // Replace the no-latent message with an image
+                        const cardBody = latentsContainer.querySelector('.card-body');
+                        if (cardBody && noLatentMessage) {
+                            cardBody.innerHTML = `<img id="jobCurrentLatents" src="${latentImageSrc}" class="img-fluid rounded" alt="Current latents" title="Latent representation (864×64)">`;
+                        }
+                        
+                        // Add footer if it doesn't exist
+                        if (!cardFooter) {
+                            latentsContainer.querySelector('.card').insertAdjacentHTML('beforeend', `
+                                <div class="card-footer p-2 text-center">
+                                    <small class="text-muted">Latent dimensions: 864×64 pixels</small>
+                                </div>
+                            `);
+                        }
+                    }
+                } else if (!latentImage && !noLatentMessage) {
+                    // If no latent image and no message, show the message
                     const cardBody = latentsContainer.querySelector('.card-body');
-                    if (cardBody && noLatentMessage) {
-                        cardBody.innerHTML = `<img id="jobCurrentLatents" src="${latentImageSrc}" class="img-fluid rounded" alt="Current latents" title="Latent representation (864×64)">`;
+                    if (cardBody) {
+                        cardBody.innerHTML = `<div class="text-muted py-5"><i class="bi bi-image me-2"></i>Latent image not available yet</div>`;
                     }
                     
-                    // Add footer if it doesn't exist
-                    if (!cardFooter) {
-                        latentsContainer.querySelector('.card').insertAdjacentHTML('beforeend', `
-                            <div class="card-footer p-2 text-center">
-                                <small class="text-muted">Latent dimensions: 864×64 pixels</small>
-                            </div>
-                        `);
+                    // Remove footer if it exists
+                    if (cardFooter) {
+                        cardFooter.remove();
                     }
-                }
-            } else if (!latentImage && !noLatentMessage) {
-                // If no latent image and no message, show the message
-                const cardBody = latentsContainer.querySelector('.card-body');
-                if (cardBody) {
-                    cardBody.innerHTML = `<div class="text-muted py-5"><i class="bi bi-image me-2"></i>Latent image not available yet</div>`;
-                }
-                
-                // Remove footer if it exists
-                if (cardFooter) {
-                    cardFooter.remove();
+                } else {
+                    // Just remove the card
+                    latentsContainer.remove();
                 }
             }
         }
@@ -1644,6 +1666,14 @@ async function loadJobToTimeline(jobId) {
         // Step 1: Clear the timeline
         elements.timelineContainer.innerHTML = '';
         timeline.length = 0; // Clear array while keeping reference
+
+        if (elements.autoPrompt) {
+            elements.autoPrompt.checked = settings.auto_prompt !== false;
+        }
+        
+        if (elements.restoreFace) {
+            elements.restoreFace.checked = settings.restore_face !== false;
+        }
         
         // Step 2: Set form values from settings
         if (elements.globalPrompt) {

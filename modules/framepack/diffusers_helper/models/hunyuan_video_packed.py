@@ -1,20 +1,21 @@
-from typing import Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-import einops
-import numpy as np
 import torch
+import einops
 import torch.nn as nn
-from diffusers.configuration_utils import ConfigMixin, register_to_config
+import numpy as np
+
 from diffusers.loaders import FromOriginalModelMixin
+from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders import PeftAdapterMixin
+from diffusers.utils import logging
 from diffusers.models.attention import FeedForward
 from diffusers.models.attention_processor import Attention
 from diffusers.models.embeddings import TimestepEmbedding, Timesteps, PixArtAlphaTextProjection
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.modeling_utils import ModelMixin
-from diffusers.utils import logging
-
 from modules.framepack.diffusers_helper.dit_common import LayerNorm
+
 
 enabled_backends = []
 
@@ -31,8 +32,7 @@ print("Currently enabled native sdp backends:", enabled_backends)
 
 try:
     # raise NotImplementedError
-    from xformers.ops import memory_efficient_attention as xformers_attn_func  # noqa: F401
-
+    from xformers.ops import memory_efficient_attention as xformers_attn_func
     print('Xformers is installed!')
 except:
     print('Xformers is not installed!')
@@ -40,8 +40,7 @@ except:
 
 try:
     # raise NotImplementedError
-    from flash_attn import flash_attn_varlen_func, flash_attn_func  # noqa: F401
-
+    from flash_attn import flash_attn_varlen_func, flash_attn_func
     print('Flash Attn is installed!')
 except:
     print('Flash Attn is not installed!')
@@ -50,13 +49,13 @@ except:
 
 try:
     # raise NotImplementedError
-    from sageattention import sageattn_varlen, sageattn # noqa: F401
-
+    from sageattention import sageattn_varlen, sageattn
     print('Sage Attn is installed!')
 except:
     print('Sage Attn is not installed!')
     sageattn_varlen = None
     sageattn = None
+
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -119,21 +118,24 @@ def attn_varlen_func(q, k, v, cu_seqlens_q, cu_seqlens_kv, max_seqlen_q, max_seq
             x = xformers_attn_func(q, k, v)
             return x
 
-        x = torch.nn.functional.scaled_dot_product_attention(q.transpose(1, 2), k.transpose(1, 2),
-                                                             v.transpose(1, 2)).transpose(1, 2)
+        x = torch.nn.functional.scaled_dot_product_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)).transpose(1, 2)
         return x
 
-    batch_size = q.shape[0]
-    q = q.view(q.shape[0] * q.shape[1], *q.shape[2:])
-    k = k.view(k.shape[0] * k.shape[1], *k.shape[2:])
-    v = v.view(v.shape[0] * v.shape[1], *v.shape[2:])
+    B, L, H, C = q.shape
+
+    q = q.flatten(0, 1)
+    k = k.flatten(0, 1)
+    v = v.flatten(0, 1)
+
     if sageattn_varlen is not None:
         x = sageattn_varlen(q, k, v, cu_seqlens_q, cu_seqlens_kv, max_seqlen_q, max_seqlen_kv)
     elif flash_attn_varlen_func is not None:
         x = flash_attn_varlen_func(q, k, v, cu_seqlens_q, cu_seqlens_kv, max_seqlen_q, max_seqlen_kv)
     else:
         raise NotImplementedError('No Attn Installed!')
-    x = x.view(batch_size, max_seqlen_q, *x.shape[2:])
+
+    x = x.unflatten(0, (B, L))
+
     return x
 
 
@@ -202,10 +204,8 @@ class HunyuanAttnProcessorFlashAttnSingle:
 
         txt_length = encoder_hidden_states.shape[1]
 
-        query = torch.cat(
-            [apply_rotary_emb_transposed(query[:, :-txt_length], image_rotary_emb), query[:, -txt_length:]], dim=1)
-        key = torch.cat([apply_rotary_emb_transposed(key[:, :-txt_length], image_rotary_emb), key[:, -txt_length:]],
-                        dim=1)
+        query = torch.cat([apply_rotary_emb_transposed(query[:, :-txt_length], image_rotary_emb), query[:, -txt_length:]], dim=1)
+        key = torch.cat([apply_rotary_emb_transposed(key[:, :-txt_length], image_rotary_emb), key[:, -txt_length:]], dim=1)
 
         hidden_states = attn_varlen_func(query, key, value, cu_seqlens_q, cu_seqlens_kv, max_seqlen_q, max_seqlen_kv)
         hidden_states = hidden_states.flatten(-2)
@@ -267,7 +267,7 @@ class HunyuanVideoAdaNorm(nn.Module):
         self.nonlinearity = nn.SiLU()
 
     def forward(
-            self, temb: torch.Tensor
+        self, temb: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         temb = self.linear(self.nonlinearity(temb))
         gate_msa, gate_mlp = temb.chunk(2, dim=-1)
@@ -277,12 +277,12 @@ class HunyuanVideoAdaNorm(nn.Module):
 
 class HunyuanVideoIndividualTokenRefinerBlock(nn.Module):
     def __init__(
-            self,
-            num_attention_heads: int,
-            attention_head_dim: int,
-            mlp_width_ratio: str = 4.0,
-            mlp_drop_rate: float = 0.0,
-            attention_bias: bool = True,
+        self,
+        num_attention_heads: int,
+        attention_head_dim: int,
+        mlp_width_ratio: str = 4.0,
+        mlp_drop_rate: float = 0.0,
+        attention_bias: bool = True,
     ) -> None:
         super().__init__()
 
@@ -303,10 +303,10 @@ class HunyuanVideoIndividualTokenRefinerBlock(nn.Module):
         self.norm_out = HunyuanVideoAdaNorm(hidden_size, 2 * hidden_size)
 
     def forward(
-            self,
-            hidden_states: torch.Tensor,
-            temb: torch.Tensor,
-            attention_mask: Optional[torch.Tensor] = None,
+        self,
+        hidden_states: torch.Tensor,
+        temb: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         norm_hidden_states = self.norm1(hidden_states)
 
@@ -327,13 +327,13 @@ class HunyuanVideoIndividualTokenRefinerBlock(nn.Module):
 
 class HunyuanVideoIndividualTokenRefiner(nn.Module):
     def __init__(
-            self,
-            num_attention_heads: int,
-            attention_head_dim: int,
-            num_layers: int,
-            mlp_width_ratio: float = 4.0,
-            mlp_drop_rate: float = 0.0,
-            attention_bias: bool = True,
+        self,
+        num_attention_heads: int,
+        attention_head_dim: int,
+        num_layers: int,
+        mlp_width_ratio: float = 4.0,
+        mlp_drop_rate: float = 0.0,
+        attention_bias: bool = True,
     ) -> None:
         super().__init__()
 
@@ -351,10 +351,10 @@ class HunyuanVideoIndividualTokenRefiner(nn.Module):
         )
 
     def forward(
-            self,
-            hidden_states: torch.Tensor,
-            temb: torch.Tensor,
-            attention_mask: Optional[torch.Tensor] = None,
+        self,
+        hidden_states: torch.Tensor,
+        temb: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
     ) -> None:
         self_attn_mask = None
         if attention_mask is not None:
@@ -374,14 +374,14 @@ class HunyuanVideoIndividualTokenRefiner(nn.Module):
 
 class HunyuanVideoTokenRefiner(nn.Module):
     def __init__(
-            self,
-            in_channels: int,
-            num_attention_heads: int,
-            attention_head_dim: int,
-            num_layers: int,
-            mlp_ratio: float = 4.0,
-            mlp_drop_rate: float = 0.0,
-            attention_bias: bool = True,
+        self,
+        in_channels: int,
+        num_attention_heads: int,
+        attention_head_dim: int,
+        num_layers: int,
+        mlp_ratio: float = 4.0,
+        mlp_drop_rate: float = 0.0,
+        attention_bias: bool = True,
     ) -> None:
         super().__init__()
 
@@ -401,10 +401,10 @@ class HunyuanVideoTokenRefiner(nn.Module):
         )
 
     def forward(
-            self,
-            hidden_states: torch.Tensor,
-            timestep: torch.LongTensor,
-            attention_mask: Optional[torch.LongTensor] = None,
+        self,
+        hidden_states: torch.Tensor,
+        timestep: torch.LongTensor,
+        attention_mask: Optional[torch.LongTensor] = None,
     ) -> torch.Tensor:
         if attention_mask is None:
             pooled_projections = hidden_states.mean(dim=1)
@@ -430,8 +430,7 @@ class HunyuanVideoRotaryPosEmbed(nn.Module):
     @torch.no_grad()
     def get_frequency(self, dim, pos):
         T, H, W = pos.shape
-        freqs = 1.0 / (
-                    self.theta ** (torch.arange(0, dim, 2, dtype=torch.float32, device=pos.device)[: (dim // 2)] / dim))
+        freqs = 1.0 / (self.theta ** (torch.arange(0, dim, 2, dtype=torch.float32, device=pos.device)[: (dim // 2)] / dim))
         freqs = torch.outer(freqs, pos.reshape(-1)).unflatten(-1, (T, H, W)).repeat_interleave(2, dim=0)
         return freqs.cos(), freqs.sin()
 
@@ -471,9 +470,9 @@ class AdaLayerNormZero(nn.Module):
             raise ValueError(f"unknown norm_type {norm_type}")
 
     def forward(
-            self,
-            x: torch.Tensor,
-            emb: Optional[torch.Tensor] = None,
+        self,
+        x: torch.Tensor,
+        emb: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         emb = emb.unsqueeze(-2)
         emb = self.linear(self.silu(emb))
@@ -494,9 +493,9 @@ class AdaLayerNormZeroSingle(nn.Module):
             raise ValueError(f"unknown norm_type {norm_type}")
 
     def forward(
-            self,
-            x: torch.Tensor,
-            emb: Optional[torch.Tensor] = None,
+        self,
+        x: torch.Tensor,
+        emb: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         emb = emb.unsqueeze(-2)
         emb = self.linear(self.silu(emb))
@@ -507,13 +506,13 @@ class AdaLayerNormZeroSingle(nn.Module):
 
 class AdaLayerNormContinuous(nn.Module):
     def __init__(
-            self,
-            embedding_dim: int,
-            conditioning_embedding_dim: int,
-            elementwise_affine=True,
-            eps=1e-5,
-            bias=True,
-            norm_type="layer_norm",
+        self,
+        embedding_dim: int,
+        conditioning_embedding_dim: int,
+        elementwise_affine=True,
+        eps=1e-5,
+        bias=True,
+        norm_type="layer_norm",
     ):
         super().__init__()
         self.silu = nn.SiLU()
@@ -533,11 +532,11 @@ class AdaLayerNormContinuous(nn.Module):
 
 class HunyuanVideoSingleTransformerBlock(nn.Module):
     def __init__(
-            self,
-            num_attention_heads: int,
-            attention_head_dim: int,
-            mlp_ratio: float = 4.0,
-            qk_norm: str = "rms_norm",
+        self,
+        num_attention_heads: int,
+        attention_head_dim: int,
+        mlp_ratio: float = 4.0,
+        qk_norm: str = "rms_norm",
     ) -> None:
         super().__init__()
 
@@ -563,12 +562,12 @@ class HunyuanVideoSingleTransformerBlock(nn.Module):
         self.proj_out = nn.Linear(hidden_size + mlp_dim, hidden_size)
 
     def forward(
-            self,
-            hidden_states: torch.Tensor,
-            encoder_hidden_states: torch.Tensor,
-            temb: torch.Tensor,
-            attention_mask: Optional[torch.Tensor] = None,
-            image_rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        self,
+        hidden_states: torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
+        temb: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        image_rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> torch.Tensor:
         text_seq_length = encoder_hidden_states.shape[1]
         hidden_states = torch.cat([hidden_states, encoder_hidden_states], dim=1)
@@ -607,11 +606,11 @@ class HunyuanVideoSingleTransformerBlock(nn.Module):
 
 class HunyuanVideoTransformerBlock(nn.Module):
     def __init__(
-            self,
-            num_attention_heads: int,
-            attention_head_dim: int,
-            mlp_ratio: float,
-            qk_norm: str = "rms_norm",
+        self,
+        num_attention_heads: int,
+        attention_head_dim: int,
+        mlp_ratio: float,
+        qk_norm: str = "rms_norm",
     ) -> None:
         super().__init__()
 
@@ -641,17 +640,16 @@ class HunyuanVideoTransformerBlock(nn.Module):
         self.ff_context = FeedForward(hidden_size, mult=mlp_ratio, activation_fn="gelu-approximate")
 
     def forward(
-            self,
-            hidden_states: torch.Tensor,
-            encoder_hidden_states: torch.Tensor,
-            temb: torch.Tensor,
-            attention_mask: Optional[torch.Tensor] = None,
-            freqs_cis: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        self,
+        hidden_states: torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
+        temb: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        freqs_cis: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # 1. Input normalization
         norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.norm1(hidden_states, emb=temb)
-        norm_encoder_hidden_states, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.norm1_context(
-            encoder_hidden_states, emb=temb)
+        norm_encoder_hidden_states, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.norm1_context(encoder_hidden_states, emb=temb)
 
         # 2. Joint attention
         attn_output, context_attn_output = self.attn(
@@ -728,26 +726,26 @@ class HunyuanVideoPatchEmbedForCleanLatents(nn.Module):
 class HunyuanVideoTransformer3DModelPacked(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOriginalModelMixin):
     @register_to_config
     def __init__(
-            self,
-            in_channels: int = 16,
-            out_channels: int = 16,
-            num_attention_heads: int = 24,
-            attention_head_dim: int = 128,
-            num_layers: int = 20,
-            num_single_layers: int = 40,
-            num_refiner_layers: int = 2,
-            mlp_ratio: float = 4.0,
-            patch_size: int = 2,
-            patch_size_t: int = 1,
-            qk_norm: str = "rms_norm",
-            guidance_embeds: bool = True,
-            text_embed_dim: int = 4096,
-            pooled_projection_dim: int = 768,
-            rope_theta: float = 256.0,
-            rope_axes_dim: Tuple[int] = (16, 56, 56),
-            has_image_proj=False,
-            image_proj_dim=1152,
-            has_clean_x_embedder=False,
+        self,
+        in_channels: int = 16,
+        out_channels: int = 16,
+        num_attention_heads: int = 24,
+        attention_head_dim: int = 128,
+        num_layers: int = 20,
+        num_single_layers: int = 40,
+        num_refiner_layers: int = 2,
+        mlp_ratio: float = 4.0,
+        patch_size: int = 2,
+        patch_size_t: int = 1,
+        qk_norm: str = "rms_norm",
+        guidance_embeds: bool = True,
+        text_embed_dim: int = 4096,
+        pooled_projection_dim: int = 768,
+        rope_theta: float = 256.0,
+        rope_axes_dim: Tuple[int] = (16, 56, 56),
+        has_image_proj=False,
+        image_proj_dim=1152,
+        has_clean_x_embedder=False,
     ) -> None:
         super().__init__()
 
@@ -828,8 +826,7 @@ class HunyuanVideoTransformer3DModelPacked(ModelMixin, ConfigMixin, PeftAdapterM
         self.accumulated_rel_l1_distance = 0
         self.previous_modulated_input = None
         self.previous_residual = None
-        self.teacache_rescale_func = np.poly1d(
-            [7.33226126e+02, -4.01131952e+02, 6.75869174e+01, -3.14987800e+00, 9.61237896e-02])
+        self.teacache_rescale_func = np.poly1d([7.33226126e+02, -4.01131952e+02, 6.75869174e+01, -3.14987800e+00, 9.61237896e-02])
 
     def gradient_checkpointing_method(self, block, *args):
         if self.use_gradient_checkpointing:
@@ -861,8 +858,7 @@ class HunyuanVideoTransformer3DModelPacked(ModelMixin, ConfigMixin, PeftAdapterM
             clean_latents = self.gradient_checkpointing_method(self.clean_x_embedder.proj, clean_latents)
             clean_latents = clean_latents.flatten(2).transpose(1, 2)
 
-            clean_latent_rope_freqs = self.rope(frame_indices=clean_latent_indices, height=H, width=W,
-                                                device=clean_latents.device)
+            clean_latent_rope_freqs = self.rope(frame_indices=clean_latent_indices, height=H, width=W, device=clean_latents.device)
             clean_latent_rope_freqs = clean_latent_rope_freqs.flatten(2).transpose(1, 2)
 
             hidden_states = torch.cat([clean_latents, hidden_states], dim=1)
@@ -874,8 +870,7 @@ class HunyuanVideoTransformer3DModelPacked(ModelMixin, ConfigMixin, PeftAdapterM
             clean_latents_2x = self.gradient_checkpointing_method(self.clean_x_embedder.proj_2x, clean_latents_2x)
             clean_latents_2x = clean_latents_2x.flatten(2).transpose(1, 2)
 
-            clean_latent_2x_rope_freqs = self.rope(frame_indices=clean_latent_2x_indices, height=H, width=W,
-                                                   device=clean_latents_2x.device)
+            clean_latent_2x_rope_freqs = self.rope(frame_indices=clean_latent_2x_indices, height=H, width=W, device=clean_latents_2x.device)
             clean_latent_2x_rope_freqs = pad_for_3d_conv(clean_latent_2x_rope_freqs, (2, 2, 2))
             clean_latent_2x_rope_freqs = center_down_sample_3d(clean_latent_2x_rope_freqs, (2, 2, 2))
             clean_latent_2x_rope_freqs = clean_latent_2x_rope_freqs.flatten(2).transpose(1, 2)
@@ -889,8 +884,7 @@ class HunyuanVideoTransformer3DModelPacked(ModelMixin, ConfigMixin, PeftAdapterM
             clean_latents_4x = self.gradient_checkpointing_method(self.clean_x_embedder.proj_4x, clean_latents_4x)
             clean_latents_4x = clean_latents_4x.flatten(2).transpose(1, 2)
 
-            clean_latent_4x_rope_freqs = self.rope(frame_indices=clean_latent_4x_indices, height=H, width=W,
-                                                   device=clean_latents_4x.device)
+            clean_latent_4x_rope_freqs = self.rope(frame_indices=clean_latent_4x_indices, height=H, width=W, device=clean_latents_4x.device)
             clean_latent_4x_rope_freqs = pad_for_3d_conv(clean_latent_4x_rope_freqs, (4, 4, 4))
             clean_latent_4x_rope_freqs = center_down_sample_3d(clean_latent_4x_rope_freqs, (4, 4, 4))
             clean_latent_4x_rope_freqs = clean_latent_4x_rope_freqs.flatten(2).transpose(1, 2)
@@ -921,52 +915,45 @@ class HunyuanVideoTransformer3DModelPacked(ModelMixin, ConfigMixin, PeftAdapterM
         post_patch_width = width // p
         original_context_length = post_patch_num_frames * post_patch_height * post_patch_width
 
-        hidden_states, rope_freqs = self.process_input_hidden_states(hidden_states, latent_indices, clean_latents,
-                                                                     clean_latent_indices, clean_latents_2x,
-                                                                     clean_latent_2x_indices, clean_latents_4x,
-                                                                     clean_latent_4x_indices)
+        hidden_states, rope_freqs = self.process_input_hidden_states(hidden_states, latent_indices, clean_latents, clean_latent_indices, clean_latents_2x, clean_latent_2x_indices, clean_latents_4x, clean_latent_4x_indices)
 
         temb = self.gradient_checkpointing_method(self.time_text_embed, timestep, guidance, pooled_projections)
-        encoder_hidden_states = self.gradient_checkpointing_method(self.context_embedder, encoder_hidden_states,
-                                                                   timestep, encoder_attention_mask)
+        encoder_hidden_states = self.gradient_checkpointing_method(self.context_embedder, encoder_hidden_states, timestep, encoder_attention_mask)
 
         if self.image_projection is not None:
             assert image_embeddings is not None, 'You must use image embeddings!'
             extra_encoder_hidden_states = self.gradient_checkpointing_method(self.image_projection, image_embeddings)
-            extra_attention_mask = torch.ones((batch_size, extra_encoder_hidden_states.shape[1]),
-                                              dtype=encoder_attention_mask.dtype, device=encoder_attention_mask.device)
+            extra_attention_mask = torch.ones((batch_size, extra_encoder_hidden_states.shape[1]), dtype=encoder_attention_mask.dtype, device=encoder_attention_mask.device)
 
             # must cat before (not after) encoder_hidden_states, due to attn masking
             encoder_hidden_states = torch.cat([extra_encoder_hidden_states, encoder_hidden_states], dim=1)
             encoder_attention_mask = torch.cat([extra_attention_mask, encoder_attention_mask], dim=1)
 
-        with torch.no_grad():
-            if batch_size == 1:
-                # When batch size is 1, we do not need any masks or var-len funcs since cropping is mathematically same to what we want
-                # If they are not same, then their impls are wrong. Ours are always the correct one.
-                text_len = encoder_attention_mask.sum().item()
-                encoder_hidden_states = encoder_hidden_states[:, :text_len]
-                attention_mask = None, None, None, None
-            else:
-                img_seq_len = hidden_states.shape[1]
-                txt_seq_len = encoder_hidden_states.shape[1]
+        if batch_size == 1:
+            # When batch size is 1, we do not need any masks or var-len funcs since cropping is mathematically same to what we want
+            # If they are not same, then their impls are wrong. Ours are always the correct one.
+            text_len = encoder_attention_mask.sum().item()
+            encoder_hidden_states = encoder_hidden_states[:, :text_len]
+            attention_mask = None, None, None, None
+        else:
+            img_seq_len = hidden_states.shape[1]
+            txt_seq_len = encoder_hidden_states.shape[1]
 
-                cu_seqlens_q = get_cu_seqlens(encoder_attention_mask, img_seq_len)
-                cu_seqlens_kv = cu_seqlens_q
-                max_seqlen_q = img_seq_len + txt_seq_len
-                max_seqlen_kv = max_seqlen_q
+            cu_seqlens_q = get_cu_seqlens(encoder_attention_mask, img_seq_len)
+            cu_seqlens_kv = cu_seqlens_q
+            max_seqlen_q = img_seq_len + txt_seq_len
+            max_seqlen_kv = max_seqlen_q
 
-                attention_mask = cu_seqlens_q, cu_seqlens_kv, max_seqlen_q, max_seqlen_kv
+            attention_mask = cu_seqlens_q, cu_seqlens_kv, max_seqlen_q, max_seqlen_kv
 
         if self.enable_teacache:
             modulated_inp = self.transformer_blocks[0].norm1(hidden_states, emb=temb)[0]
 
-            if self.cnt == 0 or self.cnt == self.num_steps - 1:
+            if self.cnt == 0 or self.cnt == self.num_steps-1:
                 should_calc = True
                 self.accumulated_rel_l1_distance = 0
             else:
-                curr_rel_l1 = ((
-                                           modulated_inp - self.previous_modulated_input).abs().mean() / self.previous_modulated_input.abs().mean()).cpu().item()
+                curr_rel_l1 = ((modulated_inp - self.previous_modulated_input).abs().mean() / self.previous_modulated_input.abs().mean()).cpu().item()
                 self.accumulated_rel_l1_distance += self.teacache_rescale_func(curr_rel_l1)
                 should_calc = self.accumulated_rel_l1_distance >= self.rel_l1_thresh
 
