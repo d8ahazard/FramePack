@@ -998,6 +998,22 @@ function startGeneration() {
     
     // Use common function to prepare the job payload
     const payload = prepareJobPayload();
+
+    let jobSettings = {
+        framepack: payload
+    }
+
+    if (elements.faceRestoration.checked) {
+        //source_image_path: str
+        //target_video_path: str - job_id + _final.mp4
+        //output_path: str - job_id + _face_restored.mp4
+        const faceFusionSettings = {
+            source_image_path: timeline[0].serverPath,
+            target_video_path: `${jobId}_final.mp4`,
+            output_path: `${jobId}_final_restored.mp4`   
+        }
+        jobSettings.facefusion = faceFusionSettings;
+    }
     
     
     // First save the job

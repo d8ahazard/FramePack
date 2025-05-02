@@ -407,7 +407,18 @@ function processBatch() {
                     include_last_frame: false,
                     auto_prompt: settings.autoCaptionImage
                 };
-                
+
+                let jobSettings = {
+                    framepack: jobPayload
+                }
+
+                if (document.getElementById('batchFaceRestoration').checked) {
+                    jobSettings.facefusion = {
+                        source_image_path: image.serverPath,
+                        target_video_path: `${jobId}_final.mp4`,
+                        output_path: `${jobId}_final_restored.mp4`
+                    }
+                }
                 // Create save payload similar to startGeneration in editor.js
                 const savePayload = {
                     job_id: jobId,
@@ -418,7 +429,7 @@ function processBatch() {
                     segments: [image.serverPath], // Now use actual server path for segments
                     is_valid: true,
                     missing_images: [],
-                    job_settings: {'framepack': jobPayload},
+                    job_settings: jobSettings,
                     queue_position: -1,
                     created_timestamp: timestamp
                 };

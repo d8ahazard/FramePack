@@ -364,8 +364,14 @@ async def run_job(job_id: str):
         save_job_data(job_id, job_status)
         logger.info(f"Starting job {job_id}")
 
+        # TODO: Make this determined by our modules, eventually
+        module_order = ["framepack", "facefusion"]
         # Look for module keys in job_settings
-        for module_name, module_settings in job_settings.items():
+        for module_name in module_order:
+            module_settings = job_settings.get(module_name)
+            if not module_settings:
+                continue
+
             try:
                 # Import the module dynamically
                 module_path = f"modules.{module_name}.module"

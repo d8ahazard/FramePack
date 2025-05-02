@@ -32,6 +32,7 @@ const JOB_EVENT_TYPES = {
 const elements = {
     // Inputs & controls
     autoPrompt: null,
+    restoreFace: null,
     globalPrompt: null,
     negativePrompt: null,
     seedInput: null,
@@ -307,6 +308,7 @@ function initElements() {
     
     // Form inputs
     elements.autoPrompt = document.getElementById('autoPrompt');
+    elements.restoreFace = document.getElementById('restoreFace');
     elements.globalPrompt = document.getElementById('globalPrompt');
     elements.negativePrompt = document.getElementById('negativePrompt');
     elements.resolution = document.getElementById('resolution');
@@ -328,6 +330,7 @@ function initElements() {
     elements.replaceImageBtn = document.getElementById('replaceImageBtn');
     elements.deleteFrameBtn = document.getElementById('deleteFrameBtn');
     elements.saveFrameBtn = document.getElementById('saveFrameBtn');
+    elements.faceRestoration = document.getElementById('faceRestoration');
     
     // Video viewer modal elements
     elements.modalVideo = document.getElementById('modalVideo');

@@ -11,7 +11,7 @@ from tqdm import tqdm
 import requests
 import shutil
 
-from .datatypes import (
+from modules.facefusion.datatypes import (
     Face, FaceDetectorModel, ProcessOptions, 
     ProcessResult, VisionFrame, FaceFusionJobSettings
 )
