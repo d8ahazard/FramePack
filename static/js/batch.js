@@ -14,6 +14,13 @@ import {
     runJob
 } from './job_queue.js';
 
+import {
+    uploadFileToServer,
+    getSettingsFromForm,
+    prepareJobPayload,
+    saveAndProcessJob
+} from './job_utils.js';
+
 
 // State
 const batchImages = [];
@@ -45,6 +52,14 @@ export function initBatch() {
     
     if (batchProcessBtn) {
         batchProcessBtn.addEventListener('click', processBatch);
+    }
+    
+    // Add module selection change event listener
+    const batchVideoModuleSelect = document.getElementById('batchVideoModule');
+    if (batchVideoModuleSelect) {
+        batchVideoModuleSelect.addEventListener('change', handleBatchModuleSelection);
+        // Initialize settings visibility based on current selection
+        handleBatchModuleSelection({ target: batchVideoModuleSelect });
     }
     
     // Add drag/drop handling to the batch container
@@ -326,231 +341,247 @@ function clearBatchImages() {
 }
 
 // Process the batch
-function processBatch() {
+async function processBatch() {
     if (batchImages.length === 0) {
         alert('Please add at least one image before processing.');
         return;
     }
     
-    // Get settings from form
-    const settings = {
-        autoCaptionImage: document.getElementById('batchAutoCaptionImage').checked,
-        globalPrompt: document.getElementById('batchGlobalPrompt').value,
-        negativePrompt: document.getElementById('batchNegativePrompt').value,
-        resolution: document.getElementById('batchResolution').value,
-        steps: document.getElementById('batchSteps').value,
-        guidanceScale: document.getElementById('batchGuidanceScale').value,
-        useTeacache: document.getElementById('batchUseTeacache').checked,
-        enableAdaptiveMemory: document.getElementById('batchEnableAdaptiveMemory').checked,
-        outputFormat: document.getElementById('batchOutputFormat').value,
-        duration: document.getElementById('batchDuration').value
-    };
+    // Get selected module
+    const batchVideoModuleSelect = document.getElementById('batchVideoModule');
+    const selectedModule = batchVideoModuleSelect ? batchVideoModuleSelect.value : 'framepack';
+    
+    // Get settings from form using our common utility
+    const settings = getSettingsFromForm('batch');
     
     console.log('Batch settings:', settings);
     console.log('Processing batch images:', batchImages.length);
+    console.log('Selected module:', selectedModule);
     
     // Disable the process button while batch is processing
     batchProcessBtn.disabled = true;
-    batchProcessBtn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i> Uploading...';
+    batchProcessBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Processing...';
     
-    // First, upload all images to the server
-    const uploadPromises = batchImages.map(image => {
-        // Return a promise for each file upload
-        return uploadFileToServer(image.file)
-            .then(serverPath => {
-                // Store the server path with the image entry for later use
-                return {
-                    id: image.id,
-                    file: image.file,
-                    serverPath: serverPath
-                };
-            });
-    });
-    
-    // Process all uploads
-    Promise.all(uploadPromises)
-        .then(uploadedImages => {
-            console.log('All batch images uploaded successfully:', uploadedImages);
+    try {
+        // Generate a job ID
+        const timestamp = Math.floor(Date.now() / 1000);
+        const jobId = `${timestamp}_${Math.floor(Math.random() * 1000)}`;
+        
+        // Prepare segments for job
+        const segments = [];
+        let includeLastFrame = false;
+        
+        // Get the "Include last frame as segment" checkbox state for WAN module
+        if (selectedModule === 'wan') {
+            const includeLastFrameElement = document.getElementById('batchIncludeLastFrame');
+            includeLastFrame = includeLastFrameElement && includeLastFrameElement.checked;
+        }
+        
+        // Add each image as a segment
+        for (let i = 0; i < batchImages.length; i++) {
+            const image = batchImages[i];
+            const isLastFrame = (i === batchImages.length - 1);
             
-            // Update status message
-            batchProcessBtn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i> Creating Jobs...';
-            
-            // Process each uploaded image as a separate job
-            const jobPromises = uploadedImages.map(image => {
-                // Generate a job ID
-                const timestamp = Math.floor(Date.now() / 1000);
-                const jobId = `batch_${timestamp}_${Math.floor(Math.random() * 1000)}`;
-                
-                // Each image is a single segment in the job
-                const imageDuration = parseFloat(settings.duration) || 3.0;
-                
-                // Create the job payload similar to editor.js's prepareJobPayload
-                const jobPayload = {
-                    global_prompt: settings.globalPrompt || "",
-                    negative_prompt: settings.negativePrompt || "",
-                    segments: [
-                        {
-                            // Now use the server path instead of data URL
-                            image_path: image.serverPath,
-                            prompt: "",  // Individual image prompts not supported in batch mode
-                            duration: imageDuration
-                        }
-                    ],
-                    seed: Math.floor(Math.random() * 100000),
-                    steps: parseInt(settings.steps) || 25,
-                    guidance_scale: parseFloat(settings.guidanceScale) || 10.0,
-                    use_teacache: settings.useTeacache,
-                    enable_adaptive_memory: settings.enableAdaptiveMemory,
-                    resolution: parseInt(settings.resolution) || 640,
-                    mp4_crf: 16,
-                    gpu_memory_preservation: 6.0,
-                    include_last_frame: false,
-                    auto_prompt: settings.autoCaptionImage
-                };
-
-                let jobSettings = {
-                    framepack: jobPayload
-                }
-
-                if (document.getElementById('batchFaceRestoration').checked) {
-                    jobSettings.facefusion = {
-                        source_image_path: image.serverPath,
-                        target_video_path: `${jobId}_final.mp4`,
-                        output_path: `${jobId}_final_restored.mp4`
-                    }
-                }
-                // Create save payload similar to startGeneration in editor.js
-                const savePayload = {
-                    job_id: jobId,
-                    status: "saved",
-                    progress: 0,
-                    message: "Batch job saved",
-                    result_video: "",
-                    segments: [image.serverPath], // Now use actual server path for segments
-                    is_valid: true,
-                    missing_images: [],
-                    job_settings: jobSettings,
-                    queue_position: -1,
-                    created_timestamp: timestamp
-                };
-                
-                // Return a promise for saving and running the job
-                return submitBatchJob(jobId, savePayload);
-            });
-            
-            // Wait for all jobs to be submitted
-            return Promise.all(jobPromises);
-        })
-        .then(jobResults => {
-            console.log('All batch jobs submitted:', jobResults);
-            
-            // Show feedback that batch has been submitted
-            alert(`Submitted ${batchImages.length} image(s) for processing. You can monitor progress in the Job Queue tab.`);
-            
-            // Switch to the job queue tab to show progress
-            const queueTab = document.getElementById('queue-tab');
-            if (queueTab) {
-                bootstrap.Tab.getOrCreateInstance(queueTab).show();
+            // Skip the last frame for WAN if we're going to use it as a separate segment
+            if (selectedModule === 'wan' && includeLastFrame && isLastFrame) {
+                continue;
             }
             
-            // Try to refresh the job queue
+            segments.push({
+                image_path: image.dataUrl,
+                prompt: image.prompt || '',
+                duration: parseFloat(settings.batchDuration) || 3.0,
+                use_last_frame: includeLastFrame && isLastFrame
+            });
+        }
+        
+        // Add the last frame back in if we're including it as a separate segment
+        if (selectedModule === 'wan' && includeLastFrame && batchImages.length > 0) {
+            const lastImage = batchImages[batchImages.length - 1];
+            segments.push({
+                image_path: lastImage.dataUrl,
+                prompt: lastImage.prompt || '',
+                duration: parseFloat(settings.batchDuration) || 3.0,
+                use_last_frame: true
+            });
+        }
+        
+        console.log('Batch segments:', segments);
+        
+        // Create job settings object based on selected module
+        const jobSettings = {};
+        
+        // Special handling for WAN with "include last frame" option
+        if (selectedModule === 'wan' && includeLastFrame && batchImages.length > 1) {
+            // If the last frame is marked as a segment, we need to create a multi-job setup
+            // 1. Create a standard job with all but the last frame
+            // 2. Create a second job that just processes the last frame
+            showMessage("Multi-frame WAN batch job with last frame included - creating two jobs", "info");
+            
+            // First, create a WAN job for all frames except the last
+            const segmentsWithoutLast = segments.slice(0, -1);
+            const mainWanPayload = prepareJobPayload(settings, segmentsWithoutLast, 'wan', 'batch');
+            jobSettings.wan = mainWanPayload;
+            
+            // Create a second job for the last frame only
+            const lastSegment = [segments[segments.length - 1]];
+            const lastFrameJobId = `${jobId}_lastframe`;
+            const lastFramePayload = prepareJobPayload(settings, lastSegment, 'wan', 'batch');
+            
+            // Save and start both jobs
             try {
-                import('./job_queue.js').then(jobQueueModule => {
-                    if (typeof jobQueueModule.loadJobQueue === 'function') {
-                        jobQueueModule.loadJobQueue();
+                // Save the main job first (but don't start it)
+                console.log('Saving main job:', jobId, jobSettings);
+                await saveAndProcessJob(jobId, jobSettings, segmentsWithoutLast, 'wan', false);
+                
+                // Then save and start the last frame job
+                console.log('Saving and starting last frame job:', lastFrameJobId, lastFramePayload);
+                const lastFrameJobSettings = {
+                    wan: lastFramePayload
+                };
+                await saveAndProcessJob(lastFrameJobId, lastFrameJobSettings, lastSegment, 'wan', true);
+                
+                // Now start the main job
+                console.log('Starting main job:', jobId);
+                fetch(`/api/jobs/${jobId}/run`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        console.log('Main job started:', data);
+                        showMessage("Batch jobs started successfully", "success");
+                        
+                        // Clear the batch after successfully saving
+                        clearBatchImages();
+                    } else {
+                        console.error('Failed to start main job:', data);
+                        showMessage(`Failed to start main job: ${data.error || 'Unknown error'}`, "error");
                     }
+                    
+                    // Re-enable the process button
+                    batchProcessBtn.disabled = false;
+                    batchProcessBtn.innerHTML = '<i class="bi bi-play-fill"></i> Process Batch';
+                })
+                .catch(error => {
+                    console.error('Error starting main job:', error);
+                    showMessage(`Error starting main job: ${error.message}`, "error");
+                    
+                    // Re-enable the process button
+                    batchProcessBtn.disabled = false;
+                    batchProcessBtn.innerHTML = '<i class="bi bi-play-fill"></i> Process Batch';
                 });
-            } catch (err) {
-                console.error('Error refreshing job queue:', err);
+                
+                return { jobId, lastFrameJobId };
+            } catch (error) {
+                console.error('Error processing multi-job WAN with last frame:', error);
+                showMessage(`Error processing jobs: ${error.message}`, "error");
+                
+                // Re-enable the process button
+                batchProcessBtn.disabled = false;
+                batchProcessBtn.innerHTML = '<i class="bi bi-play-fill"></i> Process Batch';
+                
+                return null;
             }
+        } else {
+            // Normal job processing
+            const modulePayload = prepareJobPayload(settings, segments, selectedModule, 'batch');
+            jobSettings[selectedModule] = modulePayload;
             
-            // Clear the batch images since they've been processed
+            // Save and process the job
+            console.log('Processing job:', jobId, jobSettings);
+            const result = await saveAndProcessJob(jobId, jobSettings, segments, selectedModule);
+            
+            // Clear the batch after successfully saving
             clearBatchImages();
-        })
-        .catch(error => {
-            console.error('Error processing batch:', error);
-            alert('Error processing batch: ' + error.message);
-        })
-        .finally(() => {
+            
             // Re-enable the process button
             batchProcessBtn.disabled = false;
-            batchProcessBtn.innerHTML = 'Process Batch';
-        });
-}
-
-// Helper function to upload a file to the server
-function uploadFileToServer(file) {
-    return new Promise((resolve, reject) => {
-        const formData = new FormData();
-        formData.append('file', file);
-        
-        fetch('/api/upload_image', {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => {
-            if (!response.ok) {
-                throw new Error('Failed to upload file');
-            }
-            return response.json();
-        })
-        .then(data => {
-            if (data.success) {
-                // Use the full server path returned from the API
-                const serverPath = data.upload_url;
-                
-                if (!serverPath) {
-                    throw new Error('No valid file path returned from server');
-                }
-                
-                console.log(`File uploaded: ${serverPath}`);
-                resolve(serverPath);
-            } else {
-                reject(new Error(data.error || 'Unknown error uploading file'));
-            }
-        })
-        .catch(error => {
-            console.error('Error uploading file:', error);
-            reject(error);
-        });
-    });
-}
-
-// Helper function to submit a batch job
-function submitBatchJob(jobId, savePayload) {
-    return new Promise((resolve, reject) => {
-        // Save the job
-        fetch(`/api/save_job/${jobId}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(savePayload)
-        })
-        .then(response => {
-            if (!response.ok) {
-                return response.text().then(text => {
-                    throw new Error(`Failed to save job: ${text}`);
-                });
-            }
-            return response.json();
-        })
-        .then(data => {
-            console.log('Batch job saved:', data);
+            batchProcessBtn.innerHTML = '<i class="bi bi-play-fill"></i> Process Batch';
             
-            try {
-                // Run the job
-                runJob(jobId, true); // Pass true to indicate this is a batch job
-                console.log(`Batch job ${jobId} started using job_queue.runJob`);
-                resolve(jobId); // Resolve with the job ID
-            } catch (err) {
-                console.error('Error running batch job:', err);
-                reject(err);
+            return result;
+        }
+    } catch (error) {
+        console.error('Error processing batch:', error);
+        showMessage(`Error processing batch: ${error.message}`, "error");
+        
+        // Re-enable the process button
+        batchProcessBtn.disabled = false;
+        batchProcessBtn.innerHTML = '<i class="bi bi-play-fill"></i> Process Batch';
+        
+        return null;
+    }
+}
+
+// Function to handle batch module selection and toggle related settings
+function handleBatchModuleSelection(event) {
+    const selectedModule = event.target.value;
+    
+    // Get all settings elements
+    const commonSettings = [
+        'batchGlobalPrompt', 'batchNegativePrompt', 'batchResolution', 'batchFps', 'batchDuration'
+    ];
+    
+    // FramePack-specific settings
+    const framepackSettings = [
+        'batchAutoCaptionImage', 'batchFaceRestoration', 'batchSteps', 'batchGuidanceScale', 
+        'batchUseTeacache', 'batchEnableAdaptiveMemory', 'batchLoraModel', 'batchLoraScale'
+    ];
+    
+    // WAN-specific settings
+    const wanSettings = [
+        'batchWanSize', 'batchWanFrameNum', 'batchWanSampleSteps', 
+        'batchWanSampleShift', 'batchWanSampleGuideScale'
+    ];
+    
+    // Show/hide settings based on selected module
+    if (selectedModule === 'wan') {
+        // Show WAN-specific settings
+        document.getElementById('batchWanSettings').style.display = 'block';
+        
+        // Hide FramePack-specific settings that don't apply to WAN
+        framepackSettings.forEach(setting => {
+            const element = document.getElementById(setting);
+            if (element) {
+                const container = element.closest('.mb-3, .form-check');
+                if (container) container.style.display = 'none';
             }
-        })
-        .catch(error => {
-            console.error('Error submitting batch job:', error);
-            reject(error);
         });
-    });
+        
+        // Make sure common settings are visible
+        commonSettings.forEach(setting => {
+            const element = document.getElementById(setting);
+            if (element) {
+                const container = element.closest('.mb-3, .form-check');
+                if (container) container.style.display = 'block';
+            }
+        });
+        
+        // Hide the WAN task selector as it will be determined automatically
+        const wanTaskContainer = document.getElementById('batchWanTask')?.closest('.mb-3');
+        if (wanTaskContainer) wanTaskContainer.style.display = 'none';
+        
+    } else {
+        // Hide WAN-specific settings
+        document.getElementById('batchWanSettings').style.display = 'none';
+        
+        // Show FramePack-specific settings
+        framepackSettings.forEach(setting => {
+            const element = document.getElementById(setting);
+            if (element) {
+                const container = element.closest('.mb-3, .form-check');
+                if (container) container.style.display = 'block';
+            }
+        });
+        
+        // Make sure common settings are visible
+        commonSettings.forEach(setting => {
+            const element = document.getElementById(setting);
+            if (element) {
+                const container = element.closest('.mb-3, .form-check');
+                if (container) container.style.display = 'block';
+            }
+        });
+    }
 } 

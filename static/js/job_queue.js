@@ -12,11 +12,19 @@ import {
 } from './common.js';
 
 // Add import for openVideoViewer used in loadJobDetails
-import { openVideoViewer } from './outputs.js';
+import { openVideoViewer, loadOutputs } from './outputs.js';
+
+// Import shared job utilities
+import {
+    saveAndProcessJob
+} from './job_utils.js';
 
 // Initialize module variables
 let currentJobId = null;
 let jobListenerIndex = -1;
+
+// Track jobs that are currently being run to prevent duplicate submissions
+const runningJobSubmissions = new Set();
 
 /**
  * Get the proper URL for a segment image using the API
@@ -331,13 +339,10 @@ function setupJobWebSocketListener() {
                 window.updateEditorProgress(jobId, status, progress, message, event);
             } 
             // For completed or failed jobs, only update if it's the active job
-            else if (status === 'completed' || status === 'failed') {
+            else if ((status === 'completed' || status === 'failed') && window.currentActiveJobId === jobId) {
                 console.log("Job completed or failed, updating editor UI:", jobId);
-                if (window.currentActiveJobId === jobId) {
-                    window.updateEditorProgress(jobId, status, progress, message, event);
-                }
+                window.updateEditorProgress(jobId, status, progress, message, event);
             }
-            
             
             // For completed or failed jobs, ensure we update the full job list
             if (status === 'completed' || status === 'failed') {
@@ -673,6 +678,20 @@ function createJobItem(job) {
     // Get thumbnail URL - use getThumbnailUrl function for proper image loading
     const thumbnailUrl = getThumbnailUrl(job);
     
+    // Determine the module type based on job settings
+    let moduleType = 'FramePack';
+    let moduleClass = 'bg-primary';
+    
+    if (job.job_settings && job.job_settings.wan) {
+        moduleType = 'WAN';
+        moduleClass = 'bg-success';
+    } else if (job.job_settings && job.job_settings.framepack) {
+        moduleType = 'FramePack';
+    }
+    
+    // Module type badge
+    const moduleBadge = `<span class="badge ${moduleClass} module-badge ms-2">${moduleType}</span>`;
+    
     jobItem.innerHTML = `
         <div class="d-flex align-items-start">
             <div class="job-thumbnail me-3">
@@ -686,6 +705,7 @@ function createJobItem(job) {
                     </div>
                     <div>
                         <span class="badge ${statusBadgeClass} status-badge">${job.status}</span>
+                        ${moduleBadge}
                         ${queuePositionBadge}
                         ${invalidBadge}
                     </div>
@@ -1026,6 +1046,17 @@ function displayJobDetails(jobData) {
     
     const jobMediaContainer = document.getElementById('jobMediaContainer');
     
+    // Determine the module type based on job settings
+    let moduleType = 'FramePack';
+    let moduleClass = 'bg-primary';
+    
+    if (jobData.job_settings && jobData.job_settings.wan) {
+        moduleType = 'WAN';
+        moduleClass = 'bg-success';
+    } else if (jobData.job_settings && jobData.job_settings.framepack) {
+        moduleType = 'FramePack';
+    }
+    
     // Basic job information card
     const jobInfoCard = document.createElement('div');
     jobInfoCard.className = 'card mb-3';
@@ -1067,11 +1098,15 @@ function displayJobDetails(jobData) {
     jobInfoCard.innerHTML = `
         <div class="card-header d-flex justify-content-between align-items-center">
             <h5 class="card-title mb-0">Job Information</h5>
-            <span class="badge ${statusBadgeClass}">${jobData.status}</span>
+            <div>
+                <span class="badge ${statusBadgeClass}">${jobData.status}</span>
+                <span class="badge ${moduleClass} ms-2">${moduleType}</span>
+            </div>
         </div>
         <div class="card-body">
             ${invalidImagesWarning}
             <p><strong>Status:</strong> ${jobStatus}</p>
+            <p><strong>Module:</strong> ${moduleType}</p>
             ${queueInfo}
             <p><strong>Progress:</strong> ${jobData.progress}%</p>
             <p><strong>Message:</strong> ${jobData.message || 'No message'}</p>
@@ -1502,46 +1537,74 @@ async function runJob(jobId, skipConfirmation = false) {
     try {
         console.log(`Attempting to run job: ${jobId}`);
         
+        // Check if we're already running this job to prevent duplicate submissions
+        if (runningJobSubmissions.has(jobId)) {
+            console.log(`Job ${jobId} is already being submitted, ignoring duplicate request`);
+            return;
+        }
+        
+        // Mark this job as being processed
+        runningJobSubmissions.add(jobId);
+        
         // Confirm with user
         if (!skipConfirmation && !confirm('Are you sure you want to run this job?')) {
             console.log('Job run cancelled by user');
+            runningJobSubmissions.delete(jobId); // Remove from tracking
             return;
         }
 
+        // Get current job data to determine module and settings
+        const jobResponse = await fetch(`/api/job_status/${jobId}`);
+        if (!jobResponse.ok) {
+            throw new Error(`Failed to fetch job data: ${jobResponse.statusText}`);
+        }
+        
+        const jobData = await jobResponse.json();
+        
+        // Determine which module this job uses
+        let moduleType = 'framepack'; // Default
+        if (jobData.job_settings && jobData.job_settings.wan) {
+            moduleType = 'wan';
+        }
+        
         // Show loading indicator
         const jobDetailContainer = document.getElementById('jobDetailContainer');
-        const loadingMessage = document.createElement('div');
-        loadingMessage.className = 'alert alert-info mt-3';
-        loadingMessage.innerHTML = '<i class="bi bi-hourglass"></i> Starting job...';
-        jobDetailContainer.appendChild(loadingMessage);
-
-        // Call run job API
-        console.log(`Calling API to run job ${jobId}`);
-        const response = await fetch(`/api/run_job/${jobId}`, {
-            method: 'POST'
-        });
-
-        console.log(`Run API response status: ${response.status} ${response.statusText}`);
-        
-        if (!response.ok) {
-            const errorText = await response.text();
-            console.error(`Error response from run API: ${errorText}`);
-            try {
-                const errorData = JSON.parse(errorText);
-                throw new Error(errorData.error || 'Failed to run job');
-            } catch (parseError) {
-                throw new Error(`Failed to run job: ${response.status} ${response.statusText}`);
-            }
+        if (jobDetailContainer) {
+            const loadingMessage = document.createElement('div');
+            loadingMessage.className = 'alert alert-info mt-3';
+            loadingMessage.innerHTML = '<i class="bi bi-hourglass"></i> Starting job...';
+            jobDetailContainer.appendChild(loadingMessage);
+            
+            // Remove loading message after a short delay
+            setTimeout(() => {
+                if (loadingMessage.parentNode) {
+                    loadingMessage.remove();
+                }
+            }, 2000);
         }
 
-        // Parse the response to get the job ID
-        const result = await response.json();
-        console.log(`Complete run job result:`, result);
+        // Make an actual API call to the server to run the job
+        const runResponse = await fetch(`/api/run_job/${jobId}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                module: moduleType
+            })
+        });
         
-        const returnedJobId = result.job_id || jobId;
-
-        // Remove loading message
-        loadingMessage.remove();
+        if (!runResponse.ok) {
+            const errorText = await runResponse.text();
+            throw new Error(`Failed to run job: ${errorText}`);
+        }
+        
+        const runResult = await runResponse.json();
+        console.log('Server response for run job:', runResult);
+        
+        if (!runResult.success) {
+            throw new Error(runResult.message || 'Server failed to start the job');
+        }
 
         // Show success message
         showMessage('Job started successfully!', 'success');
@@ -1554,7 +1617,7 @@ async function runJob(jobId, skipConfirmation = false) {
         let foundJob = false;
         jobItems.forEach(item => {
             item.classList.remove('active');
-            if (item.dataset.jobId === returnedJobId) {
+            if (item.dataset.jobId === jobId) {
                 item.classList.add('active');
                 // Scroll to the job
                 item.scrollIntoView({ behavior: 'smooth' });
@@ -1563,15 +1626,20 @@ async function runJob(jobId, skipConfirmation = false) {
         });
         
         if (!foundJob) {
-            console.warn(`Could not find job ${returnedJobId} in the job list. It may appear later.`);
+            console.warn(`Could not find job ${jobId} in the job list. It may appear later.`);
         }
 
         // Load details of the job
-        loadJobDetails(returnedJobId);
+        loadJobDetails(jobId);
 
+        return runResult;
     } catch (error) {
         console.error('Error running job:', error);
         showMessage(`Failed to run job: ${error.message}`, 'error');
+        throw error;
+    } finally {
+        // Always remove from tracking when done
+        runningJobSubmissions.delete(jobId);
     }
 }
 
@@ -1583,44 +1651,41 @@ async function queueJob(jobId) {
         if (!jobResponse.ok) {
             throw new Error('Failed to fetch job data');
         }
-
-        // Queue the job
-        const response = await fetch(`/api/run_job/${jobId}`, {
-            method: 'POST'
-        });
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            try {
-                const errorData = JSON.parse(errorText);
-                throw new Error(errorData.error || 'Failed to queue job');
-            } catch (e) {
-                throw new Error(`Failed to queue job: ${errorText}`);
-            }
+        
+        const jobData = await jobResponse.json();
+        
+        // Determine module type
+        let moduleType = 'framepack'; // Default
+        if (jobData.job_settings && jobData.job_settings.wan) {
+            moduleType = 'wan';
         }
 
-        const result = await response.json();
-
-        // For compatibility with the old response format
-        const queuePosition = result.queue_position || 0;
-        const successMessage = result.success ? 
-            `Job queued at position ${queuePosition}` : 
-            'Job queued successfully';
+        // Use shared utility to save job without running it
+        const result = await saveAndProcessJob(
+            jobId,
+            jobData.job_settings,
+            jobData.segments,
+            moduleType,
+            false // Don't start the job immediately
+        );
 
         // Refresh the job queue
         loadJobQueue();
 
         // Show success message
-        showMessage(successMessage, 'success');
+        showMessage('Job queued successfully', 'success');
 
         // Load details for the queued job
         loadJobDetails(jobId).then(r => {}).catch(e => {
             console.error('Error loading job details:', e);
             showMessage(`Failed to load job details: ${e.message}`, 'error');
         });
+        
+        return result;
     } catch (error) {
         console.error('Error queueing job:', error);
         showMessage(`Failed to queue job: ${error.message}`, 'error');
+        throw error;
     }
 }
 
@@ -1836,7 +1901,7 @@ function getSegmentThumbnails(jobData) {
         return videos.map((videoPath, index) => `
             <div class="segment-thumbnail me-2" title="Video Segment ${index + 1}">
                 <div class="position-relative">
-                    <img src="/static/images/video-thumbnail.png" alt="Video ${index + 1}" 
+                    <img src="/static/images/placeholder-image.png" alt="Video ${index + 1}" 
                          class="img-thumbnail" style="height: 80px; width: auto;">
                     <span class="badge bg-primary position-absolute top-0 end-0">MP4</span>
                 </div>

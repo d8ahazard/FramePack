@@ -365,11 +365,12 @@ async def run_job(job_id: str):
         logger.info(f"Starting job {job_id}")
 
         # TODO: Make this determined by our modules, eventually
-        module_order = ["framepack", "facefusion"]
+        module_order = ["framepack", "wan", "facefusion"]
         # Look for module keys in job_settings
         for module_name in module_order:
             module_settings = job_settings.get(module_name)
             if not module_settings:
+                logger.info(f"Module {module_name} not found in job settings")
                 continue
 
             try:
@@ -388,6 +389,10 @@ async def run_job(job_id: str):
                     if hasattr(process_func, "__annotations__") and "request" in process_func.__annotations__:
                         request_type = process_func.__annotations__["request"]
                         logger.info(f"Request type: {request_type}")
+                    else:
+                        logger.info(f"Module {module_name} does not have a request type")
+                else:
+                    logger.info(f"Module {module_name} does not have a process function")
 
                 # Add job_id to the settings if not present
                 if isinstance(module_settings, dict) and "job_id" not in module_settings:
@@ -406,6 +411,7 @@ async def run_job(job_id: str):
                         request_instance
                     )
                 else:
+                    logger.info(f"Module {module_name} does not have a process function or request type")
                     job_status.status = "failed"
                     job_status.message = f"Module {module_name} does not have a process function or request type"
                     save_job_data(job_id, job_status)
@@ -456,17 +462,22 @@ def verify_job_images(job_data):
 
     # Direct segments structure
     if 'segments' in job_data:
+        logger.info("Found segments in job data")
         segments = job_data['segments']
     # Nested framepack structure
-    elif 'framepack' in job_data and 'segments' in job_data['framepack']:
-        segments = job_data['framepack']['segments']
-
+    module_keys = ["framepack", "wan", "facefusion"]
+    for module_key in module_keys:
+        if module_key in job_data and 'segments' in job_data[module_key]:
+            logger.info(f"Found segments in {module_key}")
+            segments = job_data[module_key]['segments']
+    
     if not segments:
+        logger.info("No segments found in job data")
         return False, []
 
     for segment in segments:
         image_path = segment.get('image_path')
-        seg_path = image_path.replace("/uploads/", "") if "/" in image_path else image_path.replace("\\uploads\\", "")
+        seg_path = image_path.replace("/uploads/", "")
         image_path = os.path.join(upload_path, seg_path)
         logger.info(f"Checking segment path: {image_path}")
         if not image_path:

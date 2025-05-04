@@ -43,6 +43,9 @@ const elements = {
     resolutionInput: null,
     enableAdaptive: null,
     durationInput: null,
+    loraModel: null,
+    loraScale: null,
+    fps: null,
     
     // Buttons
     addFrameBtn: null,
@@ -291,6 +294,12 @@ if (typeof window !== 'undefined') {
 document.addEventListener('DOMContentLoaded', () => {
     const container = createToastContainer();
     console.log('Toast container initialized on DOM content loaded');
+    
+    // Initialize elements
+    initElements();
+    
+    // Load LoRA models
+    loadLoraModels();
 });
 
 // Initialize all DOM elements
@@ -307,7 +316,7 @@ function initElements() {
     elements.previewImage = document.getElementById('previewImage');
     
     // Form inputs
-    elements.autoPrompt = document.getElementById('autoPrompt');
+    elements.autoPrompt = document.getElementById('autoCaptionImage');
     elements.restoreFace = document.getElementById('restoreFace');
     elements.globalPrompt = document.getElementById('globalPrompt');
     elements.negativePrompt = document.getElementById('negativePrompt');
@@ -317,6 +326,9 @@ function initElements() {
     elements.useTeacache = document.getElementById('useTeacache');
     elements.enableAdaptiveMemory = document.getElementById('enableAdaptiveMemory');
     elements.outputFormat = document.getElementById('outputFormat');
+    elements.loraModel = document.getElementById('loraModel');
+    elements.loraScale = document.getElementById('loraScale');
+    elements.fps = document.getElementById('fps');
     
     // Upload modal elements
     elements.fileInput = document.getElementById('fileInput');
@@ -463,6 +475,59 @@ function removeJobEventListener(index) {
     }
 }
 
+// Function to load available LoRA models
+function loadLoraModels() {
+    console.log('Loading LoRA models...');
+    
+    // Get both dropdowns
+    const loraDropdown = document.getElementById('loraModel');
+    const batchLoraDropdown = document.getElementById('batchLoraModel');
+    
+    if (!loraDropdown && !batchLoraDropdown) {
+        console.warn('LoRA dropdowns not found in the DOM');
+        return;
+    }
+    
+    // Fetch available LoRAs from the API
+    fetch('/api/list_loras')
+        .then(response => response.json())
+        .then(data => {
+            if (data.loras && Array.isArray(data.loras)) {
+                console.log(`Found ${data.loras.length} LoRA models`);
+                
+                // Store the option HTML to reuse
+                let optionsHtml = '<option value="">None</option>';
+                
+                // Add each LoRA to the dropdown
+                data.loras.forEach(lora => {
+                    optionsHtml += `<option value="${lora}">${lora}</option>`;
+                });
+                
+                // Update both dropdowns if they exist
+                if (loraDropdown) {
+                    loraDropdown.innerHTML = optionsHtml;
+                }
+                
+                if (batchLoraDropdown) {
+                    batchLoraDropdown.innerHTML = optionsHtml;
+                }
+            } else {
+                console.warn('No LoRA models found or invalid response format');
+                // Set default "None" option
+                const defaultOption = '<option value="">None</option>';
+                if (loraDropdown) loraDropdown.innerHTML = defaultOption;
+                if (batchLoraDropdown) batchLoraDropdown.innerHTML = defaultOption;
+            }
+        })
+        .catch(error => {
+            console.error('Error loading LoRA models:', error);
+            // Set default "None" option on error
+            const defaultOption = '<option value="">None</option>';
+            if (loraDropdown) loraDropdown.innerHTML = defaultOption;
+            if (batchLoraDropdown) batchLoraDropdown.innerHTML = defaultOption;
+        });
+}
+
 // Export shared functions and variables
 export {
     timeline,
@@ -480,5 +545,6 @@ export {
     disconnectJobWebsocket,
     addJobEventListener,
     removeJobEventListener,
-    JOB_EVENT_TYPES
+    JOB_EVENT_TYPES,
+    loadLoraModels
 }; 

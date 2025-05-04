@@ -1,4 +1,5 @@
-from typing import Dict, List, Any
+import os
+from typing import Dict, List, Any, Optional
 
 from datatypes.datatypes import ModuleJobSettings, SegmentConfig
 
@@ -19,4 +20,7 @@ class FramePackJobSettings(ModuleJobSettings):
     gpu_memory_preservation: float = 6.0
     include_last_frame: bool = False  # Control whether to generate a segment for the last frame
     auto_prompt: bool = False
+    fps: int = 30  # Added FPS control
+    lora_model: Optional[str] = None  # Path to LORA model
+    lora_scale: float = 1.0  # Scale for LORA influence
 

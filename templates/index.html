@@ -104,6 +104,14 @@
                             <div class="card">
                                 <div class="card-body">
                                     <form id="settingsForm">
+                                        <div class="mb-3">
+                                            <label for="videoModule" class="form-label">Generation Module</label>
+                                            <select class="form-select" id="videoModule">
+                                                <option value="framepack" selected>FramePack (Default)</option>
+                                                <option value="wan">WAN (Hunyuan Video)</option>
+                                            </select>
+                                            <small class="form-text text-muted">Select which video generation module to use</small>
+                                        </div>
                                         <div class="mb-3 form-check autoCaptionGroup">
                                             <input type="checkbox" class="form-check-input" id="autoCaptionImage">
                                             <label class="form-check-label" for="autoCaptionImage">Auto Caption Image</label>
@@ -123,7 +131,19 @@
                                         </div>
                                         <div class="mb-3">
                                             <label for="resolution" class="form-label">Resolution</label>
-                                            <input type="number" class="form-control" id="resolution" min="240" max="720" step="16" value="720">
+                                            <select class="form-select" id="resolution">
+                                                <option value="240">240p</option>
+                                                <option value="320">320p</option>
+                                                <option value="480">480p</option>
+                                                <option value="640">640p</option>
+                                                <option value="720" selected>720p</option>
+                                                <option value="840">840p</option>
+                                                <option value="960">960p</option>
+                                                <option value="1080">1080p</option>
+                                                <option value="1200">1200p</option>
+                                                <option value="1320">1320p</option>
+                                                <option value="1440">1440p</option>
+                                            </select>
                                             <small class="form-text text-muted">Target resolution for video (automatically determines width and height while maintaining aspect ratio)</small>
                                         </div>
                                         <div class="mb-3">
@@ -149,6 +169,62 @@
                                                 <option value="webm">WebM (VP9)</option>
                                                 <option value="gif">GIF</option>
                                             </select>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="loraModel" class="form-label">LoRA Model</label>
+                                            <select class="form-select" id="loraModel">
+                                                <option value="">None</option>
+                                                <!-- LoRA models will be loaded dynamically -->
+                                            </select>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="loraScale" class="form-label">LoRA Scale</label>
+                                            <input type="number" class="form-control" id="loraScale" min="0.1" max="2.0" step="0.1" value="1.0">
+                                            <small class="form-text text-muted">Controls the strength of the LoRA effect (0.1-2.0)</small>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="fps" class="form-label">FPS</label>
+                                            <input type="number" class="form-control" id="fps" min="15" max="60" step="1" value="30">
+                                        </div>
+                                        
+                                        <!-- WAN-specific settings, hidden by default -->
+                                        <div id="wanSettings" style="display: none;">
+                                            <hr>
+                                            <h5 class="fs-6 mb-3">WAN Module Settings</h5>
+                                            <div class="alert alert-info small">
+                                                <i class="bi bi-info-circle me-2"></i> 
+                                                Task will be automatically selected: 
+                                                <ul class="mb-0 mt-1">
+                                                    <li>Single image → Image to Video (i2v-14B)</li>
+                                                    <li>Multiple images → First-Last Frame to Video (flf2v-14B)</li>
+                                                </ul>
+                                            </div>
+                                            <div class="mb-3">
+                                                <label for="wanSize" class="form-label">Resolution</label>
+                                                <select class="form-select" id="wanSize">
+                                                    <option value="832*480">832×480</option>
+                                                    <option value="480*832">480×832</option>
+                                                    <option value="1280*720" selected>1280×720</option>
+                                                    <option value="720*1280">720×1280</option>
+                                                </select>
+                                            </div>
+                                            <div class="mb-3">
+                                                <label for="wanFrameNum" class="form-label">Frame Count</label>
+                                                <input type="number" class="form-control" id="wanFrameNum" min="16" max="128" step="1" value="81">
+                                                <small class="form-text text-muted">Number of frames to generate (default: 81)</small>
+                                            </div>
+                                            <div class="mb-3">
+                                                <label for="wanSampleSteps" class="form-label">Sample Steps</label>
+                                                <input type="number" class="form-control" id="wanSampleSteps" min="20" max="100" step="1" value="40">
+                                            </div>
+                                            <div class="mb-3">
+                                                <label for="wanSampleShift" class="form-label">Sample Shift</label>
+                                                <input type="number" class="form-control" id="wanSampleShift" min="1" max="20" step="0.1" value="5.0">
+                                            </div>
+                                            <div class="mb-3">
+                                                <label for="wanSampleGuideScale" class="form-label">Guide Scale</label>
+                                                <input type="number" class="form-control" id="wanSampleGuideScale" min="1" max="20" step="0.1" value="5.0">
+                                            </div>
                                         </div>
                                     </form>
                                 </div>
@@ -188,6 +264,14 @@
                             <div class="card">
                                 <div class="card-body">
                                     <form id="batchSettingsForm">
+                                        <div class="mb-3">
+                                            <label for="batchVideoModule" class="form-label">Generation Module</label>
+                                            <select class="form-select" id="batchVideoModule">
+                                                <option value="framepack" selected>FramePack (Default)</option>
+                                                <option value="wan">WAN (Hunyuan Video)</option>
+                                            </select>
+                                            <small class="form-text text-muted">Select which video generation module to use</small>
+                                        </div>
                                         <div class="mb-3 form-check autoCaptionGroup">
                                             <input type="checkbox" class="form-check-input" id="batchAutoCaptionImage">
                                             <label class="form-check-label" for="batchAutoCaptionImage">Auto Caption Image</label>
@@ -207,7 +291,19 @@
                                         </div>
                                         <div class="mb-3">
                                             <label for="batchResolution" class="form-label">Resolution</label>
-                                            <input type="number" class="form-control" id="batchResolution" min="240" max="720" step="16" value="720">
+                                            <select class="form-select" id="batchResolution">
+                                                <option value="240">240p</option>
+                                                <option value="320">320p</option>
+                                                <option value="480">480p</option>
+                                                <option value="640">640p</option>
+                                                <option value="720" selected>720p</option>
+                                                <option value="840">840p</option>
+                                                <option value="960">960p</option>
+                                                <option value="1080">1080p</option>
+                                                <option value="1200">1200p</option>
+                                                <option value="1320">1320p</option>
+                                                <option value="1440">1440p</option>
+                                            </select>
                                             <small class="form-text text-muted">Target resolution for video (automatically determines width and height while maintaining aspect ratio)</small>
                                         </div>
                                         <div class="mb-3">
@@ -237,6 +333,58 @@
                                                 <option value="webm">WebM (VP9)</option>
                                                 <option value="gif">GIF</option>
                                             </select>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="batchLoraModel" class="form-label">LoRA Model</label>
+                                            <select class="form-select" id="batchLoraModel">
+                                                <option value="">None</option>
+                                                <!-- LoRA models will be loaded dynamically -->
+                                            </select>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="batchLoraScale" class="form-label">LoRA Scale</label>
+                                            <input type="number" class="form-control" id="batchLoraScale" min="0.1" max="2.0" step="0.1" value="1.0">
+                                            <small class="form-text text-muted">Controls the strength of the LoRA effect (0.1-2.0)</small>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="batchFps" class="form-label">FPS</label>
+                                            <input type="number" class="form-control" id="batchFps" min="15" max="60" step="1" value="30">
+                                        </div>
+                                        
+                                        <!-- WAN-specific batch settings, hidden by default -->
+                                        <div id="batchWanSettings" style="display: none;">
+                                            <hr>
+                                            <h5 class="fs-6 mb-3">WAN Module Settings</h5>
+                                            <div class="alert alert-info small">
+                                                <i class="bi bi-info-circle me-2"></i> 
+                                                Task will be automatically selected based on image count
+                                            </div>
+                                            <div class="mb-3">
+                                                <label for="batchWanSize" class="form-label">Resolution</label>
+                                                <select class="form-select" id="batchWanSize">
+                                                    <option value="832*480">832×480</option>
+                                                    <option value="480*832">480×832</option>
+                                                    <option value="1280*720" selected>1280×720</option>
+                                                    <option value="720*1280">720×1280</option>
+                                                </select>
+                                            </div>
+                                            <div class="mb-3">
+                                                <label for="batchWanFrameNum" class="form-label">Frame Count</label>
+                                                <input type="number" class="form-control" id="batchWanFrameNum" min="16" max="128" step="1" value="81">
+                                                <small class="form-text text-muted">Number of frames to generate (default: 81)</small>
+                                            </div>
+                                            <div class="mb-3">
+                                                <label for="batchWanSampleSteps" class="form-label">Sample Steps</label>
+                                                <input type="number" class="form-control" id="batchWanSampleSteps" min="20" max="100" step="1" value="40">
+                                            </div>
+                                            <div class="mb-3">
+                                                <label for="batchWanSampleShift" class="form-label">Sample Shift</label>
+                                                <input type="number" class="form-control" id="batchWanSampleShift" min="1" max="20" step="0.1" value="5.0">
+                                            </div>
+                                            <div class="mb-3">
+                                                <label for="batchWanSampleGuideScale" class="form-label">Guide Scale</label>
+                                                <input type="number" class="form-control" id="batchWanSampleGuideScale" min="1" max="20" step="0.1" value="5.0">
+                                            </div>
                                         </div>
                                     </form>
                                 </div>

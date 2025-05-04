@@ -7,12 +7,23 @@ import {
     showMessage, 
     enforceHorizontalLayout, 
     checkImageExists,
-    connectJobWebsocket} from './common.js';
+    connectJobWebsocket,
+    addJobEventListener,
+    removeJobEventListener
+} from './common.js';
 
 import {
     loadJobQueue,
     runJob
 } from './job_queue.js';
+
+import {
+    uploadFileToServer,
+    getSettingsFromForm,
+    prepareJobPayload,
+    
+    saveAndProcessJob
+} from './job_utils.js';
 
 // Track current active job ID in the editor
 window.currentActiveJobId = null;
@@ -227,42 +238,42 @@ function updateLastFileDisplay() {
 }
 
 // Function to upload a file to the server
-function uploadFileToServer(file) {
-    return new Promise((resolve, reject) => {
-        const formData = new FormData();
-        formData.append('file', file);
+// function uploadFileToServer(file) {
+//     return new Promise((resolve, reject) => {
+//         const formData = new FormData();
+//         formData.append('file', file);
         
-        fetch('/api/upload_image', {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => {
-            if (!response.ok) {
-                throw new Error('Failed to upload file');
-            }
-            return response.json();
-        })
-        .then(data => {
-            if (data.success) {
-                // Use the full server path returned from the API
-                const serverPath = data.upload_url;
+//         fetch('/api/upload_image', {
+//             method: 'POST',
+//             body: formData
+//         })
+//         .then(response => {
+//             if (!response.ok) {
+//                 throw new Error('Failed to upload file');
+//             }
+//             return response.json();
+//         })
+//         .then(data => {
+//             if (data.success) {
+//                 // Use the full server path returned from the API
+//                 const serverPath = data.upload_url;
                 
-                if (!serverPath) {
-                    throw new Error('No valid file path returned from server');
-                }
+//                 if (!serverPath) {
+//                     throw new Error('No valid file path returned from server');
+//                 }
                 
-                console.log(`File uploaded: ${serverPath}`);
-                resolve(serverPath);
-            } else {
-                reject(new Error(data.error || 'Unknown error uploading file'));
-            }
-        })
-        .catch(error => {
-            console.error('Error uploading file:', error);
-            reject(error);
-        });
-    });
-}
+//                 console.log(`File uploaded: ${serverPath}`);
+//                 resolve(serverPath);
+//             } else {
+//                 reject(new Error(data.error || 'Unknown error uploading file'));
+//             }
+//         })
+//         .catch(error => {
+//             console.error('Error uploading file:', error);
+//             reject(error);
+//         });
+//     });
+// }
 
 // Update editor UI based on job status
 function updateEditorProgress(jobId, status, progress, message) {
@@ -471,6 +482,14 @@ function initEventListeners() {
     if (saveJobBtn) {
         console.log('saveJobBtn event listener added');
         saveJobBtn.addEventListener('click', saveJob);
+    }
+    
+    // Add module selection change event
+    const videoModuleSelect = document.getElementById('videoModule');
+    if (videoModuleSelect) {
+        videoModuleSelect.addEventListener('change', handleModuleSelection);
+        // Initialize settings visibility based on current selection
+        handleModuleSelection({ target: videoModuleSelect });
     }
     
     // File input change event
@@ -719,7 +738,7 @@ function updateTimelineStatus() {
         }
     } else {
         // When timeline has items, remove the main dropzone if it exists
-        const mainDropZone = elements.timelineContainer.querySelector('.timeline-dropzone');
+        const mainDropZone = elements.timelineContainer.querySelector('.timeline-item.dropzone-item');
         if (mainDropZone) {
             mainDropZone.remove();
         }
@@ -949,7 +968,7 @@ function sortTimeline(direction) {
 }
 
 // Function to start generation
-function startGeneration() {
+async function startGeneration() {
     if (timeline.length === 0) {
         alert('Please add at least one image to the timeline before generating.');
         return;
@@ -968,131 +987,152 @@ function startGeneration() {
     // Use the current job ID if it exists
     if (window.currentJobId) {
         jobId = window.currentJobId;
-        console.log('Using existing job ID:', jobId);
-    } else {
-        window.currentJobId = jobId;
     }
     
-
-    // Set this as the current active job for UI updates only if there's not already an active job
-    if (!window.currentActiveJobId) {
-        window.currentActiveJobId = jobId;
-    }
+    // Set the current job ID
+    window.currentJobId = jobId;
     
-    // Show progress UI
-    const progressContainer = document.getElementById('progressContainer');
-    const progressBar = document.getElementById('progressBar');
-    const progressStatus = document.getElementById('progressStatus');
+    // Get settings from form
+    const settings = getSettingsFromForm('editor');
     
-    if (progressContainer && progressBar && progressStatus) {
-        progressContainer.classList.remove('d-none');
-        progressBar.style.width = '0%';
-        progressBar.setAttribute('aria-valuenow', 0);
-        progressBar.textContent = '0%';
-        progressStatus.textContent = 'Preparing generation request...';
+    // Get the selected module
+    const videoModuleSelect = document.getElementById('videoModule');
+    const selectedModule = videoModuleSelect ? videoModuleSelect.value : 'framepack';
+    
+    // Disable the generate button while processing
+    const generateBtn = document.getElementById('generateVideoBtn');
+    generateBtn.disabled = true;
+    generateBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Processing...';
+    
+    try {
+        // Collect all images from timeline in the desired format for the job payload
+        const segments = [];
+        let includeLastFrame = false;
         
-        // Add animation classes to progress bar
-        progressBar.classList.add('progress-bar-animated', 'progress-bar-striped', 'bg-primary');
-        progressBar.classList.remove('bg-success', 'bg-danger');
-    }
-    
-    // Use common function to prepare the job payload
-    const payload = prepareJobPayload();
-
-    let jobSettings = {
-        framepack: payload
-    }
-
-    if (elements.faceRestoration.checked) {
-        //source_image_path: str
-        //target_video_path: str - job_id + _final.mp4
-        //output_path: str - job_id + _face_restored.mp4
-        const faceFusionSettings = {
-            source_image_path: timeline[0].serverPath,
-            target_video_path: `${jobId}_final.mp4`,
-            output_path: `${jobId}_final_restored.mp4`   
+        // Get the "Include last frame as segment" checkbox state for WAN module
+        if (selectedModule === 'wan') {
+            const includeLastFrameElement = document.getElementById('includeLastFrame');
+            includeLastFrame = includeLastFrameElement && includeLastFrameElement.checked;
         }
-        jobSettings.facefusion = faceFusionSettings;
-    }
-    
-    
-    // First save the job
-    const savePayload = {
-        job_id: jobId,
-        status: "saved",
-        progress: 0,
-        message: "Job saved",
-        result_video: "",
-        segments: timeline.map(item => item.serverPath),
-        is_valid: true,
-        missing_images: [],
-        job_settings: {'framepack': payload},
-        queue_position: -1,
-        created_timestamp: timestamp
-    };
-    
-    // Save the job first, then run it
-    fetch(`/api/save_job/${jobId}`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(savePayload)
-    })
-    .then(response => {
-        if (!response.ok) {
-            return response.text().then(text => {
-                throw new Error(`Failed to save job: ${text}`);
+        
+        for (let i = 0; i < timeline.length; i++) {
+            const item = timeline[i];
+            const isLastFrame = (i === timeline.length - 1);
+            
+            // Skip the last frame for wan if we're going to use it as a separate segment
+            if (selectedModule === 'wan' && includeLastFrame && isLastFrame) {
+                continue;
+            }
+            
+            // Collect segments in the format needed for the job
+            segments.push({
+                image_path: item.serverPath,
+                prompt: item.prompt || '',
+                duration: item.duration || 3.0,
+                use_last_frame: includeLastFrame && isLastFrame
             });
         }
-        return response.json();
-    })
-    .then(data => {
-        console.log('Job saved:', data);
         
-        // Clear the timeline after successfully saving a job
-        // Clear UI
-        elements.timelineContainer.innerHTML = '';
-        
-        // Clear timeline array
-        timeline.length = 0;
-        
-        // Update status
-        updateTimelineStatus();
-        
-        const originalConfirm = window.confirm;
-        window.confirm = () => true;
-        
-        try {
-            runJob(jobId);
-            console.log(`Job ${jobId} started using job_queue.runJob`);
-        } catch (err) {
-            console.error('Error running job from job_queue module:', err);
-            showMessage(`Error starting job: ${err.message}`, 'error');
-        } finally {
-            // Restore original confirm function
-            window.confirm = originalConfirm;
+        // Add the last frame back in if we're including it as a separate segment
+        if (selectedModule === 'wan' && includeLastFrame && timeline.length > 0) {
+            const lastItem = timeline[timeline.length - 1];
+            segments.push({
+                image_path: lastItem.serverPath,
+                prompt: lastItem.prompt || '',
+                duration: lastItem.duration || 3.0,
+                use_last_frame: true
+            });
         }
-    })
-    .catch(error => {
-        console.error('Error starting generation:', error);
         
-        if (progressStatus) {
-            progressStatus.textContent = 'Error: ' + error.message;
+        console.log('Collected segments:', segments);
+        
+        // Create job settings object
+        const jobSettings = {};
+        
+        // Special handling for WAN with "include last frame" option
+        if (selectedModule === 'wan' && includeLastFrame && timeline.length > 1) {
+            // If the last frame is marked as a segment, we need to create a multi-job setup
+            // 1. Create a standard job with all but the last frame
+            // 2. Create a second job that just processes the last frame
+            showMessage("Multi-frame WAN job with last frame included - creating two jobs", "info");
+            
+            // First, create a WAN job for all frames except the last
+            const segmentsWithoutLast = segments.slice(0, -1);
+            const mainWanPayload = prepareJobPayload(settings, segmentsWithoutLast, 'wan');
+            jobSettings.wan = mainWanPayload;
+            
+            // Create a second job for the last frame only
+            const lastSegment = [segments[segments.length - 1]];
+            const lastFrameJobId = `${jobId}_lastframe`;
+            const lastFramePayload = prepareJobPayload(settings, lastSegment, 'wan');
+            
+            // Save and start both jobs
+            try {
+                // Save the main job first (but don't start it)
+                console.log('Saving main job:', jobId, jobSettings);
+                await saveAndProcessJob(jobId, jobSettings, segmentsWithoutLast, 'wan', false);
+                
+                // Then save and start the last frame job
+                console.log('Saving and starting last frame job:', lastFrameJobId, lastFramePayload);
+                const lastFrameJobSettings = {
+                    wan: lastFramePayload
+                };
+                await saveAndProcessJob(lastFrameJobId, lastFrameJobSettings, lastSegment, 'wan', true);
+                
+                // Now start the main job
+                console.log('Starting main job:', jobId);
+                fetch(`/api/jobs/${jobId}/run`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        console.log('Main job started:', data);
+                        showMessage("Jobs started successfully", "success");
+                    } else {
+                        console.error('Failed to start main job:', data);
+                        showMessage(`Failed to start main job: ${data.error || 'Unknown error'}`, "error");
+                    }
+                })
+                .catch(error => {
+                    console.error('Error starting main job:', error);
+                    showMessage(`Error starting main job: ${error.message}`, "error");
+                });
+                
+                generateBtn.disabled = false;
+                generateBtn.innerHTML = '<i class="bi bi-play-fill"></i> Generate';
+                
+                return { jobId, lastFrameJobId };
+            } catch (error) {
+                console.error('Error processing multi-job WAN with last frame:', error);
+                showMessage(`Error processing jobs: ${error.message}`, "error");
+                generateBtn.disabled = false;
+                generateBtn.innerHTML = '<i class="bi bi-play-fill"></i> Generate';
+                return null;
+            }
+        } else {
+            // Normal WAN job
+            const modulePayload = prepareJobPayload(settings, segments, selectedModule);
+            jobSettings[selectedModule] = modulePayload;
+        
+            // Save and process job
+            console.log('Processing job:', jobId, jobSettings);
+            const result = await saveAndProcessJob(jobId, jobSettings, segments, selectedModule);
+            console.log('Job processed:', result);
+            
+            generateBtn.disabled = false;
+            generateBtn.innerHTML = '<i class="bi bi-play-fill"></i> Generate';
+            
+            return result;
         }
-        if (progressBar) {
-            progressBar.classList.add('bg-danger');
-        }
-    });
-}
-
-// Helper function to convert job settings to ModuleJobSettings format
-function prepareModuleJobSettings(settings) {
-    // Create a dictionary with module name as key and settings as value
-    // Always use "framepack" as the module name
-    return {
-        "framepack": settings
-    };
+    } catch (error) {
+        console.error('Error generating video:', error);
+        showMessage(`Error generating video: ${error.message}`, "error");
+        generateBtn.disabled = false;
+        generateBtn.innerHTML = '<i class="bi bi-play-fill"></i> Generate';
+        return null;
+    }
 }
 
 // Function to save job without starting generation or clearing timeline
@@ -1119,363 +1159,72 @@ function saveJob() {
         window.currentJobId = jobId;
     }
     
-    // Use common function to prepare the job settings
-    const jobSettings = prepareJobPayload();
+    // Get selected module
+    const videoModuleSelect = document.getElementById('videoModule');
+    const selectedModule = videoModuleSelect ? videoModuleSelect.value : 'framepack';
     
-    // Prepare the segment paths for the status object
-    const segmentPaths = timeline.map(item => item.serverPath);
+    // Get settings from form
+    const settings = getSettingsFromForm('');
     
-    // Create a SaveJobRequest structure matching the backend requirements
-    const payload = {
-        job_id: jobId,
-        status: "saved",
-        progress: 0,
-        message: "Job saved",
-        result_video: "",
-        segments: segmentPaths,
-        is_valid: true,
-        missing_images: [],
-        job_settings: {framepack: jobSettings},
-        queue_position: -1,
-        created_timestamp: timestamp
-    };
+    // Build segments array for job creation
+    const segments = timeline.map(item => {
+        return {
+            image_path: item.serverPath,
+            prompt: item.prompt || '',
+            duration: item.duration || 3.0
+        };
+    });
     
-    console.log('Saving job with payload:', JSON.stringify(payload, null, 2));
+    // Check for the last frame's include flag
+    let includeLastFrame = false;
+    if (timeline.length > 0) {
+        const lastItem = timeline[timeline.length - 1];
+        if (lastItem.includeAsSegment) {
+            includeLastFrame = true;
+        }
+    }
+    
+    // Create job settings based on selected module
+    let jobSettings = {};
+    if (selectedModule === 'wan') {
+        const wanPayload = prepareJobPayload(settings, segments, 'wan');
+        jobSettings.wan = wanPayload;
+    } else {
+        const framepackPayload = prepareJobPayload(settings, segments, 'framepack', includeLastFrame);
+        jobSettings.framepack = framepackPayload;
+        
+        // Add face restoration if enabled (for framepack only)
+        if (elements.faceRestoration && elements.faceRestoration.checked) {
+            jobSettings.facefusion = {
+                source_image_path: timeline[0].serverPath,
+                target_video_path: `${jobId}_final.mp4`,
+                output_path: `${jobId}_final_restored.mp4`   
+            };
+        }
+    }
+    
+    console.log('Saving job...');
     showMessage('Saving job...', 'info');
     
-    // Make API call to save job at /api/save_job/{job_id}
-    fetch(`/api/save_job/${jobId}`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-    })
-    .then(response => {
-        if (!response.ok) {
-            return response.text().then(text => {
-                try {
-                    // Try to parse the error as JSON
-                    const errorObj = JSON.parse(text);
-                    throw new Error(`Failed to save job: ${JSON.stringify(errorObj)}`);
-                } catch (e) {
-                    throw new Error(`Failed to save job: ${text}`);
-                }
-            });
-        }
-        showMessage('Job saved successfully!', 'success');
-        return response.json();
-    })
-    .then(data => {
-        console.log('Job saved:', data);
-        
-        // Show success message
+    // Save the job without running it
+    saveAndProcessJob(
+        jobId, 
+        jobSettings, 
+        timeline.map(item => item.serverPath), // Pass segment paths array
+        selectedModule,
+        false // Don't start the job immediately
+    )
+    .then(result => {
+        console.log('Job saved:', result);
         showMessage('Job saved successfully! Job ID: ' + jobId, 'success');
         
-        // Try to refresh the job queue, but handle if the function isn't available
+        // Try to refresh the job queue
         loadJobQueue();
     })
     .catch(error => {
         console.error('Error saving job:', error);
         showMessage('Error saving job: ' + error.message, 'error');
     });
-}
-
-// Function to prepare job payload from timeline
-function prepareJobPayload(batch = false) {
-    // Collect segments data
-    const segments = [];
-    let includeLastFrame = false;
-    
-    // For a single image, we need special handling to create a self-transition
-    if (timeline.length === 1) {
-        const singleFrame = timeline[0];
-        const promptInput = elements.timelineContainer.querySelector('.prompt-text');
-        
-        // Use the full server path directly
-        const imagePath = singleFrame.serverPath;
-        if (!imagePath) {
-            console.error('No server path found for the single image:', singleFrame);
-            throw new Error('Missing server path for the image. Please try re-uploading.');
-        }
-        
-        console.log(`Single image path: ${imagePath}`);
-        
-        // Add single segment with longer duration for self-transition
-        segments.push({
-            image_path: imagePath,
-            prompt: promptInput ? promptInput.value : '',
-            duration: singleFrame.duration || 3.0
-        });
-    } else {
-        // Process multiple images: Create transitions between each pair of frames
-        for (let i = 0; i < timeline.length; i++) {
-            const currentFrame = timeline[i];
-            const promptInput = Array.from(elements.timelineContainer.children)
-                .find((_, idx) => idx === i)
-                ?.querySelector('.prompt-text');
-            
-            // Use the full server path directly
-            const imagePath = currentFrame.serverPath;
-            if (!imagePath) {
-                console.error(`No server path found for image at index ${i}:`, currentFrame);
-                throw new Error(`Missing server path for image ${i + 1}. Please try re-uploading.`);
-            }
-            
-            // Log each path for debugging
-            console.log(`Segment ${i + 1} path: ${imagePath}`);
-            
-            segments.push({
-                image_path: imagePath,
-                prompt: promptInput ? promptInput.value : '',
-                duration: currentFrame.duration
-            });
-        }
-        
-        // Add the last frame with its prompt
-        const lastIndex = timeline.length - 1;
-        const lastFrame = timeline[lastIndex];
-        const lastPromptInput = Array.from(elements.timelineContainer.children)
-            .find((_, idx) => idx === lastIndex)
-            ?.querySelector('.prompt-text');
-            
-        // Check if the includeAsSegment property exists, fall back to the checkbox if not
-        includeLastFrame = lastFrame.includeAsSegment;
-        if (includeLastFrame === undefined) {
-            const includeLastFrameCheckbox = Array.from(elements.timelineContainer.children)
-                .find((_, idx) => idx === lastIndex)
-                ?.querySelector('.include-last-frame-checkbox');
-            includeLastFrame = includeLastFrameCheckbox ? includeLastFrameCheckbox.checked : false;
-        }
-        
-        // Check if the last frame has a valid path
-        if (!lastFrame.serverPath) {
-            console.error(`No server path found for the last image:`, lastFrame);
-            throw new Error(`Missing server path for the last image. Please try re-uploading.`);
-        }
-        
-        // Log the last frame for debugging
-        console.log(`Last frame path: ${lastFrame.serverPath}`);
-
-    }
-    
-    if (segments.length === 0) {
-        throw new Error('No valid segments found in timeline.');
-    }
-    
-    // Generate a simple job name based on first image filename and timestamp
-    const currentDate = new Date();
-    const timestamp = currentDate.toISOString().slice(0, 16).replace('T', ' ');
-    let firstImageName = timestamp;
-    if (segments[0].image_path.indexOf('/') !== -1) {
-        firstImageName = segments[0].image_path.split('/').pop().split('.')[0];
-    } else {
-        firstImageName = segments[0].image_path.split('\\').pop().split('.')[0];
-    }
-
-    let autoCaption = false;
-    let autoCaptionElement = null;
-    if (batch) {
-        autoCaptionElement = document.getElementById('autoCaptionImageBatch');
-    } else {
-        autoCaptionElement = document.getElementById('autoCaptionImage');
-    }
-    autoCaptionElement = document.getElementById('autoCaptionImage');
-
-    // Create the payload with all form settings
-    return {
-        global_prompt: elements.globalPrompt ? elements.globalPrompt.value : "",
-        negative_prompt: elements.negativePrompt ? elements.negativePrompt.value : "",
-        segments: segments,
-        seed: Math.floor(Math.random() * 100000),
-        steps: elements.steps ? parseInt(elements.steps.value) : 25,
-        guidance_scale: elements.guidanceScale ? parseFloat(elements.guidanceScale.value) : 10.0,
-        use_teacache: elements.useTeacache ? elements.useTeacache.checked : true,
-        enable_adaptive_memory: elements.enableAdaptiveMemory ? elements.enableAdaptiveMemory.checked : true,
-        resolution: elements.resolution ? parseInt(elements.resolution.value) : 640,
-        mp4_crf: 16,
-        gpu_memory_preservation: 6.0,
-        include_last_frame: includeLastFrame || false,
-        auto_prompt: autoCaption || false
-    };
-}
-
-// Function to connect to job websocket and handle updates
-// NOTE: This function is now simplified to use the central WebSocket handler in job_queue.js
-function setupJobWebsocketConnection(jobId) {
-    try {
-        // Set the current active job ID
-        window.currentActiveJobId = jobId;
-        
-        // The job_queue.js module will handle all the WebSocket updates
-        // via its central listener
-        console.log(`Setting up job connection for job ${jobId} (using central WebSocket handler)`);
-        
-        // Just connect to the WebSocket - no need to register our own handler
-        connectJobWebsocket(jobId);
-        
-        return true;
-    } catch (error) {
-        console.error("Error connecting to job websocket:", error);
-        
-        return null;
-    }
-}
-
-// Update the job UI based on status data
-// This function is now primarily for backward compatibility and polling
-function updateJobUI(data) {
-    // If we have a global function, use that instead for consistency
-    if (typeof window.updateEditorProgress === 'function') {
-        window.updateEditorProgress(
-            data.job_id, 
-            data.status, 
-            data.progress, 
-            data.message,
-            data // Pass whole data object as eventData
-        );
-        return;
-    }
-    
-    // Fallback implementation for backwards compatibility
-    const progressBar = document.getElementById('progressBar');
-    const progressStatus = document.getElementById('progressStatus');
-    const progressContainer = document.getElementById('progressContainer');
-    const generateBtn = document.getElementById('generateVideoBtn');
-    const currentJobImage = document.getElementById('currentJobImage');
-    const currentJobThumbnail = document.getElementById('currentJobThumbnail');
-    
-    // Update the progress bar and status message
-    progressBar.style.width = `${data.progress}%`;
-    progressBar.setAttribute('aria-valuenow', data.progress);
-    progressBar.textContent = `${data.progress}%`;
-    progressStatus.textContent = data.message || 'Processing...';
-    
-    // Show the thumbnail if we have segments
-    if (data.segments && data.segments.length > 0) {
-        // Use the most recent segment (avoid duplicates)
-        const latestSegment = data.segments[data.segments.length - 1];
-        
-        currentJobImage.src = latestSegment;
-        currentJobThumbnail.classList.remove('d-none');
-        
-        // Add a title to help users understand this is a latent representation
-        currentJobImage.title = "Latent representation (864×64)";
-        
-        // Set up click handler to go to job queue tab and select this job
-        currentJobThumbnail.onclick = () => {
-            // Switch to the job queue tab
-            const queueTab = document.getElementById('queue-tab');
-            bootstrap.Tab.getOrCreateInstance(queueTab).show();
-            
-            // Load this job in the job queue tab
-            // Need to use a dynamic import to avoid circular dependencies
-            import('./job_queue.js').then(jobQueueModule => {
-                jobQueueModule.loadJobDetails(data.job_id);
-                
-                // Highlight this job in the list
-                const jobItems = document.querySelectorAll('.job-item');
-                jobItems.forEach(item => {
-                    item.classList.remove('active');
-                    if (item.dataset.jobId === data.job_id) {
-                        item.classList.add('active');
-                    }
-                });
-            });
-        };
-    } else {
-        // Hide the thumbnail if no segments are available yet
-        currentJobThumbnail.classList.add('d-none');
-    }
-}
-
-// Handle job completion (success or failure)
-function handleJobCompletion(data) {
-    const progressStatus = document.getElementById('progressStatus');
-    const progressContainer = document.getElementById('progressContainer');
-    const generateBtn = document.getElementById('generateVideoBtn');
-    
-    if (data.status === 'completed') {
-        progressStatus.textContent = 'Video generation completed!';
-        
-        // If we have a result video, show it
-        if (data.result_video) {
-            const resultContainer = document.createElement('div');
-            resultContainer.className = 'mt-3';
-            resultContainer.innerHTML = `
-                <h4 class="fs-6">Result</h4>
-                <div class="d-flex flex-column">
-                    <video id="resultVideo" src="${data.result_video}" controls class="img-fluid rounded mb-2"></video>
-                    <div class="btn-group">
-                        <a href="${data.result_video}" download class="btn btn-primary">
-                            <i class="bi bi-download"></i> Download
-                        </a>
-                        <button type="button" class="btn btn-outline-primary" onclick="window.openVideoViewerFn('${data.result_video}', '${data.result_video.split('/').pop()}')">
-                            <i class="bi bi-fullscreen"></i> Fullscreen
-                        </button>
-                    </div>
-                </div>
-            `;
-            progressContainer.appendChild(resultContainer);
-            
-            // Define the openVideoViewer function globally for the button to use
-            import('./outputs.js').then(outputsModule => {
-                window.openVideoViewerFn = outputsModule.openVideoViewer;
-            });
-        }
-        
-        // Success message and offer to clear timeline
-        showMessage('Video generation completed successfully!', 'success');
-        
-        // Clear the timeline after successful generation
-        if (confirm('Generation completed! Would you like to clear the timeline for a new project?')) {
-            // Clear timeline
-            elements.timelineContainer.innerHTML = '';
-            timeline.length = 0;
-            updateTimelineStatus();
-        }
-        
-    } else {
-        progressStatus.textContent = `Failed: ${data.message}`;
-        showMessage(`Video generation failed: ${data.message}`, 'danger');
-    }
-    
-    // Re-enable the generate button
-    generateBtn.disabled = false;
-    
-    // Load the updated job list by importing the job queue module
-    import('./job_queue.js').then(jobQueueModule => {
-        jobQueueModule.loadJobQueue();
-    });
-    
-    // Load the updated outputs by importing the outputs module
-    import('./outputs.js').then(outputsModule => {
-        outputsModule.loadOutputs();
-    });
-}
-
-// Function to clear the timeline
-function clearTimeline() {
-    if (timeline.length === 0) {
-        return; // Nothing to clear
-    }
-    
-    if (confirm('Are you sure you want to clear the timeline? This will remove all images.')) {
-        // Clear UI
-        elements.timelineContainer.innerHTML = '';
-        
-        // Clear timeline array
-        timeline.length = 0; // Clear array while keeping reference
-        
-        // Update status
-        updateTimelineStatus();
-
-        // Clear the current job ID
-        window.currentJobId = null;
-        
-        // Show confirmation message
-        showMessage('Timeline cleared', 'info');
-    }
 }
 
 // Function to handle adding to timeline
@@ -1594,6 +1343,78 @@ function handleAddToTimeline() {
             keepCurrentImage = false;
             currentEditIndex = -1;
         });
+}
+
+// Function to handle module selection and toggle related settings
+function handleModuleSelection(event) {
+    const selectedModule = event.target.value;
+    
+    // Get all settings elements
+    const commonSettings = [
+        'globalPrompt', 'negativePrompt', 'resolution', 'fps'
+    ];
+    
+    // FramePack-specific settings
+    const framepackSettings = [
+        'autoCaptionImage', 'faceRestoration', 'steps', 'guidanceScale', 
+        'useTeacache', 'enableAdaptiveMemory', 'loraModel', 'loraScale'
+    ];
+    
+    // WAN-specific settings
+    const wanSettings = [
+        'wanSize', 'wanFrameNum', 'wanSampleSteps', 
+        'wanSampleShift', 'wanSampleGuideScale'
+    ];
+    
+    // Show/hide settings based on selected module
+    if (selectedModule === 'wan') {
+        // Show WAN-specific settings
+        document.getElementById('wanSettings').style.display = 'block';
+        
+        // Hide FramePack-specific settings that don't apply to WAN
+        framepackSettings.forEach(setting => {
+            const element = document.getElementById(setting);
+            if (element) {
+                const container = element.closest('.mb-3, .form-check');
+                if (container) container.style.display = 'none';
+            }
+        });
+        
+        // Make sure common settings are visible
+        commonSettings.forEach(setting => {
+            const element = document.getElementById(setting);
+            if (element) {
+                const container = element.closest('.mb-3, .form-check');
+                if (container) container.style.display = 'block';
+            }
+        });
+        
+        // Hide the WAN task selector as it will be determined automatically
+        const wanTaskContainer = document.getElementById('wanTask')?.closest('.mb-3');
+        if (wanTaskContainer) wanTaskContainer.style.display = 'none';
+        
+    } else {
+        // Hide WAN-specific settings
+        document.getElementById('wanSettings').style.display = 'none';
+        
+        // Show FramePack-specific settings
+        framepackSettings.forEach(setting => {
+            const element = document.getElementById(setting);
+            if (element) {
+                const container = element.closest('.mb-3, .form-check');
+                if (container) container.style.display = 'block';
+            }
+        });
+        
+        // Make sure common settings are visible
+        commonSettings.forEach(setting => {
+            const element = document.getElementById(setting);
+            if (element) {
+                const container = element.closest('.mb-3, .form-check');
+                if (container) container.style.display = 'block';
+            }
+        });
+    }
 }
 
 // Function to add an item to the timeline
@@ -1942,6 +1763,69 @@ function updateTimelineArray() {
         duration: item.duration,
         includeAsSegment: item.includeAsSegment
     })));
+}
+
+// Function to clear the timeline
+function clearTimeline() {
+    if (confirm('Are you sure you want to clear the entire timeline?')) {
+        // Clear timeline array
+        timeline.length = 0;
+        
+        // Clear timeline container
+        if (elements.timelineContainer) {
+            elements.timelineContainer.innerHTML = '';
+        }
+        
+        // Update timeline status to show empty state
+        updateTimelineStatus();
+        
+        // Show message
+        showMessage('Timeline cleared', 'success');
+    }
+}
+
+// Handle job completion event
+function handleJobCompletion(job) {
+    console.log('Job completed:', job);
+    
+    // If there's a currentActiveJobId that matches the completed job,
+    // update the editor UI to show completion
+    if (window.currentActiveJobId === job.job_id) {
+        updateEditorProgress(job.job_id, 'completed', 100, 'Video generation completed!');
+    }
+}
+
+// Update job UI based on status
+function updateJobUI(jobId, status, progress, message, eventData) {
+    // Pass through to updateEditorProgress
+    updateEditorProgress(jobId, status, progress, message, eventData);
+}
+
+// Setup WebSocket connection for job updates
+function setupJobWebsocketConnection(jobId) {
+    if (editorJobListenerIndex >= 0) {
+        removeJobEventListener(editorJobListenerIndex);
+        editorJobListenerIndex = -1;
+    }
+    
+    // Connect to the websocket for this job
+    connectJobWebsocket(jobId);
+    
+    // Set up listener for job updates
+    editorJobListenerIndex = addJobEventListener(event => {
+        if (event.job_id === jobId) {
+            // Only update if this matches our job
+            updateEditorProgress(
+                event.job_id,
+                event.status,
+                event.progress,
+                event.message,
+                event
+            );
+        }
+    });
+    
+    return editorJobListenerIndex;
 }
 
 // Update exported functions

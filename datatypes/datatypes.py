@@ -1,6 +1,7 @@
 from abc import ABC
 import json
 import logging
+import os
 import time
 from typing import List, Optional, Dict, Set
 
@@ -226,10 +227,14 @@ class SegmentConfig(BaseModel):
     def to_dict(self):
         """Convert the model to a dictionary for JSON serialization"""
         return {
-            "image_path": self.image_path,
+            "image_path": self.full_path(),
             "prompt": self.prompt,
             "duration": self.duration
         }
+    
+    def full_path(self):
+        from handlers.path import upload_path
+        return os.path.join(upload_path, os.path.basename(self.image_path))
     
     def model_dump(self):
         """Alias for to_dict() for compatibility with Pydantic v2"""

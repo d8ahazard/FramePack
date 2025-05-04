@@ -2,7 +2,7 @@ import os
 import time
 
 from huggingface_hub import snapshot_download
-from handlers.path import model_path
+from handlers.path import model_path, lora_path
 
 
 def check_download_model(repo_id, module=None, subfolder=None, retries=3, use_auth_token=None):
@@ -39,14 +39,29 @@ def check_download_model(repo_id, module=None, subfolder=None, retries=3, use_au
 
         for attempt in range(retries):
             try:
-                snapshot_download(
-                    repo_id=repo_id,
-                    local_dir=model_dir,
-                    local_files_only=True,
-                    token=use_auth_token,
-                    max_workers=4  # Limit concurrent downloads
-                )
-                break
+                # First try with local_files_only=True
+                try:
+                    snapshot_download(
+                        repo_id=repo_id,
+                        local_dir=model_dir,
+                        local_files_only=False,
+                        token=use_auth_token,
+                        max_workers=4  # Limit concurrent downloads
+                    )
+                    print(f"Model {repo_id} found in local cache.")
+                    break
+                except Exception as local_err:
+                    print(f"Model not found locally, downloading from HuggingFace Hub: {str(local_err)}")
+                    # If local download fails, try downloading from the internet
+                    snapshot_download(
+                        repo_id=repo_id,
+                        local_dir=model_dir,
+                        local_files_only=False,  # Allow internet downloads
+                        token=use_auth_token,
+                        max_workers=4  # Limit concurrent downloads
+                    )
+                    print(f"Successfully downloaded model {repo_id} from HuggingFace Hub.")
+                    break
             except Exception as e:
                 if attempt < retries - 1:
                     print(f"Download attempt {attempt + 1} failed: {e}. Retrying...")
@@ -67,6 +82,62 @@ def check_download_model(repo_id, module=None, subfolder=None, retries=3, use_au
         return subfolder_path
 
     return model_dir
+
+
+def list_loras(include_extension=False):
+    """
+    List all available LoRA models.
+    
+    Args:
+        include_extension: Whether to include file extensions in returned names
+        
+    Returns:
+        list: List of available LoRA model names
+    """
+    os.makedirs(lora_path, exist_ok=True)
+    
+    lora_files = []
+    valid_extensions = ['.pt', '.pth', '.bin', '.safetensors']
+    
+    for file in os.listdir(lora_path):
+        file_path = os.path.join(lora_path, file)
+        if os.path.isfile(file_path) and any(file.endswith(ext) for ext in valid_extensions):
+            if include_extension:
+                lora_files.append(file)
+            else:
+                # Remove extension and return base filename
+                lora_files.append(os.path.splitext(file)[0])
+    
+    return lora_files
+
+
+def get_lora_full_path(lora_name):
+    """
+    Get full path to a LoRA model file.
+    
+    Args:
+        lora_name: Name of the LoRA model (with or without extension)
+        
+    Returns:
+        str: Full path to the LoRA model file, or None if not found
+    """
+    # Check if name already has an extension
+    has_ext = any(lora_name.endswith(ext) for ext in ['.pt', '.pth', '.bin', '.safetensors'])
+    
+    if has_ext:
+        # Direct check with extension
+        full_path = os.path.join(lora_path, lora_name)
+        if os.path.isfile(full_path):
+            return full_path
+        return None
+    
+    # Try different extensions
+    for ext in ['.safetensors', '.pt', '.bin', '.pth']:
+        full_path = os.path.join(lora_path, f"{lora_name}{ext}")
+        if os.path.isfile(full_path):
+            return full_path
+    
+    return None
 
 
 def preload_all_models(use_auth_token=None):
@@ -168,3 +239,27 @@ def register_api_endpoints(app):
         models = list_models(subfolder=subfolder, recurse=recurse, list_dirs=list_dirs,
                              include_names=include_names, exclude_names=exclude_names)
         return {"models": models}
+        
+    @app.get("/api/list_loras", tags=[api_tag])
+    async def list_loras_endpoint(include_extension: bool = False):
+        """
+        List all available LoRA models.
+        
+        Args:
+            include_extension: Whether to include file extensions in returned names
+        """
+        loras = list_loras(include_extension=include_extension)
+        return {"loras": loras}
+        
+    @app.get("/api/get_lora_path/{lora_name}", tags=[api_tag])
+    async def get_lora_path_endpoint(lora_name: str):
+        """
+        Get the full path for a specific LoRA model.
+        
+        Args:
+            lora_name: Name of the LoRA model (with or without extension)
+        """
+        full_path = get_lora_full_path(lora_name)
+        if full_path:
+            return {"success": True, "lora_path": full_path}
+        return {"success": False, "error": f"LoRA model '{lora_name}' not found"}

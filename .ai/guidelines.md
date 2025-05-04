@@ -1,13 +1,13 @@
 # FramePack Development Guidelines
 
 ## Project Overview
-FramePack is an image-to-video generation tool that uses Hunyuan's AI model to create smooth video transitions between images.
+FramePack is an image-to-video generation tool that uses various AI models including Hunyuan's AI model and Wan2.1 to create smooth video transitions.
 
 ## Tech Stack
 - **Python 3.8+**: Core programming language
 - **PyTorch/CUDA**: Deep learning framework for model operations
-- **Diffusers**: Library for diffusion models (HunyuanVideo)
-- **Transformers**: Hugging Face models (CLIP, LLaMA, SiglipVision)
+- **Diffusers**: Library for diffusion models (HunyuanVideo, Wan2.1)
+- **Transformers**: Hugging Face models (CLIP, LLaMA, SiglipVision, T5)
 - **FastAPI**: Backend API framework
 - **FFmpeg**: Video processing and concatenation
 
@@ -15,7 +15,8 @@ FramePack is an image-to-video generation tool that uses Hunyuan's AI model to c
 ```
 FramePack/
 ├── modules/            # Core functionality modules
-│   └── framepack/      # Main video generation module
+│   ├── framepack/      # Main Hunyuan video generation module
+│   └── wan/            # Wan2.1 video generation module
 ├── handlers/           # Various service handlers
 │   ├── job_queue.py    # Job queue management
 │   ├── model.py        # Model loading/management
@@ -58,12 +59,26 @@ python infer.py --host 0.0.0.0 --port 8000
   - `module.py` file with a `process()` function as the entry point
 - The `process()` function is the standard interface for calling the module
 
+### Module Specifics
+
+#### FramePack Module (Hunyuan)
+- Handles image-to-video generation using Hunyuan's model
+- Supports timeline-based generation with multiple segments
+
+#### Wan Module
+- Supports multiple Wan2.1 models:
+  - **Image-to-Video (I2V)** - Generates video from a single image
+  - **First-Last-Frame to Video (FLF2V)** - Generates video from first and last frames
+- Automatically detects the appropriate task type based on input parameters
+- Includes fallback mechanisms for when components are unavailable
+- Supports prompt extension for better generation results
+
 ### Job Settings
-- Every process function should have one `JobSettings` class (e.g., `FramePackJobSettings`)
+- Every process function should have one `JobSettings` class (e.g., `FramePackJobSettings`, `WanJobSettings`)
 - This class MUST inherit from `ModuleJobSettings`
 - Required fields:
   - `job_id`: Unique identifier for the job
-  - `segments`: List of `SegmentConfig` objects
+  - Module-specific required fields (see respective module documentation)
 - Other parameters are optional and module-specific
 
 ### Memory Management
@@ -77,7 +92,7 @@ python infer.py --host 0.0.0.0 --port 8000
    - Check memory after operations with `get_cuda_free_memory_gb()`
 
 2. **Code Organization**:
-   - Keep model pipelines in the `modules/framepack/diffusers_helper/` directory
+   - Keep model pipelines in the appropriate module directories
    - Separate UI logic from generation logic
 
 3. **Error Handling**:
@@ -88,6 +103,12 @@ python infer.py --host 0.0.0.0 --port 8000
    - Batch operations where possible
    - Use PyTorch's memory optimization features
    - Consider precision options (bf16/fp16) for memory savings
+
+5. **Module Development**:
+   - Ensure graceful fallbacks for missing components
+   - Maintain consistent input validation
+   - Use proper status updates throughout processing
+   - Implement clean path handling for inputs/outputs
 
 ## Testing
 Run manual testing through the web interface at http://localhost:8000 

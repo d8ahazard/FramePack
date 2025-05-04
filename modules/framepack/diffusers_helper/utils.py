@@ -265,44 +265,277 @@ def soft_append_bcthw(history, current, overlap=0):
     return output.to(history)
 
 
-def save_bcthw_as_mp4(x, output_filename, fps=10, crf=0):
+def save_bcthw_as_mp4(x, output_filename, fps=10, video_quality='high', format='mp4'):
+    """
+    Save batch of video tensors as MP4 or WebM with improved quality and compatibility.
+    
+    Args:
+        x: Input tensor of shape [batch, channels, time, height, width]
+        output_filename: Path to save the output video
+        fps: Frames per second for the output video
+        video_quality: Quality setting - 'high' for best quality, 'medium' for balanced, 'low' for smaller files
+        format: Output format - 'mp4' or 'webm'
+    """
     b, c, t, h, w = x.shape
-    
-    # Ensure output has proper .mp4 extension
-    if os.path.isdir(output_filename) or not output_filename.endswith('.mp4'):
-        # If it's a directory or doesn't have .mp4 extension
-        if os.path.isdir(output_filename):
-            # It's a directory, append a default filename
-            output_filename = os.path.join(output_filename, f"output_{int(time.time())}.mp4")
-        else:
-            # It has a path but wrong extension, add .mp4
-            output_filename = f"{output_filename}.mp4"
-    
+
     per_row = b
     for p in [6, 5, 4, 3, 2]:
         if b % p == 0:
             per_row = p
             break
 
-    # Ensure directory exists
     os.makedirs(os.path.dirname(os.path.abspath(os.path.realpath(output_filename))), exist_ok=True)
     
-    # Process tensor
-    x = torch.clamp(x.float(), -1., 1.) * 127.5 + 127.5
-    x = x.detach().cpu().to(torch.uint8)
-    x = einops.rearrange(x, '(m n) c t h w -> t (m h) (n w) c', n=per_row)
+    # Create normalized and rearranged tensor
+    x_normalized = torch.clamp(x.float(), -1., 1.) * 127.5 + 127.5
+    x_uint8 = x_normalized.detach().cpu().to(torch.uint8)
+    x_rearranged = einops.rearrange(x_uint8, '(m n) c t h w -> t (m h) (n w) c', n=per_row)
     
+    # Choose codec and options based on format
+    if format.lower() == 'webm':
+        # WebM settings
+        if video_quality == 'high':
+            options = {
+                'crf': '30',      # VP9 uses different CRF scale
+                'b:v': '0',       # Use CRF-based quality control
+                'cpu-used': '2'   # Speed/quality tradeoff (0=best quality, 4=good balance)
+            }
+        elif video_quality == 'medium':
+            options = {
+                'crf': '32',      # Medium quality for VP9
+                'b:v': '0',
+                'cpu-used': '3'   # Balanced encoding
+            }
+        elif video_quality == 'low':
+            options = {
+                'crf': '36',      # Lower quality for VP9
+                'b:v': '0',
+                'cpu-used': '4'   # Faster encoding
+            }
+        else:  # web_compatible or any other value
+            options = {
+                'crf': '36',      # WebM is already web compatible
+                'b:v': '0',
+                'cpu-used': '4'   # Faster encoding
+            }
+        codec = 'vp9'
+    else:  # Default to MP4
+        # Quality settings for MP4
+        if video_quality == 'high':
+            options = {
+                'crf': '8',          # Lower CRF = higher quality (18 is high quality)
+                'preset': 'slow',     # Slower preset = better compression
+                'pix_fmt': 'yuv420p', # Most compatible pixel format
+                'movflags': '+faststart' # Allows video to start playing before it's fully downloaded
+            }
+        elif video_quality == 'medium':
+            options = {
+                'crf': '12',          # Medium quality
+                'preset': 'medium',   # Balanced compression speed
+                'pix_fmt': 'yuv420p',
+                'movflags': '+faststart'
+            }
+        elif video_quality == 'low':
+            options = {
+                'crf': '16',          # Lower quality, smaller file
+                'preset': 'fast',     # Faster encoding
+                'pix_fmt': 'yuv420p',
+                'movflags': '+faststart'
+            }
+        else:  # web_compatible or any other value
+            options = {
+                'crf': '10',          # Medium quality
+                'preset': 'medium',   # Balanced compression speed
+                'pix_fmt': 'yuv420p',
+                'movflags': '+faststart',
+                'profile:v': 'baseline', # Most compatible H.264 profile
+                'level': '3.0'        # Compatible with most devices
+            }
+        codec = 'h264'
+    
+    # Save video
     try:
-        torchvision.io.write_video(output_filename, x, fps=fps, video_codec='libx264', options={'crf': str(int(crf))})
-        print(f"Video saved to {output_filename}")
-        return output_filename
+        torchvision.io.write_video(output_filename, x_rearranged, fps=fps, video_codec=codec, options=options)
     except Exception as e:
-        print(f"Error saving video: {e}")
-        # Fallback to a default output path if the original fails
-        fallback_path = os.path.join(os.path.dirname(os.path.abspath(os.path.realpath(__file__))), f"output_{int(time.time())}.mp4")
-        print(f"Attempting to save to fallback path: {fallback_path}")
-        torchvision.io.write_video(fallback_path, x, fps=fps, video_codec='libx264', options={'crf': str(int(crf))})
-        return fallback_path
+        print(f"Video encoding failed: {e}")
+    
+    return x_rearranged
+
+
+def save_bcthw_as_gif(x, output_filename, fps=10, quality=95):
+    """
+    Save batch of video tensors as animated GIF.
+    
+    Args:
+        x: Input tensor of shape [batch, channels, time, height, width]
+        output_filename: Path to save the output GIF
+        fps: Frames per second for the output animation
+        quality: Quality setting for GIF (1-100)
+    """
+    from PIL import Image
+    
+    b, c, t, h, w = x.shape
+    
+    per_row = b
+    for p in [6, 5, 4, 3, 2]:
+        if b % p == 0:
+            per_row = p
+            break
+    
+    os.makedirs(os.path.dirname(os.path.abspath(os.path.realpath(output_filename))), exist_ok=True)
+    
+    # Create normalized and rearranged tensor
+    x_normalized = torch.clamp(x.float(), -1., 1.) * 127.5 + 127.5
+    x_uint8 = x_normalized.detach().cpu().to(torch.uint8)
+    x_rearranged = einops.rearrange(x_uint8, '(m n) c t h w -> t (m h) (n w) c', n=per_row)
+    
+    # Convert to PIL images
+    pil_images = []
+    for i in range(x_rearranged.shape[0]):
+        # Convert from [H, W, C] to PIL Image
+        img = Image.fromarray(x_rearranged[i].numpy())
+        pil_images.append(img)
+    
+    # Calculate duration in milliseconds
+    duration = int(1000 / fps)
+    
+    # Save as GIF
+    pil_images[0].save(
+        output_filename,
+        save_all=True,
+        append_images=pil_images[1:],
+        optimize=True,
+        quality=quality,
+        duration=duration,
+        loop=0  # Loop forever
+    )
+    
+    return x_rearranged
+
+
+def save_bcthw_as_apng(x, output_filename, fps=10):
+    """
+    Save batch of video tensors as animated PNG (APNG).
+    
+    Args:
+        x: Input tensor of shape [batch, channels, time, height, width]
+        output_filename: Path to save the output APNG
+        fps: Frames per second for the output animation
+    """
+    from PIL import Image
+    try:
+        from apng import APNG  # Requires apng package
+    except ImportError:
+        print("APNG export requires the apng package.")
+        print("Please install it with: pip install apng==0.3.4")
+        print("Then restart the application to enable APNG export.")
+        return x
+    
+    b, c, t, h, w = x.shape
+    
+    per_row = b
+    for p in [6, 5, 4, 3, 2]:
+        if b % p == 0:
+            per_row = p
+            break
+    
+    os.makedirs(os.path.dirname(os.path.abspath(os.path.realpath(output_filename))), exist_ok=True)
+    
+    # Create normalized and rearranged tensor
+    x_normalized = torch.clamp(x.float(), -1., 1.) * 127.5 + 127.5
+    x_uint8 = x_normalized.detach().cpu().to(torch.uint8)
+    x_rearranged = einops.rearrange(x_uint8, '(m n) c t h w -> t (m h) (n w) c', n=per_row)
+    
+    # Create temporary folder with unique identifier for frame PNGs
+    unique_id = str(uuid.uuid4())[:8]  # Generate a short unique ID
+    base_name = os.path.splitext(os.path.basename(output_filename))[0]
+    temp_dir = os.path.join(os.path.dirname(output_filename), f"temp_apng_frames_{base_name}_{unique_id}")
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    # Save frames as individual PNGs
+    frame_paths = []
+    for i in range(x_rearranged.shape[0]):
+        frame_path = os.path.join(temp_dir, f"frame_{i:04d}.png")
+        frame_paths.append(frame_path)
+        img = Image.fromarray(x_rearranged[i].numpy())
+        img.save(frame_path)
+    
+    # Calculate delay in milliseconds
+    delay = int(1000 / fps)
+    
+    # Create APNG
+    apng = APNG()
+    for frame_path in frame_paths:
+        apng.append_file(frame_path, delay=delay)
+    
+    apng.save(output_filename)
+    
+    # Clean up temporary files
+    for frame_path in frame_paths:
+        try:
+            os.remove(frame_path)
+        except:
+            pass
+    try:
+        os.rmdir(temp_dir)
+    except:
+        pass
+    
+    return x_rearranged
+
+
+def save_bcthw_as_webp(x, output_filename, fps=10, quality=90):
+    """
+    Save batch of video tensors as animated WebP.
+    
+    Args:
+        x: Input tensor of shape [batch, channels, time, height, width]
+        output_filename: Path to save the output WebP
+        fps: Frames per second for the output animation
+        quality: Quality setting for WebP (0-100)
+    """
+    from PIL import Image
+    
+    b, c, t, h, w = x.shape
+    
+    per_row = b
+    for p in [6, 5, 4, 3, 2]:
+        if b % p == 0:
+            per_row = p
+            break
+    
+    os.makedirs(os.path.dirname(os.path.abspath(os.path.realpath(output_filename))), exist_ok=True)
+    
+    # Create normalized and rearranged tensor
+    x_normalized = torch.clamp(x.float(), -1., 1.) * 127.5 + 127.5
+    x_uint8 = x_normalized.detach().cpu().to(torch.uint8)
+    x_rearranged = einops.rearrange(x_uint8, '(m n) c t h w -> t (m h) (n w) c', n=per_row)
+    
+    # Convert to PIL images
+    pil_images = []
+    for i in range(x_rearranged.shape[0]):
+        # Convert from [H, W, C] to PIL Image
+        img = Image.fromarray(x_rearranged[i].numpy())
+        pil_images.append(img)
+    
+    # Calculate duration in milliseconds
+    duration = int(1000 / fps)
+    
+    # Save as WebP
+    pil_images[0].save(
+        output_filename,
+        save_all=True,
+        append_images=pil_images[1:],
+        method=6,  # Use quality-based compression
+        quality=quality,
+        duration=duration,
+        loop=0,  # Loop forever
+        lossless=False,
+        minimize_size=True,
+        format="WebP"
+    )
+    
+    return x_rearranged
 
 
 def save_bcthw_as_png(x, output_filename):
@@ -612,6 +845,58 @@ def generate_timestamp():
     milliseconds = f"{int(now.microsecond / 1000):03d}"
     random_number = random.randint(0, 9999)
     return f"{timestamp}_{milliseconds}_{random_number}"
+
+
+def generate_new_timestamp():
+    """Generate a timestamp in the new format: YYYY_MM_DD_HH_MM_SS_mmm."""
+    now = datetime.datetime.now()
+    timestamp = now.strftime('%Y_%m_%d_%H_%M_%S')
+    milliseconds = f"{int(now.microsecond / 1000):03d}"
+    return f"{timestamp}_{milliseconds}"
+
+
+def save_individual_frames(x, output_dir, base_filename, return_frame_paths=False):
+    """
+    Save each individual frame from a video tensor as a separate image file.
+    
+    Args:
+        x: Input tensor of shape [batch, channels, time, height, width]
+        output_dir: Directory to save the individual frames
+        base_filename: Base filename for the individual frames
+        return_frame_paths: Whether to return the list of saved frame paths
+        
+    Returns:
+        List of saved frame paths (if return_frame_paths=True)
+    """
+    from PIL import Image
+    
+    b, c, t, h, w = x.shape
+    
+    per_row = b
+    for p in [6, 5, 4, 3, 2]:
+        if b % p == 0:
+            per_row = p
+            break
+    
+    # Create directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Create normalized and rearranged tensor
+    x_normalized = torch.clamp(x.float(), -1., 1.) * 127.5 + 127.5
+    x_uint8 = x_normalized.detach().cpu().to(torch.uint8)
+    x_rearranged = einops.rearrange(x_uint8, '(m n) c t h w -> t (m h) (n w) c', n=per_row)
+    
+    # Save individual frames
+    frame_paths = []
+    for i in range(x_rearranged.shape[0]):
+        frame_path = os.path.join(output_dir, f"{base_filename}_frame_{i:04d}.png")
+        frame_paths.append(frame_path)
+        img = Image.fromarray(x_rearranged[i].numpy())
+        img.save(frame_path)
+        
+    if return_frame_paths:
+        return frame_paths
+    return None
 
 
 def write_PIL_image_with_png_info(image, metadata, path):

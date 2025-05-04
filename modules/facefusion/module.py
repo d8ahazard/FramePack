@@ -4,9 +4,10 @@ import numpy as np
 import logging
 import os
 import onnxruntime
+import torch
 from handlers.path import model_path
 from pathlib import Path
-from typing import Dict, List, Tuple, Callable
+from typing import Dict, List, Optional, Tuple, Callable
 from tqdm import tqdm
 import requests
 import shutil
@@ -139,12 +140,14 @@ def download_models():
 class FaceProcessor:
     """Main class for face detection, swapping and enhancement"""
     
-    def __init__(self, options: ProcessOptions = None):
+    def __init__(self, options: ProcessOptions = None, device: Optional[torch.device] = None):
         self.options = options or ProcessOptions()
         self.sessions = {}
         self.initialized = False
         self.source_image = None
         self.reference_faces = []
+        self.device = device
+        self.options.device = self.device.type
         
     def initialize(self):
         """Initialize required models"""
@@ -1030,7 +1033,7 @@ class FaceProcessor:
 
 
 # Main processing function for the module
-def process(job_settings: FaceFusionJobSettings) -> ProcessResult:
+def process(job_settings: FaceFusionJobSettings, device: Optional[torch.device] = None) -> ProcessResult:
     """
     Process a video by swapping faces from source image to target video
     

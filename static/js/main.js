@@ -3,13 +3,17 @@
 
 import { 
     initElements, 
-    enforceHorizontalLayout 
+    enforceHorizontalLayout,
+    loadLoraModels
 } from './common.js';
 
 import { initEditor } from './editor.js';
 import { initJobQueue } from './job_queue.js';
 import { initOutputs } from './outputs.js';
 import { initBatch } from './batch.js';
+
+// Make sure job utilities are loaded
+import './job_utils.js';
 
 // Theme-related functions
 function initTheme() {
@@ -70,6 +74,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initialize UI elements
     initElements();
     
+    // Load LoRA models
+    loadLoraModels();
+    
+    // Initialize editor first as it sets up core functionality
     initEditor();
     
     // Then initialize other modules

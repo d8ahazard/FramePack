@@ -17,4 +17,10 @@ transformers>=4.46.2
 uvicorn>=0.22.0
 watchdog
 xformers>=0.0.29.post3
+# Additional dependencies for Wan module
+easydict
+imageio
+imageio-ffmpeg
+ftfy
+opencv-python>=4.9.0.80
 --extra-index-url https://download.pytorch.org/whl/cu126

@@ -26,6 +26,7 @@ manager = ConnectionManager()
 
 # Create a queue for broadcasting job updates
 broadcast_queue = queue.Queue()
+job_statuses = {}
 
 async def startup_event():
     await process_broadcasts()
@@ -258,6 +259,10 @@ def register_api_endpoints(app):
         Job-specific WebSocket endpoint for targeted updates
         """
         global job_statuses
+        # If job_statuses is not defined, initialize it
+        if job_statuses is None:
+            job_statuses = {}
+
         # If job_id is 'undefined', get the first running job if any
         if job_id == "undefined":
             statuses = job_statuses.values()

@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+from typing import Optional
 
 from handlers.llm import caption_auto
 
@@ -18,13 +19,15 @@ from PIL import Image
 from diffusers import AutoencoderKLHunyuanVideo
 from transformers import LlamaModel, CLIPTextModel, LlamaTokenizerFast, CLIPTokenizer, SiglipImageProcessor, \
     SiglipVisionModel
+from diffusers.loaders import AttnProcsLayers
+from diffusers.models.attention_processor import LoRAAttnProcessor
 
 from datatypes.datatypes import JobStatus, DynamicSwapInstaller
 from handlers.job_queue import job_statuses, save_job_data
-from handlers.model import check_download_model
-from handlers.path import output_path, upload_path
+from handlers.model import check_download_model, list_loras
+from handlers.path import output_path, upload_path, lora_path
 from handlers.vram import fake_diffusers_current_device, get_cuda_free_memory_gb, \
-    move_model_to_device_with_memory_preservation, unload_complete_models, load_model_as_complete, gpu, high_vram
+    move_model_to_device_with_memory_preservation, unload_complete_models, load_model_as_complete
 from modules.framepack.datatypes import FramePackJobSettings
 from modules.framepack.diffusers_helper.bucket_tools import find_nearest_bucket
 from modules.framepack.diffusers_helper.clip_vision import hf_clip_vision_encode
@@ -53,11 +56,92 @@ flux_path = check_download_model("lllyasviel/flux_redux_bfl")
 framepack_path = check_download_model("lllyasviel/FramePackI2V_HY")
 
 
-def load_models():
+def load_lora_weights(transformer, lora_model_path, lora_scale=1.0):
+    """
+    Load LoRA weights into transformer model
+    
+    Args:
+        transformer: HunyuanVideoTransformer3DModelPacked instance
+        lora_model_path: Path to the LoRA model
+        lora_scale: Scale factor for the LoRA weights
+    """
+    if not os.path.exists(lora_model_path):
+        logger.error(f"LoRA model path not found: {lora_model_path}")
+        return transformer
+    
+    logger.info(f"Loading LoRA weights from {lora_model_path} with scale {lora_scale}")
+    
+    # Load LoRA weights
+    try:
+        state_dict = torch.load(lora_model_path, map_location="cpu")
+        
+        # Prepare LoRA attention processors
+        attn_procs = {}
+        for name, attn_processor in transformer.attn_processors.items():
+            cross_attention_dim = None if name.endswith("attn1.processor") else transformer.config.cross_attention_dim
+            hidden_size = transformer.config.hidden_size
+            
+            lora_rank = 4  # Default rank for LoRA
+            
+            # Create LoRA attention processor
+            attn_procs[name] = LoRAAttnProcessor(
+                hidden_size=hidden_size,
+                cross_attention_dim=cross_attention_dim,
+                rank=lora_rank,
+            )
+        
+        # Set attention processors
+        transformer.set_attn_processor(attn_procs)
+        
+        # Load weights from state dict
+        attn_processors = AttnProcsLayers(transformer.attn_processors)
+        
+        # Get compatible keys from state_dict
+        compatible_keys = set(
+            key for key in state_dict.keys() if key in attn_processors.state_dict()
+        )
+        
+        # If no compatible keys, try alternative format
+        if len(compatible_keys) == 0:
+            compatible_keys = set(
+                key for key in state_dict.keys() if "lora" in key and key.replace("lora_", "") in attn_processors.state_dict()
+            )
+            # Rename keys for loading
+            renamed_state_dict = {key.replace("lora_", ""): state_dict[key] for key in compatible_keys}
+            state_dict = renamed_state_dict
+            compatible_keys = set(state_dict.keys())
+        
+        # Set scale for each weight
+        for key in compatible_keys:
+            attn_processors.state_dict()[key].copy_(state_dict[key])
+        
+        # Scale LoRA weights
+        transformer.scale_lora_weights(lora_scale)
+        
+        logger.info(f"Successfully loaded LoRA weights with {len(compatible_keys)} compatible keys")
+        return transformer
+    
+    except Exception as e:
+        logger.error(f"Error loading LoRA weights: {str(e)}")
+        logger.error(traceback.format_exc())
+        return transformer
+
+
+def load_models(device: Optional[torch.device] = None):
     global text_encoder, text_encoder_2, image_encoder, vae, transformer, tokenizer, tokenizer_2, feature_extractor, models_loaded
 
     if models_loaded:
         return
+    
+    if device is None:
+        gpu = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    else:
+        gpu = device
+    if gpu.type != "cuda":
+        raise RuntimeError("CUDA is required for FramePack processing")
+    
+    high_vram = get_cuda_free_memory_gb(gpu) > 32
+    
     # Load models from local paths with appropriate subfolders
     text_encoder = LlamaModel.from_pretrained(
         os.path.join(hunyuan_path, 'text_encoder'),
@@ -148,7 +232,16 @@ def update_status(job_id, message, status="running", progress: int = None, laten
 @torch.no_grad()
 def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg,
            gs, rs,
-           gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory, resolution, segment_index=None, progress_callback=None):
+           gpu_memory_preservation, use_teacache, mp4_crf, enable_adaptive_memory, resolution, segment_index=None, progress_callback=None,
+           lora_model=None, lora_scale=1.0, fps=30, device: Optional[torch.device] = None):
+    if device is None:
+        gpu = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    else:
+        gpu = device
+    if device.type != "cuda":
+        raise RuntimeError("CUDA is required for FramePack processing")
+    
+    high_vram = get_cuda_free_memory_gb(gpu) > 32
 
     segment_name = f"{job_id}_segment_{segment_index + 1}" if segment_index is not None else job_id
     output_filename = os.path.join(output_path, f"{segment_name}.mp4")
@@ -160,7 +253,7 @@ def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_
 
     global adaptive_memory_management, text_encoder, text_encoder_2, image_encoder, vae, transformer, tokenizer, tokenizer_2, feature_extractor
     adaptive_memory_management = enable_adaptive_memory
-    load_models()
+    load_models(gpu)
 
     if transformer is None or vae is None or image_encoder is None:
         raise ValueError("Transformer, VAE, or image encoder is not loaded properly")
@@ -173,7 +266,11 @@ def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_
 
     if not isinstance(image_encoder, SiglipVisionModel):
         raise ValueError("Image encoder is not of type SiglipVisionModel")
-
+        
+    # Apply LoRA if specified
+    if lora_model and os.path.exists(lora_model):
+        update_status(job_id, f"Loading LoRA model {lora_model}...", progress=0)
+        transformer = load_lora_weights(transformer, lora_model, lora_scale)
 
     try:
         # Clean GPU
@@ -419,7 +516,7 @@ def worker(job_id, input_image, end_image, prompt, n_prompt, seed, total_second_
             #     unload_complete_models()
 
             update_status(job_id, f"Saving video ... {output_filename}", progress=0)
-            save_bcthw_as_mp4(history_pixels, output_filename, fps=30, crf=mp4_crf)
+            save_bcthw_as_mp4(history_pixels, output_filename, fps=fps, crf=mp4_crf)
             logger.info(f"Saved video to {output_filename}")
 
             print(f'Decoded. Current latent shape {real_history_latents.shape}; pixel shape {history_pixels.shape}')
@@ -462,7 +559,11 @@ def worker_multi_segment(
         enable_adaptive_memory=True,
         resolution=640,
         latent_window_size=9,
-        include_last_frame=False
+        include_last_frame=False,
+        lora_model=None,
+        lora_scale=1.0,
+        fps=30,
+        device: Optional[str] = None
 ):
     # Helper function to safely get value from segment (supporting both dict and object)
     def get_segment_value(segment, key, default=None):
@@ -475,10 +576,20 @@ def worker_multi_segment(
         elif isinstance(segment, dict) and hasattr(segment, 'get'):
             return segment.get(key, default)
         return default
+    
+    # Set gpu
+    if device is None:
+        gpu = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    else:
+        gpu = torch.device(device)
+    if gpu.type != "cuda":
+        raise RuntimeError("CUDA is required for FramePack processing")
+    
+    high_vram = get_cuda_free_memory_gb(gpu) > 32
 
     # Import here to avoid circular imports
     update_status(job_id, "Loading models...", progress=0)
-    load_models()
+    load_models(gpu)
     job_status = job_statuses.get(job_id, JobStatus(job_id))
     
     update_status(job_id, "Checking segments...", progress=0)
@@ -618,7 +729,11 @@ def worker_multi_segment(
                 enable_adaptive_memory=enable_adaptive_memory,
                 resolution=resolution,
                 segment_index=0,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                lora_model=lora_model,
+                lora_scale=lora_scale,
+                fps=fps,
+                device=gpu
             )
 
             if segment_output:
@@ -771,7 +886,11 @@ def worker_multi_segment(
             enable_adaptive_memory=enable_adaptive_memory,
             resolution=resolution,
             segment_index=seg_no,
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            lora_model=lora_model,
+            lora_scale=lora_scale,
+            fps=fps,
+            device=gpu
         )
         
         if segment_output:
@@ -856,11 +975,23 @@ def worker_multi_segment(
 
 
 @torch.no_grad()
-def process(request: FramePackJobSettings):
+def process(request: FramePackJobSettings, device: Optional[str] = None):
     request_dict = request.model_dump()
+    # Keep device as a str here to avoid json serialization issues
+    request_dict['device'] = device
     auto_prompt = request_dict.get('auto_prompt', False)
     # Pop auto_prompt from request_dict
     auto_prompt = request_dict.pop('auto_prompt', False)
+    
+    # Handle LORA parameters
+    lora_model = request_dict.get('lora_model')
+    if lora_model:
+        # If lora_model is just a filename, construct full path
+        if not os.path.isabs(lora_model) and not lora_model.startswith(lora_path):
+            lora_model = os.path.join(lora_path, lora_model)
+        request_dict['lora_model'] = lora_model
+        logger.info(f"Using LORA model: {lora_model} with scale {request_dict.get('lora_scale', 1.0)}")
+    
     # Convert SegmentConfig objects to dictionaries
     if 'segments' in request_dict and request_dict['segments']:
         segments = request_dict['segments']
