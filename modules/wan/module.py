@@ -233,187 +233,160 @@ def image_to_video(settings):
 
 
 def first_last_frame_to_video(settings):
-    """
-    Generate video from first and last frames using Wan2.1 FLF2V model with original implementation
-    """
+    """Generate video from first and last frames using Wan2.1 FLF2V model"""
     job_id = settings.job_id
     
     # Validate inputs
     if not settings.first_frame or not settings.last_frame:
-        error_msg = "Both first_frame and last_frame paths are required for first-last-frame to video generation"
+        error_msg = "First and last frame paths are required for FLF2V generation"
         logger.error(error_msg)
         update_status(job_id, error_msg, status="failed", progress=100)
         raise ValueError(error_msg)
     
-    # First check if the required implementation is available
-    if WanFLF2V is None:
-        error_msg = "First-Last Frame to Video implementation is not available"
-        logger.error(error_msg)
-        update_status(job_id, error_msg, status="failed", progress=100)
-        raise ImportError(error_msg)
-    
-    # Download/setup the model
+    # Determine model and checkpoint directory
     model_id = MODEL_REPOS["flf2v-14B"]
-    try:
-        ckpt_dir = check_download_model(model_id)
-        update_status(job_id, f"Setting up model: {model_id}", progress=10)
-    except Exception as e:
-        error_msg = f"Failed to set up model: {str(e)}"
+    checkpoint_dir = check_download_model(model_id, module="Wan-AI")
+    
+    # Determine config based on settings
+    config = WAN_CONFIGS.get('flf2v-14B')
+    if not config:
+        error_msg = "Missing config for FLF2V-14B"
         logger.error(error_msg)
         update_status(job_id, error_msg, status="failed", progress=100)
-        raise e
-    
-    # Load first and last frames
-    update_status(job_id, "Loading first and last frames...", progress=15)
+        raise ValueError(error_msg)
     
     try:
-        # Process first frame
-        first_frame_path = settings.first_frame
-        if first_frame_path.startswith('data:'):
-            logger.info("Loading first frame from data URL")
-            # Handle data URL
-            try:
-                first_frame = Image.open(io.BytesIO(base64.b64decode(first_frame_path.split(',')[1]))).convert("RGB")
-            except Exception as e:
-                error_msg = f"Failed to load first frame from data URL: {str(e)}"
-                logger.error(error_msg)
-                update_status(job_id, error_msg, status="failed", progress=100)
-                raise e
-        else:
-            # For normal file paths, make sure we have the full path
-            if not os.path.isabs(first_frame_path):
-                # Check if we need to extract the basename (web path)
-                if first_frame_path.startswith('/') or first_frame_path.startswith('\\'):
-                    first_frame_path = os.path.basename(first_frame_path)
-                # Join with upload path
-                first_frame_path = os.path.join(upload_path, first_frame_path)
-            
-            # Check if image exists
-            if not os.path.exists(first_frame_path):
-                error_msg = f"First frame not found at path: {first_frame_path}"
-                logger.error(error_msg)
-                update_status(job_id, error_msg, status="failed", progress=100)
-                raise FileNotFoundError(error_msg)
-            
-            # Load the image file
-            first_frame = Image.open(first_frame_path).convert("RGB")
+        # Update status
+        update_status(job_id, "Loading FLF2V model...", progress=10)
         
-        # Process last frame
-        last_frame_path = settings.last_frame
-        if last_frame_path.startswith('data:'):
-            logger.info("Loading last frame from data URL")
-            # Handle data URL
-            try:
-                last_frame = Image.open(io.BytesIO(base64.b64decode(last_frame_path.split(',')[1]))).convert("RGB")
-            except Exception as e:
-                error_msg = f"Failed to load last frame from data URL: {str(e)}"
-                logger.error(error_msg)
-                update_status(job_id, error_msg, status="failed", progress=100)
-                raise e
-        else:
-            # For normal file paths, make sure we have the full path
-            if not os.path.isabs(last_frame_path):
-                # Check if we need to extract the basename (web path)
-                if last_frame_path.startswith('/') or last_frame_path.startswith('\\'):
-                    last_frame_path = os.path.basename(last_frame_path)
-                # Join with upload path
-                last_frame_path = os.path.join(upload_path, last_frame_path)
-            
-            # Check if image exists
-            if not os.path.exists(last_frame_path):
-                error_msg = f"Last frame not found at path: {last_frame_path}"
-                logger.error(error_msg)
-                update_status(job_id, error_msg, status="failed", progress=100)
-                raise FileNotFoundError(error_msg)
-            
-            # Load the image file
-            last_frame = Image.open(last_frame_path).convert("RGB")
-    except Exception as e:
-        error_msg = f"Error loading frames: {str(e)}"
-        logger.error(error_msg)
-        update_status(job_id, error_msg, status="failed", progress=100)
-        raise e
-    
-    # Process prompt if extension is enabled
-    prompt = settings.prompt
-    if settings.use_prompt_extend:
-        update_status(job_id, "Extending prompt...", progress=20)
-        prompt = extend_prompt(
-            prompt=settings.prompt,
-            method=settings.prompt_extend_method,
-            model=settings.prompt_extend_model,
-            target_lang=settings.prompt_extend_target_lang,
-            image=[first_frame, last_frame],
-            seed=settings.base_seed if settings.base_seed >= 0 else random.randint(0, 2**32)
-        )
-    
-    # Get model configuration
-    cfg = WAN_CONFIGS["flf2v-14B"]
-    
-    # Initialize the FLF2V model
-    update_status(job_id, "Initializing FLF2V pipeline...", progress=30)
-    try:
-        # Create the pipeline
+        # Initialize the pipeline
         flf2v_pipeline = WanFLF2V(
-            config=cfg,
-            checkpoint_dir=ckpt_dir,
+            config=config,
+            checkpoint_dir=checkpoint_dir,
             device_id=0,
-            rank=0,
-            t5_fsdp=False,
-            dit_fsdp=False,
-            use_usp=False,
-            t5_cpu=settings.t5_cpu if hasattr(settings, 't5_cpu') else False
+            t5_fsdp=settings.t5_fsdp,
+            dit_fsdp=settings.dit_fsdp,
+            use_usp=settings.use_usp,
+            t5_cpu=settings.t5_cpu,
+            init_on_cpu=True,
         )
         
-        # Determine max area and resolution
-        height, width = map(int, settings.size.split('*'))
-        max_area = MAX_AREA_CONFIGS.get(settings.size, height * width)
+        # Handle frame paths
+        first_frame_path = settings.first_frame
+        last_frame_path = settings.last_frame
         
-        # Log dimensions
-        logger.info(f"Using size: {settings.size}, max_area: {max_area}")
-        logger.info(f"First frame dimensions: {first_frame.width}x{first_frame.height}")
-        logger.info(f"Last frame dimensions: {last_frame.width}x{last_frame.height}")
+        # Normalize paths if needed
+        if not os.path.isabs(first_frame_path):
+            if first_frame_path.startswith('/') or first_frame_path.startswith('\\'):
+                first_frame_path = os.path.basename(first_frame_path)
+            first_frame_path = os.path.join(upload_path, first_frame_path)
+            
+        if not os.path.isabs(last_frame_path):
+            if last_frame_path.startswith('/') or last_frame_path.startswith('\\'):
+                last_frame_path = os.path.basename(last_frame_path)
+            last_frame_path = os.path.join(upload_path, last_frame_path)
+        
+        # Check if frames exist
+        if not os.path.exists(first_frame_path):
+            error_msg = f"First frame not found at path: {first_frame_path}"
+            logger.error(error_msg)
+            update_status(job_id, error_msg, status="failed", progress=100)
+            raise FileNotFoundError(error_msg)
+            
+        if not os.path.exists(last_frame_path):
+            error_msg = f"Last frame not found at path: {last_frame_path}"
+            logger.error(error_msg)
+            update_status(job_id, error_msg, status="failed", progress=100)
+            raise FileNotFoundError(error_msg)
+        
+        # Load frames
+        update_status(job_id, "Loading frames...", progress=20)
+        first_frame = Image.open(first_frame_path).convert("RGB")
+        last_frame = Image.open(last_frame_path).convert("RGB")
+        
+        # Process prompt if extension is enabled
+        prompt = settings.prompt
+        if settings.use_prompt_extend:
+            update_status(job_id, "Extending prompt...", progress=25)
+            prompt = extend_prompt(
+                prompt=settings.prompt,
+                method=settings.prompt_extend_method,
+                model=settings.prompt_extend_model,
+                target_lang=settings.prompt_extend_target_lang,
+                seed=settings.base_seed if settings.base_seed >= 0 else random.randint(0, 2**32)
+            )
+        
+        # Define max area based on dimensions
+        height, width = first_frame.height, first_frame.width
+        max_area = height * width
+        for size_key, size_area in MAX_AREA_CONFIGS.items():
+            if max_area > size_area:
+                continue
+            h, w = map(int, size_key.split('*'))
+            if abs(h/w - height/width) < 0.1:  # Similar aspect ratio
+                max_area = size_area
+                break
+                
+        # Generate video
+        update_status(job_id, "Generating video - this may take several minutes...", progress=30)
+        
+        # Set up generation parameters
+        frame_num = settings.frame_num or 81  # Default 81 frames (16fps * 5 sec)
+        n_prompt = settings.negative_prompt or config.sample_neg_prompt
+        seed = settings.base_seed if settings.base_seed >= 0 else random.randint(0, 2**32)
         
         # Generate the video
-        update_status(job_id, "Generating video...", progress=40)
-        video = flf2v_pipeline.generate(
-            prompt,
-            first_frame,
-            last_frame,
+        output_frames = flf2v_pipeline.generate(
+            input_prompt=prompt,
+            first_frame=first_frame,
+            last_frame=last_frame,
             max_area=max_area,
-            frame_num=settings.frame_num,
-            shift=settings.sample_shift if settings.sample_shift is not None else 16.0,
-            sampling_steps=settings.sample_steps,
-            guide_scale=settings.sample_guide_scale,
-            n_prompt=settings.negative_prompt,
-            seed=settings.base_seed if settings.base_seed >= 0 else random.randint(0, 2**32),
-            offload_model=settings.offload_model if hasattr(settings, 'offload_model') else True
+            frame_num=frame_num,
+            shift=settings.sample_shift or 16,
+            sample_solver=settings.sample_solver or 'unipc',
+            sampling_steps=settings.sample_steps or 50,
+            sample_guide_scale=settings.sample_guide_scale or 0.0,
+            n_prompt=n_prompt,
+            seed=seed,
+            offload_model=settings.offload_model
         )
         
-        # Save the video
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_file = os.path.join(output_path, f"wan_flf2v_{timestamp}.mp4")
+        # Check if generation was successful
+        if output_frames is None or len(output_frames) == 0:
+            error_msg = "Failed to generate video frames"
+            logger.error(error_msg)
+            update_status(job_id, error_msg, status="failed", progress=100)
+            raise RuntimeError(error_msg)
         
-        # Import cache_video from utils
-        from modules.wan.utils.utils import cache_video
+        # Save output
         update_status(job_id, "Saving video...", progress=90)
-        cache_video(
-            tensor=video[None],
-            save_file=output_file,
-            fps=settings.fps,
-            nrow=1,
-            normalize=True,
-            value_range=(-1, 1)
+        
+        # Create output filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"flf2v_{timestamp}_{seed}.mp4"
+        output_filepath = os.path.join(output_path, output_filename)
+        
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(output_filepath), exist_ok=True)
+        
+        # Save frames as video
+        export_to_video(output_frames, output_filepath, settings.sample_fps or 16)
+        
+        # Final update
+        update_status(
+            job_id, 
+            "Video generation complete",
+            status="complete",
+            progress=100,
+            video_preview=output_filepath
         )
         
-        update_status(job_id, "Video generation completed", status="completed", progress=100, video_preview=output_file)
-        return output_file
+        return {"status": "success", "video_path": output_filepath}
         
     except Exception as e:
-        error_msg = f"Error generating first-last-frame video: {str(e)}"
-        logger.error(error_msg)
+        logger.error(f"Error generating first-last-frame video: {str(e)}")
         logger.error(traceback.format_exc())
-        update_status(job_id, error_msg, status="failed", progress=100)
+        update_status(job_id, f"Error: {str(e)}", status="failed", progress=100)
         raise e
 
 

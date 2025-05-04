@@ -3,6 +3,7 @@ import logging
 import os
 import random
 import sys
+import traceback
 import types
 from functools import partial
 
@@ -122,6 +123,7 @@ class WanFLF2V:
                 
         except Exception as e:
             logging.error(f"Error importing components: {e}")
+            traceback.print_exc()
             self.has_full_implementation = False
             MISSING_COMPONENTS.append(f"Unexpected error: {e}")
         
@@ -134,12 +136,29 @@ class WanFLF2V:
         self.param_dtype = config.param_dtype
 
         shard_fn = partial(self.shard_model, device_id=device_id)
+        
+        # Get tokenizer path directly from the config or build it based on checkpoint_dir
+        t5_tokenizer_path = config.t5_tokenizer
+        if not t5_tokenizer_path.startswith('google/'):
+            # If it's not a HF model ID, check if it's a path in the checkpoint_dir
+            possible_tokenizer_path = os.path.join(checkpoint_dir, 'google', t5_tokenizer_path)
+            if os.path.exists(possible_tokenizer_path):
+                t5_tokenizer_path = possible_tokenizer_path
+        
+        # Get CLIP tokenizer path
+        clip_tokenizer_path = config.clip_tokenizer
+        if not clip_tokenizer_path.startswith('xlm-roberta'):
+            # If it's not a HF model ID, check if it's a path in the checkpoint_dir
+            possible_tokenizer_path = os.path.join(checkpoint_dir, clip_tokenizer_path)
+            if os.path.exists(possible_tokenizer_path):
+                clip_tokenizer_path = possible_tokenizer_path
+        
         self.text_encoder = self.T5EncoderModel(
             text_len=config.text_len,
             dtype=config.t5_dtype,
             device=torch.device('cpu'),
             checkpoint_path=os.path.join(checkpoint_dir, config.t5_checkpoint),
-            tokenizer_path=os.path.join(checkpoint_dir, config.t5_tokenizer),
+            tokenizer_path=t5_tokenizer_path,
             shard_fn=shard_fn if t5_fsdp else None,
         )
 
@@ -154,7 +173,7 @@ class WanFLF2V:
             device=self.device,
             checkpoint_path=os.path.join(checkpoint_dir,
                                          config.clip_checkpoint),
-            tokenizer_path=os.path.join(checkpoint_dir, config.clip_tokenizer))
+            tokenizer_path=clip_tokenizer_path)
 
         logging.info(f"Creating WanModel from {checkpoint_dir}")
         self.model = self.WanModel.from_pretrained(checkpoint_dir)

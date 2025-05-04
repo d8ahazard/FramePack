@@ -20,11 +20,11 @@ class WanConfig:
     vae_stride: Tuple[int, int, int] = (4, 8, 8)
     # Process parameters
     text_len: int = 64
-    t5_checkpoint: str = "t5.safetensors"
-    t5_tokenizer: str = "umt5_tokenizer"
-    vae_checkpoint: str = "vae.safetensors"
-    clip_checkpoint: str = "clip.safetensors"
-    clip_tokenizer: str = "clip_tokenizer"
+    t5_checkpoint: str = "models_t5_umt5-xxl-enc-bf16.pth"
+    t5_tokenizer: str = "umt5-xxl"  # Will be resolved to google/umt5-xxl or checkpoint_dir/google/umt5-xxl
+    vae_checkpoint: str = "Wan2.1_VAE.pth"
+    clip_checkpoint: str = "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth"
+    clip_tokenizer: str = "xlm-roberta-large"  # Will be resolved to the HF model or local path
     num_train_timesteps: int = 1000
     t5_dtype: torch.dtype = torch.bfloat16
     clip_dtype: torch.dtype = torch.bfloat16
@@ -41,9 +41,18 @@ flf2v_14B = WanConfig(
 )
 flf2v_14B.sample_neg_prompt = "镜头切换，" + flf2v_14B.sample_neg_prompt
 
+# I2V configuration
+i2v_14B = WanConfig(
+    name="Config: Wan I2V 14B",
+    dim=5120,
+    num_layers=40,
+    num_heads=40,
+)
+
 # Export configurations
 WAN_CONFIGS = {
-    'flf2v-14B': flf2v_14B
+    'flf2v-14B': flf2v_14B,
+    'i2v-14B': i2v_14B
 }
 
 # Size configurations
