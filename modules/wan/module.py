@@ -232,12 +232,12 @@ def image_to_video(settings):
         raise e
 
 
-def first_last_frame_to_video(settings):
+def first_last_frame_to_video(request):
     """Generate video from first and last frames using Wan2.1 FLF2V model"""
-    job_id = settings.job_id
+    job_id = request.job_id
     
     # Validate inputs
-    if not settings.first_frame or not settings.last_frame:
+    if not request.first_frame or not request.last_frame:
         error_msg = "First and last frame paths are required for FLF2V generation"
         logger.error(error_msg)
         update_status(job_id, error_msg, status="failed", progress=100)
@@ -259,21 +259,21 @@ def first_last_frame_to_video(settings):
         # Update status
         update_status(job_id, "Loading FLF2V model...", progress=10)
         
-        # Initialize the pipeline
+        # Initialize the pipeline with default values for parameters that aren't in the request
         flf2v_pipeline = WanFLF2V(
             config=config,
             checkpoint_dir=checkpoint_dir,
             device_id=0,
-            t5_fsdp=settings.t5_fsdp,
-            dit_fsdp=settings.dit_fsdp,
-            use_usp=settings.use_usp,
-            t5_cpu=settings.t5_cpu,
-            init_on_cpu=True,
+            t5_fsdp=False,           # Default value, not in request
+            dit_fsdp=False,          # Default value, not in request
+            use_usp=False,           # Default value, not in request
+            t5_cpu=request.t5_cpu,   # This one is in the request
+            init_on_cpu=True,        # Default value
         )
         
         # Handle frame paths
-        first_frame_path = settings.first_frame
-        last_frame_path = settings.last_frame
+        first_frame_path = request.first_frame
+        last_frame_path = request.last_frame
         
         # Normalize paths if needed
         if not os.path.isabs(first_frame_path):
@@ -305,15 +305,15 @@ def first_last_frame_to_video(settings):
         last_frame = Image.open(last_frame_path).convert("RGB")
         
         # Process prompt if extension is enabled
-        prompt = settings.prompt
-        if settings.use_prompt_extend:
+        prompt = request.prompt
+        if request.use_prompt_extend:
             update_status(job_id, "Extending prompt...", progress=25)
             prompt = extend_prompt(
-                prompt=settings.prompt,
-                method=settings.prompt_extend_method,
-                model=settings.prompt_extend_model,
-                target_lang=settings.prompt_extend_target_lang,
-                seed=settings.base_seed if settings.base_seed >= 0 else random.randint(0, 2**32)
+                prompt=request.prompt,
+                method=request.prompt_extend_method,
+                model=request.prompt_extend_model,
+                target_lang=request.prompt_extend_target_lang,
+                seed=request.base_seed if request.base_seed >= 0 else random.randint(0, 2**32)
             )
         
         # Define max area based on dimensions
@@ -331,9 +331,8 @@ def first_last_frame_to_video(settings):
         update_status(job_id, "Generating video - this may take several minutes...", progress=30)
         
         # Set up generation parameters
-        frame_num = settings.frame_num or 81  # Default 81 frames (16fps * 5 sec)
-        n_prompt = settings.negative_prompt or config.sample_neg_prompt
-        seed = settings.base_seed if settings.base_seed >= 0 else random.randint(0, 2**32)
+        n_prompt = request.negative_prompt or config.sample_neg_prompt
+        seed = request.base_seed if request.base_seed >= 0 else random.randint(0, 2**32)
         
         # Generate the video
         output_frames = flf2v_pipeline.generate(
@@ -341,14 +340,14 @@ def first_last_frame_to_video(settings):
             first_frame=first_frame,
             last_frame=last_frame,
             max_area=max_area,
-            frame_num=frame_num,
-            shift=settings.sample_shift or 16,
-            sample_solver=settings.sample_solver or 'unipc',
-            sampling_steps=settings.sample_steps or 50,
-            sample_guide_scale=settings.sample_guide_scale or 0.0,
+            frame_num=request.frame_num,
+            shift=request.sample_shift,
+            sample_solver='unipc',  # Default value, not in request 
+            sampling_steps=request.sample_steps,
+            sample_guide_scale=request.sample_guide_scale,
             n_prompt=n_prompt,
             seed=seed,
-            offload_model=settings.offload_model
+            offload_model=request.offload_model
         )
         
         # Check if generation was successful
@@ -369,8 +368,8 @@ def first_last_frame_to_video(settings):
         # Ensure output directory exists
         os.makedirs(os.path.dirname(output_filepath), exist_ok=True)
         
-        # Save frames as video
-        export_to_video(output_frames, output_filepath, settings.sample_fps or 16)
+        # Save frames as video - use fps from request
+        export_to_video(output_frames, output_filepath, request.fps)
         
         # Final update
         update_status(
@@ -465,12 +464,15 @@ def process(request: WanJobSettings, device: Optional[str] = None):
                         request.last_frame = last_image
         
         logger.info(f"Request: {request}")
+        
         # Process based on task
         if request.task == "i2v-14B":
             logger.info("Using Image to Video task (i2v-14B)")
             result = image_to_video(request)
         elif request.task == "flf2v-14B":
             logger.info("Using First-Last Frame to Video task (flf2v-14B)")
+            # Determine sample_fps - use fps from request if it exists
+            sample_fps = request.fps
             result = first_last_frame_to_video(request)
         else:
             raise ValueError(f"Invalid task type: {request.task}")

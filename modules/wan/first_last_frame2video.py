@@ -212,10 +212,10 @@ class WanFLF2V:
                  last_frame,
                  max_area=720 * 1280,
                  frame_num=81,
-                 shift=16,
+                 shift=16.0,
                  sample_solver='unipc',
                  sampling_steps=50,
-                 guide_scale=5.5,
+                 sample_guide_scale=5.5,
                  n_prompt="",
                  seed=-1,
                  offload_model=True):
@@ -235,14 +235,14 @@ class WanFLF2V:
                 Maximum pixel area for latent space calculation. Controls video resolution scaling
             frame_num (`int`, *optional*, defaults to 81):
                 How many frames to sample from a video. The number should be 4n+1
-            shift (`float`, *optional*, defaults to 5.0):
+            shift (`float`, *optional*, defaults to 16.0):
                 Noise schedule shift parameter. Affects temporal dynamics
                 [NOTE]: If you want to generate a 480p video, it is recommended to set the shift value to 3.0.
             sample_solver (`str`, *optional*, defaults to 'unipc'):
                 Solver used to sample the video.
-            sampling_steps (`int`, *optional*, defaults to 40):
+            sampling_steps (`int`, *optional*, defaults to 50):
                 Number of diffusion sampling steps. Higher values improve quality but slow generation
-            guide_scale (`float`, *optional*, defaults 5.0):
+            sample_guide_scale (`float`, *optional*, defaults 5.5):
                 Classifier-free guidance scale. Controls prompt adherence vs. creativity
             n_prompt (`str`, *optional*, defaults to ""):
                 Negative prompt for content exclusion. If not given, use `config.sample_neg_prompt`

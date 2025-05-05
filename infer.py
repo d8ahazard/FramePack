@@ -92,6 +92,24 @@ async def shutdown(signal_type=None):
         except asyncio.TimeoutError:
             logging.warning("Some tracked background tasks didn't respond to cancellation")
     
+    # Ensure job queue is cleared
+    try:
+        clear_running_jobs()
+    except Exception as e:
+        logging.error(f"Error clearing job queue during shutdown: {e}")
+    
+
+    # Call all shutdown events with a timeout
+    if shutdown_events:
+        logging.info(f"Running {len(shutdown_events)} shutdown events...")
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*[event() for event in shutdown_events], return_exceptions=True),
+                timeout=5.0
+            )
+        except asyncio.TimeoutError:
+            logging.warning("Timed out waiting for shutdown events, some resources may not be released properly")
+    
     # Then handle any other tasks
     tasks = [t for t in asyncio.all_tasks() 
              if t is not asyncio.current_task() and t not in bg_tasks]
@@ -110,22 +128,6 @@ async def shutdown(signal_type=None):
         except asyncio.TimeoutError:
             logging.warning("Timed out waiting for tasks to cancel, some tasks may not have terminated properly")
     
-    # Call all shutdown events with a timeout
-    if shutdown_events:
-        logging.info(f"Running {len(shutdown_events)} shutdown events...")
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(*[event() for event in shutdown_events], return_exceptions=True),
-                timeout=5.0
-            )
-        except asyncio.TimeoutError:
-            logging.warning("Timed out waiting for shutdown events, some resources may not be released properly")
-    
-    # Ensure job queue is cleared
-    try:
-        await clear_running_jobs()
-    except Exception as e:
-        logging.error(f"Error clearing job queue during shutdown: {e}")
     
     # Final cleanup
     logging.info("Shutdown complete")

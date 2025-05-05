@@ -13,7 +13,7 @@ python-multipart>=0.0.6
 sageattention
 torch>=2.6.0
 torchvision>=0.21.0
-transformers>=4.46.2
+transformers>=4.49.0
 uvicorn>=0.22.0
 watchdog
 xformers>=0.0.29.post3
@@ -23,4 +23,16 @@ imageio
 imageio-ffmpeg
 ftfy
 opencv-python>=4.9.0.80
+tokenizers>=0.20.3
+accelerate>=1.1.1
+tqdm
+dashscope
+triton; sys_platform != "win32"
+triton-windows==v3.2.0.post18; sys_platform == "win32"
+# Flash attention - platform specific installation
+flash_attn; sys_platform != "win32"
+https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu124torch2.6.0cxx11abiFALSE-cp310-cp310-win_amd64.whl; sys_platform == "win32" and python_version == "3.10"
+https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu124torch2.6.0cxx11abiFALSE-cp311-cp311-win_amd64.whl; sys_platform == "win32" and python_version == "3.11"
+https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu124torch2.6.0cxx11abiFALSE-cp312-cp312-win_amd64.whl; sys_platform == "win32" and python_version == "3.12"
+https://github.com/kingbri1/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu124torch2.6.0cxx11abiFALSE-cp313-cp313-win_amd64.whl; sys_platform == "win32" and python_version == "3.13"
 --extra-index-url https://download.pytorch.org/whl/cu126
