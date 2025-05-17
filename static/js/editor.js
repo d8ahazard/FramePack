@@ -967,6 +967,25 @@ function sortTimeline(direction) {
     showMessage(`Timeline sorted ${direction === 'asc' ? 'ascending' : 'descending'} by filename`, 'success');
 }
 
+// Function to validate job inputs
+function validateJobInputs(selectedModule, segments) {
+    // Validate prompt fields
+    for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
+        if (!seg.prompt || typeof seg.prompt !== 'string' || seg.prompt.trim() === '') {
+            showMessage(`Prompt is required for segment ${i + 1}.`, 'error');
+            return false;
+        }
+    }
+    // FramePack requires initial image
+    if (selectedModule === 'framepack' && (!segments[0].image_path || segments[0].image_path.trim() === '')) {
+        showMessage('Initial image is required for FramePack mode.', 'error');
+        return false;
+    }
+    // WAN mode: image is optional
+    return true;
+}
+
 // Function to start generation
 async function startGeneration() {
     if (timeline.length === 0) {
@@ -1026,7 +1045,7 @@ async function startGeneration() {
             
             // Collect segments in the format needed for the job
             segments.push({
-                image_path: item.serverPath,
+                image_path: item.serverPath || '',
                 prompt: item.prompt || '',
                 duration: item.duration || 3.0,
                 use_last_frame: includeLastFrame && isLastFrame
@@ -1037,7 +1056,7 @@ async function startGeneration() {
         if (selectedModule === 'wan' && includeLastFrame && timeline.length > 0) {
             const lastItem = timeline[timeline.length - 1];
             segments.push({
-                image_path: lastItem.serverPath,
+                image_path: lastItem.serverPath || '',
                 prompt: lastItem.prompt || '',
                 duration: lastItem.duration || 3.0,
                 use_last_frame: true
@@ -1045,6 +1064,12 @@ async function startGeneration() {
         }
         
         console.log('Collected segments:', segments);
+        
+        if (!validateJobInputs(selectedModule, segments)) {
+            generateBtn.disabled = false;
+            generateBtn.innerHTML = 'Generate';
+            return;
+        }
         
         // Create job settings object
         const jobSettings = {};
@@ -1169,7 +1194,7 @@ function saveJob() {
     // Build segments array for job creation
     const segments = timeline.map(item => {
         return {
-            image_path: item.serverPath,
+            image_path: item.serverPath || '',
             prompt: item.prompt || '',
             duration: item.duration || 3.0
         };
@@ -1206,6 +1231,10 @@ function saveJob() {
     console.log('Saving job...');
     showMessage('Saving job...', 'info');
     
+    if (!validateJobInputs(selectedModule, segments)) {
+        return;
+    }
+    
     // Save the job without running it
     saveAndProcessJob(
         jobId, 
@@ -1221,10 +1250,7 @@ function saveJob() {
         // Try to refresh the job queue
         loadJobQueue();
     })
-    .catch(error => {
-        console.error('Error saving job:', error);
-        showMessage('Error saving job: ' + error.message, 'error');
-    });
+    .catch(handleBackendError);
 }
 
 // Function to handle adding to timeline
@@ -1348,7 +1374,16 @@ function handleAddToTimeline() {
 // Function to handle module selection and toggle related settings
 function handleModuleSelection(event) {
     const selectedModule = event.target.value;
-    
+    const initialImageField = document.getElementById('initialImageField');
+    if (selectedModule === 'wan') {
+        if (initialImageField) {
+            initialImageField.style.display = 'none';
+        }
+    } else {
+        if (initialImageField) {
+            initialImageField.style.display = '';
+        }
+    }
     // Get all settings elements
     const commonSettings = [
         'globalPrompt', 'negativePrompt', 'resolution', 'fps'
@@ -1846,3 +1881,20 @@ export {
     updateJobUI,
     handleJobCompletion
 };
+
+function handleBackendError(error) {
+    // Map backend error messages to user-friendly UI feedback
+    if (error && error.message) {
+        if (error.message.includes('Input should be a valid string')) {
+            showMessage('A required field is missing or invalid. Please check prompts and image fields.', 'error');
+        } else if (error.message.includes('initial image')) {
+            showMessage('Initial image is required for FramePack mode.', 'error');
+        } else if (error.message.includes('prompt')) {
+            showMessage('Prompt is required and must be a non-empty string.', 'error');
+        } else {
+            showMessage(error.message, 'error');
+        }
+    } else {
+        showMessage('An unknown error occurred. Please check your inputs.', 'error');
+    }
+}

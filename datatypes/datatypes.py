@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import time
-from typing import List, Optional, Dict, Set
+from typing import List, Optional, Dict, Set, Union
 
 import torch
 from pydantic import BaseModel
@@ -220,9 +220,9 @@ class JobStatusResponse(BaseModel):
 
 
 class SegmentConfig(BaseModel):
-    image_path: str
-    prompt: str
-    duration: float
+    image_path: Optional[str] = None
+    prompt: Union[str, List[str], None] = None
+    duration: float = 3.0
     
     def to_dict(self):
         """Convert the model to a dictionary for JSON serialization"""

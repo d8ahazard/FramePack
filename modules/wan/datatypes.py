@@ -5,7 +5,7 @@ from datatypes.datatypes import ModuleJobSettings, SegmentConfig
 
 class WanJobSettings(ModuleJobSettings):
     job_id: str
-    prompt: str
+    prompt: Union[str, List[str], None] = None
     task: str = "i2v-14B"  # Auto-detected based on inputs if not specified
     size: str = "1280*720"
     frame_num: int = 81
