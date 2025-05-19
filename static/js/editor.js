@@ -969,19 +969,26 @@ function sortTimeline(direction) {
 
 // Function to validate job inputs
 function validateJobInputs(selectedModule, segments) {
-    // Validate prompt fields
-    for (let i = 0; i < segments.length; i++) {
-        const seg = segments[i];
-        if (!seg.prompt || typeof seg.prompt !== 'string' || seg.prompt.trim() === '') {
-            showMessage(`Prompt is required for segment ${i + 1}.`, 'error');
-            return false;
+    // Get the global prompt from the form
+    const globalPrompt = elements.globalPrompt ? elements.globalPrompt.value.trim() : '';
+    
+    // Only validate individual prompts if there's no global prompt
+    if (!globalPrompt) {
+        for (let i = 0; i < segments.length; i++) {
+            const seg = segments[i];
+            if (!seg.prompt || typeof seg.prompt !== 'string' || seg.prompt.trim() === '') {
+                showMessage(`Prompt is required for segment ${i + 1} when no global prompt is set.`, 'error');
+                return false;
+            }
         }
     }
+
     // FramePack requires initial image
     if (selectedModule === 'framepack' && (!segments[0].image_path || segments[0].image_path.trim() === '')) {
         showMessage('Initial image is required for FramePack mode.', 'error');
         return false;
     }
+    
     // WAN mode: image is optional
     return true;
 }
