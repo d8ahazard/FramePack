@@ -420,13 +420,13 @@ async function processBatch() {
             
             // First, create a WAN job for all frames except the last
             const segmentsWithoutLast = segments.slice(0, -1);
-            const mainWanPayload = prepareJobPayload(settings, segmentsWithoutLast, 'wan', 'batch');
+            const mainWanPayload = prepareJobPayload(settings, segmentsWithoutLast, 'wan');
             jobSettings.wan = mainWanPayload;
             
             // Create a second job for the last frame only
             const lastSegment = [segments[segments.length - 1]];
             const lastFrameJobId = `${jobId}_lastframe`;
-            const lastFramePayload = prepareJobPayload(settings, lastSegment, 'wan', 'batch');
+            const lastFramePayload = prepareJobPayload(settings, lastSegment, 'wan');
             
             // Save and start both jobs
             try {
@@ -443,7 +443,7 @@ async function processBatch() {
                 
                 // Now start the main job
                 console.log('Starting main job:', jobId);
-                fetch(`/api/jobs/${jobId}/run`, {
+                fetch(`/api/run_job/${jobId}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' }
                 })
@@ -486,7 +486,7 @@ async function processBatch() {
             }
         } else {
             // Normal job processing
-            const modulePayload = prepareJobPayload(settings, segments, selectedModule, 'batch');
+            const modulePayload = prepareJobPayload(settings, segments, selectedModule);
             jobSettings[selectedModule] = modulePayload;
             
             // Save and process the job

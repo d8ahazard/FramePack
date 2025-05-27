@@ -1,10 +1,16 @@
 """Configuration for Wan models."""
+import copy
 import os
 from dataclasses import dataclass
+from typing import List, Tuple
+
 import torch
-from typing import List, Tuple, Dict, Any
+from modules.wan.configs.wan_i2v_14B import i2v_14B
+from modules.wan.configs.wan_t2v_1_3B import t2v_1_3B
+from modules.wan.configs.wan_t2v_14B import t2v_14B
 
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+
 
 @dataclass
 class WanConfig:
@@ -32,27 +38,25 @@ class WanConfig:
     sample_fps: int = 16
     sample_neg_prompt: str = "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
 
-# FLF2V configuration based on i2v-14B
-flf2v_14B = WanConfig(
-    name="Config: Wan FLF2V 14B",
-    dim=5120,
-    num_layers=40,
-    num_heads=40,
-)
-flf2v_14B.sample_neg_prompt = "镜头切换，" + flf2v_14B.sample_neg_prompt
 
-# I2V configuration
-i2v_14B = WanConfig(
-    name="Config: Wan I2V 14B",
-    dim=5120,
-    num_layers=40,
-    num_heads=40,
-)
+# the config of t2i_14B is the same as t2v_14B
+t2i_14B = copy.deepcopy(t2v_14B)
+t2i_14B.__name__ = 'Config: Wan T2I 14B'
+
+# the config of flf2v_14B is the same as i2v_14B
+flf2v_14B = copy.deepcopy(i2v_14B)
+flf2v_14B.__name__ = 'Config: Wan FLF2V 14B'
+flf2v_14B.sample_neg_prompt = "????," + flf2v_14B.sample_neg_prompt
 
 # Export configurations
 WAN_CONFIGS = {
+    't2v-14B': t2v_14B,
+    't2v-1.3B': t2v_1_3B,
+    'i2v-14B': i2v_14B,
+    't2i-14B': t2i_14B,
     'flf2v-14B': flf2v_14B,
-    'i2v-14B': i2v_14B
+    'vace-1.3B': t2v_1_3B,
+    'vace-14B': t2v_14B,
 }
 
 # Size configurations
@@ -69,4 +73,14 @@ MAX_AREA_CONFIGS = {
     '1280*720': 1280 * 720,
     '480*832': 480 * 832,
     '832*480': 832 * 480,
-} 
+}
+
+SUPPORTED_SIZES = {
+    't2v-14B': ('720*1280', '1280*720', '480*832', '832*480'),
+    't2v-1.3B': ('480*832', '832*480'),
+    'i2v-14B': ('720*1280', '1280*720', '480*832', '832*480'),
+    'flf2v-14B': ('720*1280', '1280*720', '480*832', '832*480'),
+    't2i-14B': tuple(SIZE_CONFIGS.keys()),
+    'vace-1.3B': ('480*832', '832*480'),
+    'vace-14B': ('720*1280', '1280*720', '480*832', '832*480')
+}

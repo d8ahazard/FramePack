@@ -1,115 +1,118 @@
-"""Utility functions for the Wan module."""
-import os
-import torch
-import numpy as np
-from PIL import Image
-import imageio
+# Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import argparse
-from torchvision.utils import make_grid
+import binascii
+import os
+import os.path as osp
+
+import imageio
+import torch
+import torchvision
+
+__all__ = ['cache_video', 'cache_image', 'str2bool']
+
+
+def rand_name(length=8, suffix=''):
+    name = binascii.b2a_hex(os.urandom(length)).decode('utf-8')
+    if suffix:
+        if not suffix.startswith('.'):
+            suffix = '.' + suffix
+        name += suffix
+    return name
+
+
+def cache_video(tensor,
+                save_file=None,
+                fps=30,
+                suffix='.mp4',
+                nrow=8,
+                normalize=True,
+                value_range=(-1, 1),
+                retry=5):
+    # cache file
+    cache_file = osp.join('/tmp', rand_name(
+        suffix=suffix)) if save_file is None else save_file
+
+    # save to cache
+    error = None
+    for _ in range(retry):
+        try:
+            # preprocess
+            tensor = tensor.clamp(min(value_range), max(value_range))
+            tensor = torch.stack([
+                torchvision.utils.make_grid(
+                    u, nrow=nrow, normalize=normalize, value_range=value_range)
+                for u in tensor.unbind(2)
+            ],
+                                 dim=1).permute(1, 2, 3, 0)
+            tensor = (tensor * 255).type(torch.uint8).cpu()
+
+            # write video
+            writer = imageio.get_writer(
+                cache_file, fps=fps, codec='libx264', quality=8)
+            for frame in tensor.numpy():
+                writer.append_data(frame)
+            writer.close()
+            return cache_file
+        except Exception as e:
+            error = e
+            continue
+    else:
+        print(f'cache_video failed, error: {error}', flush=True)
+        return None
+
+
+def cache_image(tensor,
+                save_file,
+                nrow=8,
+                normalize=True,
+                value_range=(-1, 1),
+                retry=5):
+    # cache file
+    suffix = osp.splitext(save_file)[1]
+    if suffix.lower() not in [
+            '.jpg', '.jpeg', '.png', '.tiff', '.gif', '.webp'
+    ]:
+        suffix = '.png'
+
+    # save to cache
+    error = None
+    for _ in range(retry):
+        try:
+            tensor = tensor.clamp(min(value_range), max(value_range))
+            torchvision.utils.save_image(
+                tensor,
+                save_file,
+                nrow=nrow,
+                normalize=normalize,
+                value_range=value_range)
+            return save_file
+        except Exception as e:
+            error = e
+            continue
+
 
 def str2bool(v):
+    """
+    Convert a string to a boolean.
+
+    Supported true values: 'yes', 'true', 't', 'y', '1'
+    Supported false values: 'no', 'false', 'f', 'n', '0'
+
+    Args:
+        v (str): String to convert.
+
+    Returns:
+        bool: Converted boolean value.
+
+    Raises:
+        argparse.ArgumentTypeError: If the value cannot be converted to boolean.
+    """
     if isinstance(v, bool):
         return v
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+    v_lower = v.lower()
+    if v_lower in ('yes', 'true', 't', 'y', '1'):
         return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+    elif v_lower in ('no', 'false', 'f', 'n', '0'):
         return False
     else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
-
-def tensor_to_rgb(tensor, normalize=True, value_range=(-1, 1)):
-    """Convert tensor to rgb values.
-    Args:
-        tensor: torch.Tensor, will be used as [b, c, h, w] or [b, c, t, h, w].
-        normalize: bool, should be true if tensor need to be normalized to (0, 1).
-        value_range: tuple, original value range of the tensor, (min, max).
-    Returns:
-        np.array ([b, c, h, w, 3] or [b, c, t, h, w, 3]): the rgb numpy data.
-    """
-    tensor = tensor.detach().float().cpu().squeeze()
-    ndim = tensor.dim()
-    if ndim == 3:
-        is_single_image = True
-        tensor = tensor.unsqueeze(0)  # [c, h, w] -> [1, c, h, w]
-    else:
-        is_single_image = False
-
-    if normalize:
-        tensor = (tensor - value_range[0]) / (value_range[1] - value_range[0])
-    tensor = tensor.clamp(0, 1)
-
-    if tensor.shape[1] == 3:
-        # b, c, h, w -> b, h, w, c
-        r = tensor[:, 0]
-        g = tensor[:, 1]
-        b = tensor[:, 2]
-        tensor = torch.stack((r, g, b), dim=-1)
-    else:
-        # single channel
-        tensor = tensor.repeat(1, 1, 1, 3)
-
-    images = (tensor.numpy() * 255).astype(np.uint8)
-    if is_single_image:
-        images = images[0]
-    return images
-
-def cache_video(tensor, save_file, fps=16, nrow=1, normalize=True, value_range=(-1, 1)):
-    """Cache video from tensor.
-    Args:
-        tensor: torch.Tensor, will be used as [b, c, t, h, w].
-        save_file: str, video file path.
-        fps: float, frames per second.
-        nrow: int, number of videos in a row.
-        normalize: bool, should be true if tensor need to be normalized to (0, 1).
-        value_range: tuple, original value range of the tensor, (min, max).
-    """
-    tensor = tensor.detach().float().cpu()
-    assert tensor.ndim == 5, f'Need [bs, c, t, h, w], but got {tensor.shape}'
-    os.makedirs(os.path.dirname(os.path.abspath(save_file)), exist_ok=True)
-
-    # extract the inputs
-    b, c, t, h, w = tensor.shape
-    if b % nrow != 0:
-        # append blank videos
-        rest = nrow - b % nrow
-        tensor = torch.cat([tensor, torch.zeros(rest, c, t, h, w)], dim=0)
-        b = tensor.shape[0]
-
-    # prepare grid for each timestep
-    images = []
-    for i in range(t):
-        img = make_grid(tensor[:, :, i], nrow=nrow)  # [3, n*h, n*w]
-        img = tensor_to_rgb(img, normalize=normalize, value_range=value_range)
-        images.append(img)
-
-    # save to file
-    try:
-        imageio.mimsave(save_file, images, fps=fps)
-    except:
-        imageio.mimwrite(save_file, images, fps=fps)
-
-def cache_image(tensor, save_file, nrow=1, normalize=True, value_range=(-1, 1)):
-    """Cache image from tensor.
-    Args:
-        tensor: torch.Tensor, will be used as [b, c, h, w].
-        save_file: str, image file path.
-        nrow: int, number of images in a row.
-        normalize: bool, should be true if tensor need to be normalized to (0, 1).
-        value_range: tuple, original value range of the tensor, (min, max).
-    """
-    tensor = tensor.detach().float().cpu()
-    assert tensor.ndim == 4, f'Need [bs, c, h, w], but got {tensor.shape}'
-    os.makedirs(os.path.dirname(os.path.abspath(save_file)), exist_ok=True)
-
-    b, c, h, w = tensor.shape
-    if b % nrow != 0:
-        # append blank images
-        rest = nrow - b % nrow
-        tensor = torch.cat([tensor, torch.zeros(rest, c, h, w)], dim=0)
-        b = tensor.shape[0]
-
-    img = make_grid(tensor, nrow=nrow)  # [3, n*h, n*w]
-    img = tensor_to_rgb(img, normalize=normalize, value_range=value_range)
-    
-    # save to file
-    Image.fromarray(img).save(save_file) 
+        raise argparse.ArgumentTypeError('Boolean value expected (True/False)')

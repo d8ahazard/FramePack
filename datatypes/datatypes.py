@@ -68,13 +68,35 @@ class PathsExistResponse(BaseModel):
     results: List[FileExistsResponse]
 
 
+class SegmentConfig(BaseModel):
+    image_path: Optional[str] = None
+    prompt: Union[str, List[str], None] = None
+    duration: float = 3.0
+
+    def to_dict(self):
+        """Convert the model to a dictionary for JSON serialization"""
+        return {
+            "image_path": self.full_path(),
+            "prompt": self.prompt,
+            "duration": self.duration
+        }
+
+    def full_path(self):
+        from handlers.path import upload_path
+        return os.path.join(upload_path, os.path.basename(self.image_path))
+
+    def model_dump(self):
+        """Alias for to_dict() for compatibility with Pydantic v2"""
+        return self.to_dict()
+
+
 class SaveJobRequest(BaseModel):
     job_id: str
     status: str
     progress: int
     message: str
     result_video: str
-    segments: List[str]
+    segments: List[SegmentConfig]
     current_latents: Optional[str] = None
     is_valid: bool
     missing_images: List[str]
@@ -90,37 +112,36 @@ class SaveJobRequest(BaseModel):
         if not self.job_settings:
             return False
 
-            # Check the format of job_settings
-            if isinstance(self.job_settings, dict):
-                # Handle the new dictionary structure with module name as key
-                if any(isinstance(v, dict) for v in self.job_settings.values()):
-                    # New format - find the module settings (e.g., 'framepack')
-                    module_name = next(iter(self.job_settings.keys()))
-                    module_settings = self.job_settings.get(module_name, {})
+        # Check the format of job_settings
+        if isinstance(self.job_settings, dict):
+            # Handle the new dictionary structure with module name as key
+            if any(isinstance(v, dict) for v in self.job_settings.values()):
+                # New format - find the module settings (e.g., 'framepack')
+                module_name = next(iter(self.job_settings.keys()))
+                module_settings = self.job_settings.get(module_name, {})
 
-                    # Check if segments are in the module settings
-                    if "segments" not in module_settings or not isinstance(module_settings["segments"], list):
-                        return False
+                # Check if segments are in the module settings
+                if "segments" not in module_settings or not isinstance(module_settings["segments"], list):
+                    return False
 
-                    # Ensure we have the right number of segments
-                    if len(self.segments) != len(module_settings["segments"]):
-                        return False
+                # Ensure we have the right number of segments
+                if len(self.segments) != len(module_settings["segments"]):
+                    return False
 
-                    return True
-                else:
-                    # Legacy format - direct settings object
-                    # Check if segments are in job_settings
-                    if "segments" not in self.job_settings or not isinstance(self.job_settings["segments"], list):
-                        return False
+                return True
+            else:
+                # Legacy format - direct settings object
+                # Check if segments are in job_settings
+                if "segments" not in self.job_settings or not isinstance(self.job_settings["segments"], list):
+                    return False
 
-                    # Ensure we have the right number of segments
-                    if len(self.segments) != len(self.job_settings["segments"]):
-                        return False
+                # Ensure we have the right number of segments
+                if len(self.segments) != len(self.job_settings["segments"]):
+                    return False
 
-                    return True
+                return True
 
-            return False
-        return None
+        return False
 
 
 class DeleteJobRequest(BaseModel):
@@ -219,26 +240,6 @@ class JobStatusResponse(BaseModel):
     created_timestamp: int = 0  # When the job was created
 
 
-class SegmentConfig(BaseModel):
-    image_path: Optional[str] = None
-    prompt: Union[str, List[str], None] = None
-    duration: float = 3.0
-    
-    def to_dict(self):
-        """Convert the model to a dictionary for JSON serialization"""
-        return {
-            "image_path": self.full_path(),
-            "prompt": self.prompt,
-            "duration": self.duration
-        }
-    
-    def full_path(self):
-        from handlers.path import upload_path
-        return os.path.join(upload_path, os.path.basename(self.image_path))
-    
-    def model_dump(self):
-        """Alias for to_dict() for compatibility with Pydantic v2"""
-        return self.to_dict()
 
 
 class UploadResponse(BaseModel):

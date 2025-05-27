@@ -55,10 +55,19 @@ export function uploadFileToServer(file) {
  * @param {Object} settings - Form settings
  * @param {Array} segments - Array of segment objects with image_path, prompt, and duration
  * @param {string} moduleType - 'framepack' or 'wan'
- * @param {boolean} includeLastFrame - Whether to include the last frame for FramePack
+ * @param {boolean|string} includeLastFrameOrPrefix - Whether to include the last frame for FramePack, or prefix for batch mode
  * @returns {Object} - Job payload for the selected module
  */
-export function prepareJobPayload(settings, segments, moduleType = 'framepack', includeLastFrame = false) {
+export function prepareJobPayload(settings, segments, moduleType = 'framepack', includeLastFrameOrPrefix = false) {
+    // Handle the case where the 4th parameter is a prefix (for batch mode)
+    let includeLastFrame = false;
+    if (typeof includeLastFrameOrPrefix === 'string') {
+        // This is a prefix, not a boolean - ignore it for now
+        includeLastFrame = false;
+    } else {
+        includeLastFrame = includeLastFrameOrPrefix;
+    }
+    
     // If WAN module is selected, prepare a WAN payload
     if (moduleType === 'wan') {
         return prepareWanJobPayload(settings, segments);
@@ -117,19 +126,18 @@ function prepareWanJobPayload(settings, segments) {
     const task = segments.length === 1 ? "i2v-14B" : "flf2v-14B";
     console.log(`Auto-selected WAN task: ${task} based on ${segments.length} segments`);
     
-    // Create the basic payload object
+    // Create the basic payload object with correct parameter names for WAN module
     const payload = {
         prompt: settings.globalPrompt || "",
         negative_prompt: settings.negativePrompt || "",
         task: task, // Use auto-determined task
         size: settings.wanSize || "1280*720",
         frame_num: parseInt(settings.wanFrameNum) || 81,
-        sample_solver: "unipc",
         sample_steps: parseInt(settings.wanSampleSteps) || 40,
         sample_shift: parseFloat(settings.wanSampleShift) || 5.0,
         sample_guide_scale: parseFloat(settings.wanSampleGuideScale) || 5.0,
         base_seed: Math.floor(Math.random() * 100000),
-        fps: parseInt(settings.fps) || 30,
+        fps: parseInt(settings.fps) || 16, // WAN default is 16 fps
         segments: segments // Pass all segments to the backend for consistent handling
     };
     
@@ -153,32 +161,32 @@ function prepareWanJobPayload(settings, segments) {
  * @returns {Object} - Object containing all form settings
  */
 export function getSettingsFromForm(prefix = '') {
-    // Create prefix with separator if provided
-    const p = prefix ? prefix + ((prefix.endsWith('-') || prefix.length === 0) ? '' : '-') : '';
+    // For batch mode, use 'batch' prefix directly; for editor mode, no prefix
+    const isBatch = prefix === 'batch';
     
     return {
         // Common settings
-        autoCaptionImage: document.getElementById(`${p}autoCaptionImage`)?.checked || false,
-        globalPrompt: document.getElementById(`${p}globalPrompt`)?.value || "",
-        negativePrompt: document.getElementById(`${p}negativePrompt`)?.value || "",
-        resolution: document.getElementById(`${p}resolution`)?.value || "640",
-        steps: document.getElementById(`${p}steps`)?.value || "25",
-        guidanceScale: document.getElementById(`${p}guidanceScale`)?.value || "10.0",
-        useTeacache: document.getElementById(`${p}useTeacache`)?.checked !== false,
-        enableAdaptiveMemory: document.getElementById(`${p}enableAdaptiveMemory`)?.checked !== false,
-        outputFormat: document.getElementById(`${p}outputFormat`)?.value || "mp4",
-        duration: document.getElementById(`${p}duration`)?.value || "3.0",
-        loraModel: document.getElementById(`${p}loraModel`)?.value || "",
-        loraScale: document.getElementById(`${p}loraScale`)?.value || "1.0",
-        fps: document.getElementById(`${p}fps`)?.value || "30",
+        autoCaptionImage: document.getElementById(isBatch ? 'batchAutoCaptionImage' : 'autoCaptionImage')?.checked || false,
+        globalPrompt: document.getElementById(isBatch ? 'batchGlobalPrompt' : 'globalPrompt')?.value || "",
+        negativePrompt: document.getElementById(isBatch ? 'batchNegativePrompt' : 'negativePrompt')?.value || "",
+        resolution: document.getElementById(isBatch ? 'batchResolution' : 'resolution')?.value || "640",
+        steps: document.getElementById(isBatch ? 'batchSteps' : 'steps')?.value || "25",
+        guidanceScale: document.getElementById(isBatch ? 'batchGuidanceScale' : 'guidanceScale')?.value || "10.0",
+        useTeacache: document.getElementById(isBatch ? 'batchUseTeacache' : 'useTeacache')?.checked !== false,
+        enableAdaptiveMemory: document.getElementById(isBatch ? 'batchEnableAdaptiveMemory' : 'enableAdaptiveMemory')?.checked !== false,
+        outputFormat: document.getElementById(isBatch ? 'batchOutputFormat' : 'outputFormat')?.value || "mp4",
+        duration: document.getElementById(isBatch ? 'batchDuration' : 'duration')?.value || "3.0",
+        loraModel: document.getElementById(isBatch ? 'batchLoraModel' : 'loraModel')?.value || "",
+        loraScale: document.getElementById(isBatch ? 'batchLoraScale' : 'loraScale')?.value || "1.0",
+        fps: document.getElementById(isBatch ? 'batchFps' : 'fps')?.value || "30",
         
         // WAN specific settings
-        wanTask: document.getElementById(`${p}wanTask`)?.value || "i2v-14B",
-        wanSize: document.getElementById(`${p}wanSize`)?.value || "1280*720",
-        wanFrameNum: document.getElementById(`${p}wanFrameNum`)?.value || "81",
-        wanSampleSteps: document.getElementById(`${p}wanSampleSteps`)?.value || "40",
-        wanSampleShift: document.getElementById(`${p}wanSampleShift`)?.value || "5.0",
-        wanSampleGuideScale: document.getElementById(`${p}wanSampleGuideScale`)?.value || "5.0"
+        wanTask: document.getElementById(isBatch ? 'batchWanTask' : 'wanTask')?.value || "i2v-14B",
+        wanSize: document.getElementById(isBatch ? 'batchWanSize' : 'wanSize')?.value || "1280*720",
+        wanFrameNum: document.getElementById(isBatch ? 'batchWanFrameNum' : 'wanFrameNum')?.value || "81",
+        wanSampleSteps: document.getElementById(isBatch ? 'batchWanSampleSteps' : 'wanSampleSteps')?.value || "40",
+        wanSampleShift: document.getElementById(isBatch ? 'batchWanSampleShift' : 'wanSampleShift')?.value || "5.0",
+        wanSampleGuideScale: document.getElementById(isBatch ? 'batchWanSampleGuideScale' : 'wanSampleGuideScale')?.value || "5.0"
     };
 }
 
@@ -186,7 +194,7 @@ export function getSettingsFromForm(prefix = '') {
  * Save and run/queue a job
  * @param {string} jobId - Job ID
  * @param {Object} jobSettings - Job settings object with module-specific settings
- * @param {Array} segments - Array of segment paths
+ * @param {Array} segments - Array of segment paths or segment objects
  * @param {string} moduleType - Module type ('framepack' or 'wan')
  * @param {boolean} startJob - Whether to start the job immediately (true) or just save it (false)
  * @returns {Promise<Object>} - Promise resolving to job result
@@ -209,6 +217,34 @@ export async function saveAndProcessJob(jobId, jobSettings, segments, moduleType
     try {
         const timestamp = Math.floor(Date.now() / 1000);
         
+        // Add job_id to each module's settings
+        for (const [moduleName, moduleSettings] of Object.entries(jobSettings)) {
+            if (moduleSettings && typeof moduleSettings === 'object') {
+                moduleSettings.job_id = jobId;
+            }
+        }
+        
+        // Normalize segments - ensure they're objects with proper structure
+        const normalizedSegments = segments.map(segment => {
+            if (typeof segment === 'string') {
+                // If it's just a path string, convert to segment object
+                return {
+                    image_path: segment,
+                    prompt: '',
+                    duration: 3.0
+                };
+            } else if (segment && typeof segment === 'object') {
+                // Ensure required fields exist
+                return {
+                    image_path: segment.image_path || segment.serverPath || '',
+                    prompt: segment.prompt || '',
+                    duration: segment.duration || 3.0,
+                    use_last_frame: segment.use_last_frame || false
+                };
+            }
+            return segment;
+        });
+        
         // Create save payload
         const savePayload = {
             job_id: jobId,
@@ -216,13 +252,15 @@ export async function saveAndProcessJob(jobId, jobSettings, segments, moduleType
             progress: 0,
             message: `Job saved (${moduleType})`,
             result_video: "",
-            segments: segments,
+            segments: normalizedSegments,
             is_valid: true,
             missing_images: [],
             job_settings: jobSettings,
             queue_position: -1,
             created_timestamp: timestamp
         };
+        
+        console.log('Saving job payload:', savePayload);
         
         // Save the job
         const saveResponse = await fetch(`/api/save_job/${jobId}`, {

@@ -160,6 +160,10 @@ def save_job_data(job_id, data_dict):
                                                            module_settings['segments']]
                 new_settings[module_name] = module_settings
             data_dict['job_settings'] = new_settings
+        if 'segments' in data_dict and data_dict['segments']:
+            # Convert SegmentConfig objects to dicts
+            data_dict['segments'] = [segment.model_dump() if isinstance(segment, SegmentConfig) else segment
+                                     for segment in data_dict['segments']]
 
     try:
         with open(job_file, "w") as f:
@@ -399,9 +403,9 @@ async def run_job(job_id: str):
                     module_settings["job_id"] = job_id
 
                 if process_func and request_type:
-                    if "segments" in module_settings:
-                        module_settings["segments"] = [SegmentConfig(**segment) for segment in
-                                                       module_settings["segments"]]
+                    # if "segments" in module_settings:
+                    #     module_settings["segments"] = [SegmentConfig(**segment) for segment in
+                    #                                    module_settings["segments"]]
 
                     request_instance = request_type(**module_settings)
 
@@ -735,8 +739,10 @@ def register_api_endpoints(app):
                 job_statuses[job_id] = existing_job
 
                 # Save to disk
+                logger.info(f"Saving job {job_id} with existing data")
                 save_job_data(job_id, existing_job)
             else:
+                logger.info(f"Saving new job {job_id} with request data")
                 # Save directly from request data
                 save_job_data(job_id, job_data)
 

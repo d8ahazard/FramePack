@@ -1019,7 +1019,7 @@ async function startGeneration() {
     window.currentJobId = jobId;
     
     // Get settings from form
-    const settings = getSettingsFromForm('editor');
+    const settings = getSettingsFromForm();
     
     // Get the selected module
     const videoModuleSelect = document.getElementById('videoModule');
@@ -1113,7 +1113,7 @@ async function startGeneration() {
                 
                 // Now start the main job
                 console.log('Starting main job:', jobId);
-                fetch(`/api/jobs/${jobId}/run`, {
+                fetch(`/api/run_job/${jobId}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' }
                 })
@@ -1144,9 +1144,19 @@ async function startGeneration() {
                 return null;
             }
         } else {
-            // Normal WAN job
+            // Normal job processing
             const modulePayload = prepareJobPayload(settings, segments, selectedModule);
             jobSettings[selectedModule] = modulePayload;
+            
+            // Add face restoration if enabled (for framepack only)
+            if (selectedModule === 'framepack' && elements.faceRestoration && elements.faceRestoration.checked) {
+                jobSettings.facefusion = {
+                    job_id: jobId,
+                    source_image_path: segments[0].image_path,
+                    target_video_path: `${jobId}_final.mp4`,
+                    output_path: `${jobId}_final_restored.mp4`   
+                };
+            }
         
             // Save and process job
             console.log('Processing job:', jobId, jobSettings);
@@ -1228,6 +1238,7 @@ function saveJob() {
         // Add face restoration if enabled (for framepack only)
         if (elements.faceRestoration && elements.faceRestoration.checked) {
             jobSettings.facefusion = {
+                job_id: jobId,
                 source_image_path: timeline[0].serverPath,
                 target_video_path: `${jobId}_final.mp4`,
                 output_path: `${jobId}_final_restored.mp4`   

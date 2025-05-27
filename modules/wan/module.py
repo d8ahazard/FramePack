@@ -344,7 +344,7 @@ def first_last_frame_to_video(request):
             shift=request.sample_shift,
             sample_solver='unipc',  # Default value, not in request 
             sampling_steps=request.sample_steps,
-            sample_guide_scale=request.sample_guide_scale,
+            guide_scale=request.sample_guide_scale,
             n_prompt=n_prompt,
             seed=seed,
             offload_model=request.offload_model

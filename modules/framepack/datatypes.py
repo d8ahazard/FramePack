@@ -23,5 +23,4 @@ class FramePackJobSettings(ModuleJobSettings):
     fps: int = 30  # Added FPS control
     lora_model: Optional[str] = None  # Path to LORA model
     lora_scale: float = 1.0  # Scale for LORA influence
-    final_image: Optional[str] = None  # Optional final image path
 
